@@ -45,6 +45,14 @@ Installed phones pick up the new version on the next launch. If an install ever 
 | Silent running | Engine noise and detection cut for 12 s |
 | Overcharge | Next warhead blast is 1.6x bigger |
 
+**Decoys.** DECOY (key `Q`) throws a noise-maker ahead of the rocket. For 7 seconds sentries within about 34 units walk over to investigate it instead of you. Two per sector; a decoy never raises an alert by itself.
+
+**Sector modifiers.** From sector 4, some sectors carry one modifier, shown as `MOD:` on the HUD: Blackout (lights out), Low Fuel (60% faster burn), Keen Ears (sentries hear 50% farther) or Heavy Security (50% more sentries). A modified sector raises the reward cap by 4.
+
+**Medals.** Optional challenges, +1 rocket each when you clear the sector: Sharpshooter (few rockets), Silent Hunter (never above 60% throttle), Speedrun (under par time) and Explorer (every secret chamber found).
+
+**Daily seed.** The DAILY button on the briefing screen fills in today's shared facility seed.
+
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
 ## Mobile controls

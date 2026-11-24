@@ -1037,6 +1037,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
 #tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
 #tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
+#tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1053,6 +1054,7 @@ body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 68px); trans
 body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
+body.lefty #tbtn-decoy { left: 92px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
@@ -1198,6 +1200,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-cam">CAM<br/>VIEW</button>
+    <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
 </div>
@@ -1287,6 +1290,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <label>
         Facility Seed:
         <input type="text" id="brief-seed" value="1998" maxlength="10" />
+        <button type="button" class="tac-btn" id="btn-daily-seed" style="padding:2px 8px; font-size:11px;">DAILY</button>
       </label>
       <label>
         Start Sector (1–100):
@@ -1314,7 +1318,8 @@ window.addEventListener('unhandledrejection', function (e) {
       <div>SENTRIES NEUTRALIZED: <strong id="res-sentries">0</strong></div>
       <div>MISSION TIME: <strong id="res-time">00.0s</strong></div>
     </div>
-    <div id="res-rewards-detail" style="margin:6px 0 10px; font-size:11px; letter-spacing:0.08em; opacity:0.8; text-align:center;"></div>
+    <div id="res-rewards-detail" style="margin:6px 0 4px; font-size:11px; letter-spacing:0.08em; opacity:0.8; text-align:center;"></div>
+    <div id="res-medals" style="margin:0 0 10px; font-size:11px; letter-spacing:0.06em; color:var(--hud-amber); text-align:center;"></div>
     <div class="btn-row">
       <button class="tac-btn amber" id="btn-replay-sector">REPLAY SECTOR</button>
       <button class="tac-btn" id="btn-next-sector">DEPLOY NEXT SECTOR</button>
@@ -1461,7 +1466,17 @@ const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber
 // Hearing: sentries hear the rocket within a radius that grows with throttle
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
-const HEAR_WALL_DAMP = 0.65;           // radius multiplier per wall-cell of thickness between sentry and rocket
+const HEAR_WALL_DAMP = 0.65;
+const DECOY_RADIUS = 34;               // how far a decoy's noise carries
+const DECOY_LIFE = 7;                  // seconds a decoy keeps making noise
+const DECOYS_PER_SECTOR = 2;
+const MODIFIER_INFO = {
+  'BLACKOUT':       'LIGHTS OUT — FLY BY YOUR HEADLAMP',
+  'LOW FUEL':       'FUEL BURNS 60% FASTER',
+  'KEEN EARS':      'SENTRIES HEAR 50% FARTHER',
+  'HEAVY SECURITY': '50% MORE SENTRIES'
+};
+const MODIFIER_CAP_BONUS = 4;          // hazard pay: extra reward cap in a modified sector           // radius multiplier per wall-cell of thickness between sentry and rocket
 const MAX_LEVELS = 100;
 const LEVELS_PER_TIER = 5;
 const MAX_TIERS = MAX_LEVELS / LEVELS_PER_TIER;
@@ -2379,6 +2394,7 @@ class NikitaGame {
     dir.position.set(28, 60, 22);
     this.scene.add(dir);
 
+    this.lights = { amb, hemi, dir };
     this.headlamp = new THREE.PointLight(0xd8ffee, 5.0, 36, 1.4);
     this.headlamp.position.set(0, -100, 0);
     this.scene.add(this.headlamp);
@@ -2455,6 +2471,10 @@ class NikitaGame {
     this.noiseRadius = HEAR_MIN;
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
+    this.decoys = DECOYS_PER_SECTOR;
+    this.decoyObjs = [];
+    this.modifier = null;
+    this.stats = { maxThrottle: 0 };
     this.targets = [];
     this.barrels = [];
     this.sentries = [];
@@ -3032,6 +3052,10 @@ class NikitaGame {
     this.seedStr = String(seedStr || '1998');
     const numericSeed = (hashSeedString(this.seedStr) ^ Math.imul(this.level, 2654435761)) >>> 0;
     const rng = mulberry32(numericSeed);
+    // sector modifier: its own random stream so the layout is unaffected
+    const modRng = mulberry32((numericSeed ^ 0xA5A5A5A5) >>> 0);
+    const MODS = Object.keys(MODIFIER_INFO);
+    this.modifier = (this.level >= 4 && modRng() < 0.55) ? MODS[Math.floor(modRng() * MODS.length)] : null;
 
     const sharedMats = new Set([this.wallMat, this.floorMat, this.runwayMat, this.ceilMat, this.hazardMat]);
     while (this.levelGroup.children.length > 0) {
@@ -3062,6 +3086,9 @@ class NikitaGame {
     this.pendingBlasts = [];
     this.breakables = [];
     this.pickups = [];
+    this.decoyObjs = [];
+    this.decoys = DECOYS_PER_SECTOR;
+    this.stats = { maxThrottle: 0 };
     this.secretHidden = new Set();
     this.power = { stealth: 0, freeBoost: 0, overcharge: false };
     this.secretsFound = 0;
@@ -3294,7 +3321,7 @@ class NikitaGame {
       this.spawnPrimaryTarget(tx, tz, targetNames[i % targetNames.length], i);
     }
 
-    const sentryCount = Math.min(this.maxSentries, 3 + tier * 2);
+    const sentryCount = Math.min(this.maxSentries, Math.round((3 + tier * 2) * (this.modifier === 'HEAVY SECURITY' ? 1.5 : 1)));
     const patrolRooms = this.rooms.slice(1);
     for (let i = 0; i < sentryCount; i++) {
       const rm = patrolRooms[i % patrolRooms.length];
@@ -3320,6 +3347,8 @@ class NikitaGame {
         alerted: false,
         alertTimer: 0,
         hearT: rng() * 0.2,
+        decoyT: 0,
+        decoyHeard: null,
         heardNow: false,
         heardLoud: 0,
         heardClose: false,
@@ -3416,6 +3445,13 @@ class NikitaGame {
     this.missionTime = 0;
     this.fired = 0;
     this.resetRewards();
+    // sector modifier visuals
+    const bo = this.modifier === 'BLACKOUT';
+    this.lights.amb.intensity = 0.65 * (bo ? 0.3 : 1);
+    this.lights.hemi.intensity = 1.55 * (bo ? 0.26 : 1);
+    this.lights.dir.intensity = 1.15 * (bo ? 0.3 : 1);
+    this.scene.fog.density = bo ? 0.013 : 0.0065;
+    this.headlamp.intensity = bo ? 9.0 : 5.0;
     this.syncSentryInstances();
     this.syncBarrelInstances();
     this.updateHUDText();
@@ -3818,10 +3854,50 @@ class NikitaGame {
     // active power-up strip
     const pw = this.power;
     const parts = [];
+    if (this.modifier) parts.push(`MOD: ${this.modifier}`);
     if (pw.freeBoost > 0) parts.push(`BOOST CELL ${Math.ceil(pw.freeBoost)}s`);
     if (pw.stealth > 0) parts.push(`SILENT ${Math.ceil(pw.stealth)}s`);
     if (pw.overcharge) parts.push('OVERCHARGE READY');
     this.cText(this.el.hudPower, parts.join('  ·  '));
+  }
+
+  throwDecoy() {
+    const m = this.missile;
+    if (this.state !== 'PLAYING' || !m.active || this.decoys <= 0 || this.paused) return;
+    let x = m.pos.x, z = m.pos.z;
+    const dx = -Math.sin(m.yaw), dz = -Math.cos(m.yaw);
+    for (let i = 0; i < 9; i++) {
+      if (this.isGridSolid(x + dx, z + dz)) break;
+      x += dx; z += dz;
+    }
+    this.decoys--;
+    const grp = new THREE.Group();
+    grp.position.set(x, 0.7, z);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), new THREE.MeshBasicMaterial({ color: 0x33ddff }));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.06, 6, 24), new THREE.MeshBasicMaterial({ color: 0x33ddff, transparent: true, opacity: 0.7 }));
+    ring.rotation.x = Math.PI * 0.5;
+    grp.add(core, ring);
+    this.levelGroup.add(grp);
+    this.decoyObjs.push({ pos: new THREE.Vector3(x, 0.7, z), t: DECOY_LIFE, mesh: grp, ring });
+    this.audio.playTargetChime();
+    this.vibrate(15);
+    this.pushFeed(`DECOY DEPLOYED — ${this.decoys} LEFT`, 'cyan');
+    this.updateHUDText();
+  }
+
+  updateDecoys(dt) {
+    for (let i = this.decoyObjs.length - 1; i >= 0; i--) {
+      const d = this.decoyObjs[i];
+      d.t -= dt;
+      const k = 1 + ((DECOY_LIFE - d.t) % 1.2) * 1.6;
+      d.ring.scale.set(k, k, 1);
+      d.ring.material.opacity = Math.max(0, 0.8 - ((DECOY_LIFE - d.t) % 1.2) * 0.65);
+      if (d.t <= 0) {
+        this.levelGroup.remove(d.mesh);
+        d.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+        this.decoyObjs.splice(i, 1);
+      }
+    }
   }
 
   // Thickness of wall (in cells) between two points: used to muffle sound.
@@ -3841,7 +3917,7 @@ class NikitaGame {
      ROCKET REWARD SYSTEM
      ------------------------------------------------------------------------ */
   resetRewards() {
-    this.rewards = { total: 0, capUsed: 0, cap: REWARD_CAP_BASE + REWARD_CAP_PER_TIER * (this.difficultyTier || 1), log: {}, flags: {}, pending: {} };
+    this.rewards = { total: 0, capUsed: 0, cap: REWARD_CAP_BASE + REWARD_CAP_PER_TIER * (this.difficultyTier || 1) + (this.modifier ? MODIFIER_CAP_BONUS : 0), log: {}, flags: {}, pending: {} };
     this._blastHostiles = 0;
   }
 
@@ -4014,6 +4090,7 @@ class NikitaGame {
     this.updateHUDText();
     document.getElementById('fire-btn').style.display = 'block';
     this.updateTouchControlsVisibility();
+    if (this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
     this.pushFeed('NIKITA ARMED — SET SPEED, THEN PRESS FIRE', 'cyan');
   }
 
@@ -4292,6 +4369,7 @@ class NikitaGame {
 
     this.updateFacilityObjects(effectiveDt);
     this.updatePickups(effectiveDt);
+    this.updateDecoys(effectiveDt);
 
     if (this.state === 'PLAYING' && this.missile.active) {
       this.updateMissile(effectiveDt);
@@ -4576,6 +4654,7 @@ class NikitaGame {
     let effT = holdBoost ? 1 : (holdCrawl ? 0 : m.throttle);
     if (!canBoost && effT > CRUISE_THROTTLE) effT = CRUISE_THROTTLE;   // overdrive locked while recharging
     m.effThrottle = effT;
+    if (effT > this.stats.maxThrottle) this.stats.maxThrottle = effT;
     const desiredMode = this.modeForThrottle(effT);
 
     if (desiredMode !== m.activeSpeedMode) {
@@ -4591,7 +4670,7 @@ class NikitaGame {
     const profile = blendProfile(effT, _profile);
 
     if (!this.cfg.infFuel) {
-      m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate);
+      m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate * (this.modifier === 'LOW FUEL' ? 1.6 : 1));
     } else {
       m.fuel = 100;
     }
@@ -5041,6 +5120,7 @@ class NikitaGame {
     // Hearing: the louder (faster) the rocket, the farther sentries hear it.
     let noiseR = HEAR_MIN + HEAR_RANGE * Math.pow(m.effThrottle, 1.5);
     if (this.power.stealth > 0) noiseR *= 0.3;
+    if (this.modifier === 'KEEN EARS') noiseR *= 1.5;
     this.noiseRadius = noiseR;
     const stealthDetect = this.power.stealth > 0 ? 0.5 : 1;
     const raiseAlert = (sn) => {
@@ -5131,6 +5211,22 @@ class NikitaGame {
         if (s.alerted) {
           s.alertTimer -= dt;
           if (s.alertTimer <= 0) s.alerted = false;
+        }
+      }
+
+      // decoys: a noise source that never raises an alert, but pulls sentries away
+      if (this.decoyObjs.length && !s.alerted) {
+        s.decoyT -= dt;
+        if (s.decoyT <= 0) {
+          s.decoyT = 0.25;
+          s.decoyHeard = null;
+          for (const d of this.decoyObjs) {
+            const dd = Math.hypot(d.pos.x - s.pos.x, d.pos.z - s.pos.z);
+            if (dd < DECOY_RADIUS && dd < DECOY_RADIUS * Math.pow(HEAR_WALL_DAMP, this.wallThickness(s.pos.x, s.pos.z, d.pos.x, d.pos.z))) { s.decoyHeard = d; break; }
+          }
+        }
+        if (s.decoyHeard && s.decoyHeard.t > 0 && !heard && !seesMissile) {
+          s.invX = s.decoyHeard.pos.x; s.invZ = s.decoyHeard.pos.z; s.invT = 5.0;
         }
       }
 
@@ -5747,6 +5843,14 @@ class NikitaGame {
       ctx.fill();
     }
 
+    for (const d of this.decoyObjs) {
+      ctx.strokeStyle = 'rgba(51, 221, 255, 0.8)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(toRX(d.pos.x), toRZ(d.pos.z), 3 + ((DECOY_LIFE - d.t) % 1.2) * 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     if (this.missile.active) {
       // noise ring: how far sentries can hear the rocket right now
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.008);
@@ -5793,6 +5897,24 @@ class NikitaGame {
     if (this.alertsTriggered === 0) this.awardRockets(REWARD_BONUS.stealth, 'GHOST — NO ALERTS', 'bonus');
     this.flushRewards();
 
+    // Medals: optional challenges, +1 rocket each (outside the sector cap)
+    const totalSecrets = this.breakables.filter((b) => b.kind === 'secret').length;
+    const par = 45 + 14 * tCount;
+    const medals = [
+      { name: 'SHARPSHOOTER', ok: used <= tCount + 2 },
+      { name: 'SILENT HUNTER', ok: this.stats.maxThrottle <= 0.6 },
+      { name: `SPEEDRUN ${par}s`, ok: this.missionTime <= par }
+    ];
+    if (totalSecrets > 0) medals.push({ name: 'EXPLORER', ok: this.secretsFound >= totalSecrets });
+    const medalCount = medals.filter((x) => x.ok).length;
+    if (medalCount > 0) {
+      const add = Math.max(0, Math.min(medalCount, MAX_ROCKETS - this.ammo));
+      this.ammo += add;
+      this.rewards.total += add;
+      this.rewards.log.bonus = (this.rewards.log.bonus || 0) + add;
+    }
+    const medalText = medals.map((x) => (x.ok ? '★ ' : '☆ ') + x.name).join('  ·  ') + `   (+${medalCount})`;
+
     const isFinal = this.level >= MAX_LEVELS;
     document.getElementById('clear-title').textContent = isFinal ? 'CAMPAIGN COMPLETE' : 'SECTOR CLEAR';
     document.getElementById('clear-sector-sub').textContent = isFinal
@@ -5801,7 +5923,8 @@ class NikitaGame {
     document.getElementById('btn-next-sector').textContent = isFinal ? 'NEW CAMPAIGN (SECTOR 01)' : 'DEPLOY NEXT SECTOR';
     document.getElementById('clear-rank').textContent = rank;
     document.getElementById('res-missiles').textContent = `${used} FIRED`;
-    document.getElementById('res-rewards').textContent = `+${this.rewards.total} / ${this.rewards.cap}`;
+    document.getElementById('res-medals').textContent = medalText;
+    document.getElementById('res-rewards').textContent = `+${this.rewards.total}  (KILL REWARDS ${this.rewards.capUsed} / ${this.rewards.cap})`;
     const lg = this.rewards.log;
     const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', grate: 'GRATES', bonus: 'BONUSES', cache: 'CACHES' };
     const detail = Object.keys(names).filter((k) => lg[k]).map((k) => `${names[k]} +${lg[k]}`).join(' · ');
@@ -5904,7 +6027,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-cam', 'tbtn-detonate'].forEach(id => {
+    ['tbtn-lock', 'tbtn-cam', 'tbtn-decoy', 'tbtn-detonate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -5935,6 +6058,8 @@ class NikitaGame {
     document.getElementById('hud-sector').textContent = `${String(this.level).padStart(2, '0')} / ${MAX_LEVELS}`;
     document.getElementById('hud-tier').textContent = `TIER ${String(this.difficultyTier).padStart(2, '0')} / ${MAX_TIERS}`;
     document.getElementById('hud-ammo').textContent = `${this.ammo} / ${MAX_ROCKETS}`;
+    const dBtn = document.getElementById('tbtn-decoy');
+    if (dBtn) { dBtn.innerHTML = `DECOY<br/>x${this.decoys}`; dBtn.style.opacity = this.decoys > 0 ? '' : '0.4'; }
     const remT = this.targets.filter(t => t.active).length;
     document.getElementById('hud-targets').textContent = `${remT} / ${this.targets.length}`;
     const remS = this.sentries.filter(s => s.active).length;
@@ -6283,6 +6408,18 @@ class NikitaGame {
       btnLock.addEventListener('pointercancel', clearLockPress);
     }
 
+    const btnDecoy = document.getElementById('tbtn-decoy');
+    btnDecoy.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.audio.unlock();
+      btnDecoy.classList.add('pressed');
+      this.throwDecoy();
+    });
+    const clearDecoyPress = () => btnDecoy.classList.remove('pressed');
+    btnDecoy.addEventListener('pointerup', clearDecoyPress);
+    btnDecoy.addEventListener('pointercancel', clearDecoyPress);
+
     const btnCam = document.getElementById('tbtn-cam');
     btnCam.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -6370,6 +6507,7 @@ class NikitaGame {
       if (e.code === 'Minus' || e.code === 'BracketLeft') stepSpeed(-1);
       if (e.code === 'Equal' || e.code === 'BracketRight') stepSpeed(1);
 
+      if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyE' && this.state === 'PLAYING') {
         this.toggleCameraMode();
       }
@@ -6731,6 +6869,14 @@ if (installBtn) {
       msg = 'Use your browser\'s menu: "Install app" / "Add to Home Screen". The install option appears in Chrome and Edge once the page has fully loaded.';
     }
     if (installHelp) { installHelp.textContent = msg; installHelp.style.display = 'block'; }
+  });
+}
+const dailyBtn = document.getElementById('btn-daily-seed');
+if (dailyBtn) {
+  dailyBtn.addEventListener('click', () => {
+    const d = new Date();
+    const seed = 'D' + d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0');
+    document.getElementById('brief-seed').value = seed;   // everyone gets the same facility today
   });
 }
 window.addEventListener('appinstalled', () => { if (installBtn) installBtn.style.display = 'none'; });
