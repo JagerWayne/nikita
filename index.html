@@ -1263,21 +1263,13 @@ window.addEventListener('unhandledrejection', function (e) {
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
       <span class="ios-hint" id="install-help" style="display:none; margin:0; flex:1; min-width:200px;"></span>
     </div>
-    <p class="briefing-desc">
-      Infiltrate 100 procedurally generated sectors of the fortified Shadow Moses subterranean facility via remote-controlled Nikita warhead.
-      Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo. Earn a few bonus rockets for kills, laser shutdowns and clean sweeps. Shatter cracked walls for shortcuts and hidden power-ups. Fast rockets are loud: sentries hear them from afar.
-    </p>
+    <p class="briefing-desc">Fly the Nikita warhead through 100 facility sectors and destroy every primary target.</p>
     <div class="controls-grid">
-      <div><span class="ctrl-key">LEFT STICK / GYRO</span> : Pitch & Yaw Flight</div>
-      <div><span class="ctrl-key">15° SEEKER + LOCK</span> : Auto-Highlight & Lock Target</div>
-      <div><span class="ctrl-key">SPEED LEVER</span> : Analog Throttle, Min to Max (high speed drains boost)</div>
-      <div><span class="ctrl-key">FIRE</span> : Launch Rocket</div>
-      <div><span class="ctrl-key">CAM VIEW</span> : Nose-Cam FPV / Chase-Cam</div>
-      <div><span class="ctrl-key">DETONATE</span> : Manual Warhead Blast</div>
-      <div><span class="ctrl-key">RADAR</span> : Side 64x64 Tactical Map</div>
-      <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, L (Lock), Shift, E, R, ~</div>
+      <div><span class="ctrl-key">STICK / GYRO</span> : Fly</div>
+      <div><span class="ctrl-key">SPEED LEVER</span> : Throttle, min to max</div>
+      <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
+      <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q</div>
     </div>
-    <p class="ios-hint" style="display:none;">iPhone tip: tap Share &rarr; Add to Home Screen to play full-screen. Gyro and sound start after your first tap.</p>
     <div class="briefing-options">
       <label>
         <input type="checkbox" id="brief-gyro-enable" />
@@ -1467,6 +1459,7 @@ const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
 const HEAR_WALL_DAMP = 0.65;
+const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
 const DECOY_LIFE = 7;                  // seconds a decoy keeps making noise
@@ -2837,7 +2830,7 @@ class NikitaGame {
     this.sentryGunMesh.frustumCulled = false;
     this.scene.add(this.sentryGunMesh);
 
-    const coneLen = 22.0;
+    const coneLen = SENTRY_VISION;
     const coneRad = Math.tan(0.52) * coneLen;
     const coneGeo = new THREE.ConeGeometry(coneRad, coneLen, 16, 1, true);
     coneGeo.translate(0, -coneLen * 0.5, 0);
@@ -4111,6 +4104,9 @@ class NikitaGame {
     this.missileGroup.visible = false;
     this.resetOverlays();
     this.state = 'READY';
+    m.throttle = 0;
+    m.effThrottle = 0;
+    m.baseSpeedMode = this.modeForThrottle(0);
     this.resetTether(m.pos);
     this.updateSpeedBadgeUI();
     this.updateHUDText();
@@ -4155,6 +4151,8 @@ class NikitaGame {
     this.homingLocked = false;
     this.manualTargetLock = false;
     this.lastHighlightedRef = null;
+    m.throttle = 0;           // every rocket starts with the lever at minimum speed
+    m.effThrottle = 0;
     m.baseSpeedMode = this.modeForThrottle(m.throttle);
     m.activeSpeedMode = m.baseSpeedMode;
     m.currentSpeed = this.throttleSpeed(m.throttle);
@@ -5192,7 +5190,7 @@ class NikitaGame {
         const dx = m.pos.x - s.pos.x;
         const dz = m.pos.z - s.pos.z;
         const dist = Math.hypot(dx, dz);
-        if (dist < 22.5) {
+        if (dist < SENTRY_VISION + 0.5) {
           const angleToMissile = Math.atan2(-dx, -dz);
           let diff = angleToMissile - s.yaw;
           while (diff > Math.PI) diff -= Math.PI * 2;
@@ -5850,7 +5848,7 @@ class NikitaGame {
         continue;
       }
 
-      const coneRange = (22.0 / CELL_SIZE) * scale;
+      const coneRange = (SENTRY_VISION / CELL_SIZE) * scale;
       const ang = Math.atan2(-Math.cos(s.yaw), -Math.sin(s.yaw));
       ctx.fillStyle = s.alerted ? 'rgba(255, 40, 60, 0.38)' : (s.invT > 0 ? 'rgba(255, 170, 0, 0.3)' : 'rgba(0, 255, 136, 0.22)');
       ctx.beginPath();
