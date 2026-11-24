@@ -178,6 +178,8 @@
   .stat-label { color: rgba(0, 255, 136, 0.72); }
   .stat-val { font-weight: bold; color: #fff; text-shadow: 0 0 6px var(--hud-green); }
   .stat-val.amber { color: var(--hud-amber); text-shadow: 0 0 6px var(--hud-amber); }
+  @keyframes rewardPop { 0% { transform: scale(1.7); color:#fff; } 100% { transform: scale(1); } }
+  .stat-val.reward-pop { display:inline-block; animation: rewardPop 0.6s ease-out; }
   .stat-val.red { color: var(--hud-red); text-shadow: 0 0 8px var(--hud-red); }
 
   #fps-badge {
@@ -521,18 +523,6 @@
     z-index: 1;
   }
 
-  /* Speed Level Up/Down Stepper Strip (z-index: 3) */
-  #touch-speed-strip {
-    position: absolute;
-    top: calc(max(12px, env(safe-area-inset-top)) + 44px);
-    left: 50%;
-    transform: translateX(-50%);
-    pointer-events: auto;
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
   .speed-step-btn {
     min-width: 58px;
     min-height: 40px;
@@ -1004,13 +994,46 @@
 
 @media (max-width: 700px) { #hud-bottom-right { width: 156px; } }
 
-/* Speed notches: bottom-center, between both thumbs */
-#touch-speed-strip { top: auto; bottom: var(--safe-b); left: 50%; transform: translateX(-50%); gap: 4px; }
-.speed-notch { min-width: 56px; min-height: 40px; padding: 0 4px; font-size: 9px; line-height: 1.15; letter-spacing: 0.04em; opacity: 0.92; }
-.speed-notch b { font-size: 13px; }
-.speed-notch.on { background: var(--hud-green); color: #02120a; }
-.speed-notch[data-mode="1"].on { background: var(--hud-amber); }
-.speed-notch[data-mode="3"].on { background: var(--hud-cyan); }
+#fire-btn {
+  position: fixed; left: 50%; bottom: calc(var(--safe-b) + 6px); transform: translateX(-50%);
+  min-width: 170px; min-height: 64px; padding: 6px 22px; z-index: 12;
+  font: bold 24px var(--font-mono); letter-spacing: 0.18em; color: #fff;
+  background: radial-gradient(circle at 50% 35%, #ff6a3c, #b3181f 70%);
+  border: 2px solid #ffb199; border-radius: 12px; cursor: pointer; touch-action: manipulation;
+  box-shadow: 0 0 22px rgba(255, 70, 50, 0.65); text-shadow: 0 0 8px rgba(0,0,0,0.6);
+  animation: firePulse 1.1s ease-in-out infinite;
+}
+#fire-btn small { display: block; font-size: 9px; letter-spacing: 0.12em; opacity: 0.85; margin-top: 2px; }
+#fire-btn:active { filter: brightness(1.3); transform: translateX(-50%) scale(0.96); }
+@keyframes firePulse { 50% { box-shadow: 0 0 34px rgba(255, 90, 60, 0.95); } }
+
+/* Analog throttle lever: side of the screen, bottom = minimum speed, top = maximum */
+#throttle-lever {
+  position: absolute; left: var(--safe-l); bottom: var(--safe-b);
+  width: 54px; height: min(52vh, 210px);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  pointer-events: auto; touch-action: none; z-index: 4; opacity: var(--btn-opacity);
+  user-select: none; -webkit-user-select: none;
+}
+body.lefty #throttle-lever { left: auto; right: var(--safe-r); }
+.thr-label { font: bold 9px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-green); pointer-events: none; }
+.thr-max { color: var(--hud-cyan); }
+.thr-min { color: var(--hud-amber); }
+#thr-track {
+  position: relative; flex: 1; width: 30px; border-radius: 15px;
+  background: rgba(2, 14, 10, 0.84); border: 1px solid rgba(0, 255, 136, 0.55);
+  touch-action: none; overflow: hidden;
+}
+#thr-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 38%;
+  background: linear-gradient(to top, var(--hud-amber), var(--hud-green) 55%, var(--hud-cyan));
+  opacity: 0.55; pointer-events: none;
+}
+#thr-thumb {
+  position: absolute; left: 1px; right: 1px; height: 16px; bottom: calc(38% - 8px);
+  background: #e8fff4; border-radius: 8px; box-shadow: 0 0 8px var(--hud-green); pointer-events: none;
+}
+#thr-readout { font: bold 10px var(--font-mono); color: #fff; pointer-events: none; white-space: nowrap; }
 
 /* Right-thumb action arc (container ignores touches so gaps still aim) */
 #touch-actions {
@@ -1020,11 +1043,11 @@
   transform: scale(var(--btn-scale)); transform-origin: bottom right;
 }
 #touch-actions .touch-act-btn { position: absolute; pointer-events: auto; }
-#tbtn-lock    { width: 80px; height: 80px; right: 0;     bottom: 28px;  font-size: 12px; }
-#tbtn-boost   { width: 64px; height: 64px; right: 92px;  bottom: 0;     }
-#tbtn-crawl   { width: 54px; height: 54px; right: 104px; bottom: 78px;  }
-#tbtn-cam     { width: 44px; height: 44px; right: 6px;   bottom: 120px; font-size: 8px; }
-#tbtn-detonate { width: 52px; height: 52px; right: 176px; bottom: 60px; font-size: 8px; }
+#tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
+#tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
+#tbtn-boost   { width: 64px; height: 64px; right: 98px;  bottom: 0;     }
+#tbtn-crawl   { width: 54px; height: 54px; right: 102px; bottom: 72px;  }
+#tbtn-cam     { width: 44px; height: 44px; right: 172px; bottom: 8px;   font-size: 8px; }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1040,10 +1063,10 @@ body.lefty #right-aim-zone { right: auto; left: 0; }
 body.lefty #touch-actions { right: auto; left: var(--safe-l); transform-origin: bottom left; }
 body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
-body.lefty #tbtn-boost { left: 92px; }
-body.lefty #tbtn-crawl { left: 104px; }
-body.lefty #tbtn-cam { left: 6px; }
-body.lefty #tbtn-detonate { left: 176px; }
+body.lefty #tbtn-boost { left: 98px; }
+body.lefty #tbtn-crawl { left: 102px; }
+body.lefty #tbtn-cam { left: 172px; }
+body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
 /* Low-spec mode: drop the expensive full-screen effects */
@@ -1096,7 +1119,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
     <div class="hud-box">
       <div class="stat-row"><span class="stat-label">SEC</span><span class="stat-val" id="hud-sector">01 / 100</span></div>
       <div class="stat-row minor"><span class="stat-label">DIFFICULTY</span><span class="stat-val amber" id="hud-tier">TIER 01 / 20</span></div>
-      <div class="stat-row"><span class="stat-label">AMMO</span><span class="stat-val amber" id="hud-ammo">50 / 50</span></div>
+      <div class="stat-row"><span class="stat-label">AMMO</span><span class="stat-val amber" id="hud-ammo">50 / 100</span></div>
       <div class="stat-row"><span class="stat-label">TGT</span><span class="stat-val" id="hud-targets">1 / 1</span></div>
       <div class="stat-row"><span class="stat-label">SENT</span><span class="stat-val" id="hud-sentries">5 / 5</span></div>
       <div class="stat-row minor"><span class="stat-label">SEED</span><span class="stat-val" id="hud-seed">1998</span></div>
@@ -1151,12 +1174,19 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
   <div id="hud-bottom-right"></div>
 </div>
 
+<!-- Launch button: shown while a fresh sector waits for the first rocket -->
+<button id="fire-btn" aria-label="Fire Nikita rocket" style="display:none;">FIRE<small>SET SPEED &middot; THEN LAUNCH</small></button>
+
 <!-- Mobile Multi-Touch Flight Controls -->
 <div id="touch-controls">
-  <div id="touch-speed-strip">
-    <button class="speed-step-btn speed-notch" id="tbtn-spd-1" data-mode="1" aria-label="Crawl speed"><b>1</b><br/>CRAWL</button>
-    <button class="speed-step-btn speed-notch on" id="tbtn-spd-2" data-mode="2" aria-label="Cruise speed"><b>2</b><br/>CRUISE</button>
-    <button class="speed-step-btn speed-notch" id="tbtn-spd-3" data-mode="3" aria-label="Overdrive speed"><b>3</b><br/>OVRDRV</button>
+  <div id="throttle-lever" aria-label="Analog throttle lever, minimum to maximum speed">
+    <div class="thr-label thr-max">MAX</div>
+    <div id="thr-track">
+      <div id="thr-fill"></div>
+      <div id="thr-thumb"></div>
+    </div>
+    <div class="thr-label thr-min">MIN</div>
+    <div id="thr-readout">16 m/s</div>
   </div>
   <div id="left-flight-zone" aria-label="Left Virtual Analog Flight Zone">
     <div id="joy-gimbal">
@@ -1169,7 +1199,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
     <button class="touch-act-btn" id="tbtn-cam">CAM<br/>VIEW</button>
     <button class="touch-act-btn" id="tbtn-boost">BOOST<br/>OVER</button>
     <button class="touch-act-btn" id="tbtn-crawl">AIR<br/>BRAKE</button>
-    <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DET</button>
+    <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
 </div>
 
@@ -1229,7 +1259,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
     </div>
     <p class="briefing-desc">
       Infiltrate 100 procedurally generated sectors of the fortified Shadow Moses subterranean facility via remote-controlled Nikita warhead.
-      Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo.
+      Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo. Earn bonus rockets (rack holds up to 100) for every kill, laser shutdown and clean sweep.
     </p>
     <div class="controls-grid">
       <div><span class="ctrl-key">LEFT STICK / GYRO</span> : Pitch & Yaw Flight</div>
@@ -1275,11 +1305,13 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
     </div>
     <div class="rank-badge" id="clear-rank">FOXHOUND</div>
     <div class="result-grid">
-      <div>ROCKETS EXPENDED: <strong id="res-missiles">1 / 50</strong></div>
+      <div>ROCKETS FIRED: <strong id="res-missiles">1</strong></div>
+      <div>ROCKET REWARDS: <strong id="res-rewards" style="color:var(--hud-amber, #ffbb33)">+0</strong></div>
       <div>ALERTS TRIGGERED: <strong id="res-alerts">0</strong></div>
       <div>SENTRIES NEUTRALIZED: <strong id="res-sentries">0</strong></div>
       <div>MISSION TIME: <strong id="res-time">00.0s</strong></div>
     </div>
+    <div id="res-rewards-detail" style="margin:6px 0 10px; font-size:11px; letter-spacing:0.08em; opacity:0.8; text-align:center;"></div>
     <div class="btn-row">
       <button class="tac-btn amber" id="btn-replay-sector">REPLAY SECTOR</button>
       <button class="tac-btn" id="btn-next-sector">DEPLOY NEXT SECTOR</button>
@@ -1402,7 +1434,23 @@ const WALL_H = 7.2;
 const FIXED_DT = 1 / 60;
 const SUBSTEPS = 4;
 const MISSILE_RADIUS = 0.42;
-const MAX_SALVO = 50;
+const MAX_SALVO = 50;          // rockets issued at the start of a fresh sector
+const MAX_ROCKETS = 100;       // hard cap on rockets the player can hold (rewards stop here)
+// Rocket rewards. each = per kill / shutdown, all = bonus for wiping a whole category in a sector.
+const REWARDS = {
+  target: { each: 5, all: 10, label: 'PRIMARY TARGET',  allLabel: 'ALL PRIMARY TARGETS DESTROYED' },
+  sentry: { each: 3, all: 5,  label: 'SENTRY',          allLabel: 'ALL SENTRIES NEUTRALIZED' },
+  laser:  { each: 2, all: 5,  label: 'LASER GRID OFF',  allLabel: 'ALL LASER GRIDS OFFLINE' },
+  turret: { each: 4, all: 5,  label: 'CIWS TURRET',     allLabel: 'ALL CIWS TURRETS DESTROYED' },
+  barrel: { each: 1, all: 5,  label: 'FUEL BARREL',     allLabel: 'ALL FUEL BARRELS DETONATED' },
+  grate:  { each: 1, all: 3,  label: 'VENT GRATE',      allLabel: 'ALL VENT GRATES BREACHED' }
+};
+const REWARD_BONUS = {
+  directHit: 2,                       // primary target destroyed by a direct hit
+  combo3: 3, combo5: 6,               // 3+ / 5+ hostiles (targets, sentries, turrets) in one blast
+  stealth: 5,                         // sector cleared with zero alerts
+  rank: { PANTHER: 0, DOBERMAN: 2, HOUND: 4, FOXHOUND: 8 }
+};
 const MAX_LEVELS = 100;
 const LEVELS_PER_TIER = 5;
 const MAX_TIERS = MAX_LEVELS / LEVELS_PER_TIER;
@@ -1414,6 +1462,10 @@ const MAX_LOCK_RANGE = 68.0;
 const CELL_WALL = 1;
 const CELL_FLOOR = 0;
 const CELL_RUNWAY = 2;
+
+const SPEED_MIN = 7.5;    // throttle lever fully down
+const SPEED_MAX = 30.0;   // throttle lever fully up
+const CRUISE_THROTTLE = (16.0 - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
 
 const SPEED_MODES = {
   1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, badgeClass: 'tier-1' },
@@ -2344,6 +2396,8 @@ class NikitaGame {
     this.spawnPos = new THREE.Vector3();
 
     this.ammo = MAX_SALVO;
+    this.fired = 0;
+    this.resetRewards();
     this.targets = [];
     this.barrels = [];
     this.sentries = [];
@@ -2369,6 +2423,7 @@ class NikitaGame {
       roll: 0,
       yawRate: 0,
       pitchRate: 0,
+      throttle: CRUISE_THROTTLE,
       baseSpeedMode: 2,
       activeSpeedMode: 2,
       currentSpeed: 16.0,
@@ -3285,6 +3340,8 @@ class NikitaGame {
     this.alertsTriggered = 0;
     this.sentriesNeutralized = 0;
     this.missionTime = 0;
+    this.fired = 0;
+    this.resetRewards();
     this.syncSentryInstances();
     this.syncBarrelInstances();
     this.updateHUDText();
@@ -3477,6 +3534,69 @@ class NikitaGame {
     });
   }
 
+  /* ------------------------------------------------------------------------
+     ROCKET REWARD SYSTEM
+     ------------------------------------------------------------------------ */
+  resetRewards() {
+    this.rewards = { total: 0, log: {}, flags: {}, pending: {} };
+    this._blastHostiles = 0;
+  }
+
+  // Queue a reward; flushRewards() banks it and prints one aggregated feed line.
+  awardRockets(n, label, key) {
+    if (n <= 0 || this.state === 'BRIEFING' || this.state === 'FAILED') return;
+    const r = this.rewards;
+    const e = r.pending[label] || (r.pending[label] = { n: 0, count: 0, key });
+    e.n += n;
+    e.count++;
+  }
+
+  flushRewards() {
+    const r = this.rewards;
+    const labels = Object.keys(r.pending);
+    if (labels.length === 0) return;
+    let asked = 0;
+    const parts = [];
+    for (const lb of labels) {
+      const e = r.pending[lb];
+      asked += e.n;
+      parts.push(e.count > 1 ? `${e.count}× ${lb}` : lb);
+      r.log[e.key] = (r.log[e.key] || 0) + e.n;
+    }
+    r.pending = {};
+    const room = Math.max(0, MAX_ROCKETS - this.ammo);
+    const added = Math.min(asked, room);
+    this.ammo += added;
+    r.total += added;
+    if (added > 0) {
+      this.pushFeed(`+${added} ROCKETS — ${parts.join(' · ')}`, 'cyan');
+      this.audio.playTargetChime();
+      this.popAmmoHUD();
+    } else {
+      this.pushFeed(`ROCKET RACK FULL (${MAX_ROCKETS}) — REWARD WASTED`, 'amber');
+    }
+    this.updateHUDText();
+  }
+
+  popAmmoHUD() {
+    const el = document.getElementById('hud-ammo');
+    if (!el) return;
+    el.classList.remove('reward-pop');
+    void el.offsetWidth;
+    el.classList.add('reward-pop');
+  }
+
+  // Called once per kill / shutdown. `isDone()` tells whether the whole category is now cleared.
+  rewardKill(key, list, isDone, isLiveHostile = false) {
+    const def = REWARDS[key];
+    this.awardRockets(def.each, def.label, key);
+    if (isLiveHostile) this._blastHostiles++;
+    if (list.length > 0 && !this.rewards.flags[key] && list.every(isDone)) {
+      this.rewards.flags[key] = true;
+      this.awardRockets(def.all, def.allLabel, key);
+    }
+  }
+
   disableLaserGrid(laser, notify = true) {
     if (laser.disabled) return;
     laser.disabled = true;
@@ -3492,6 +3612,7 @@ class NikitaGame {
     this.vfx.spawnLightFlash(laser.relayPos, 0xffaa33, 6, 0.14);
     this.audio.playLaserDown();
     if (notify) this.pushFeed('LASER RELAY DESTROYED — GRID OFFLINE', 'cyan');
+    this.rewardKill('laser', this.lasers, (x) => x.disabled);
   }
 
   spawnEcmZone(x, z, radius) {
@@ -3570,6 +3691,31 @@ class NikitaGame {
   /* ------------------------------------------------------------------------
      LAUNCH / SALVO MANAGEMENT
      ------------------------------------------------------------------------ */
+  // A fresh sector waits on the pad: the player sets the throttle, then taps FIRE.
+  enterReady() {
+    const m = this.missile;
+    m.active = false;
+    m.pos.copy(this.spawnPos);
+    m.yaw = 0; m.pitch = 0; m.roll = 0;
+    this.missileGroup.visible = false;
+    this.resetOverlays();
+    this.state = 'READY';
+    this.resetTether(m.pos);
+    this.updateSpeedBadgeUI();
+    this.updateHUDText();
+    document.getElementById('fire-btn').style.display = 'block';
+    this.updateTouchControlsVisibility();
+    this.pushFeed('NIKITA ARMED — SET SPEED, THEN PRESS FIRE', 'cyan');
+  }
+
+  fireRocket() {
+    if (this.state !== 'READY' || this.paused) return;
+    this.audio.unlock();
+    this.vibrate(20);
+    this.launchNextMissile();
+    this.updateTouchControlsVisibility();
+  }
+
   launchNextMissile() {
     if (this.targets.length > 0 && !this.targets.some(t => t.active)) {
       document.getElementById('killcam-banner').style.display = 'none';
@@ -3577,11 +3723,13 @@ class NikitaGame {
       return;
     }
     this.resetOverlays();
+    document.getElementById('fire-btn').style.display = 'none';
     if (this.ammo <= 0) {
-      this.triggerMissionFailed(`All ${MAX_SALVO} Nikita rockets expended before primary objectives were neutralized.`);
+      this.triggerMissionFailed(`All Nikita rockets expended before primary objectives were neutralized.`);
       return;
     }
     const m = this.missile;
+    this.fired++;
     m.active = true;
     m.pos.copy(this.spawnPos);
     m.yaw = 0;
@@ -3595,9 +3743,9 @@ class NikitaGame {
     this.homingLocked = false;
     this.manualTargetLock = false;
     this.lastHighlightedRef = null;
-    m.baseSpeedMode = 2;
-    m.activeSpeedMode = 2;
-    m.currentSpeed = SPEED_MODES[2].speed;
+    m.baseSpeedMode = this.modeForThrottle(m.throttle);
+    m.activeSpeedMode = m.baseSpeedMode;
+    m.currentSpeed = this.throttleSpeed(m.throttle);
     m.vel.set(0, 0, -m.currentSpeed);
     m.fuel = 100;
     m.boost = 100;
@@ -3613,7 +3761,7 @@ class NikitaGame {
     this.state = 'PLAYING';
     this.updateSpeedBadgeUI();
     this.updateHUDText();
-    this.pushFeed(`NIKITA #${MAX_SALVO - this.ammo + 1} LAUNCHED — WIRE LINK ACTIVE`, 'cyan');
+    this.pushFeed(`NIKITA #${this.fired} LAUNCHED — WIRE LINK ACTIVE`, 'cyan');
   }
 
   /* ------------------------------------------------------------------------
@@ -3702,6 +3850,7 @@ class NikitaGame {
     const camDist = this.camera.position.distanceTo(epicenter);
     const atten = Math.max(0.25, 1.0 - camDist / 48);
     this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.72 * power * atten);
+    this._blastHostiles = 0;
 
     for (const t of this.targets) {
       if (!t.active) continue;
@@ -3712,6 +3861,8 @@ class NikitaGame {
         this.vfx.spawnExplosion(t.pos, 10.5, 1.65);
         this.audio.playTargetChime();
         this.pushFeed(`PRIMARY TARGET DESTROYED: ${t.name}`, 'amber');
+        this.rewardKill('target', this.targets, (x) => !x.active, true);
+        if (t === directTarget) this.awardRockets(REWARD_BONUS.directHit, 'DIRECT HIT', 'bonus');
       }
     }
 
@@ -3729,6 +3880,7 @@ class NikitaGame {
       const d = b.pos.distanceTo(epicenter);
       if (d <= radius + 1.2 && this.hasLineOfSight(epicenter.x, epicenter.z, b.pos.x, b.pos.z)) {
         b.active = false;
+        this.rewardKill('barrel', this.barrels, (x) => !x.active);
         this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: 9.2, power: 1.4, label: 'FUEL BARREL CHAIN REACTION' });
       }
     }
@@ -3738,6 +3890,7 @@ class NikitaGame {
       if (g.pos.distanceTo(epicenter) <= radius + 1.5) {
         g.active = false;
         g.mesh.visible = false;
+        this.rewardKill('grate', this.grates, (x) => !x.active);
         this.vfx.spawnScrapeSparks(g.pos, _up, 18);
         this.pushFeed('VENTILATION GRATE BREACHED', 'cyan');
       }
@@ -3756,8 +3909,14 @@ class NikitaGame {
         tu.active = false;
         tu.mesh.visible = false;
         this.pushFeed('CIWS TURRET DESTROYED', 'cyan');
+        this.rewardKill('turret', this.turrets, (x) => !x.active, true);
       }
     }
+
+    if (this._blastHostiles >= 5) this.awardRockets(REWARD_BONUS.combo5, `${this._blastHostiles}-KILL BLAST`, 'bonus');
+    else if (this._blastHostiles >= 3) this.awardRockets(REWARD_BONUS.combo3, `${this._blastHostiles}-KILL BLAST`, 'bonus');
+    this._blastHostiles = 0;
+    this.flushRewards();
 
     this.syncBarrelInstances();
     this.updateHUDText();
@@ -3776,6 +3935,7 @@ class NikitaGame {
     sentry.angVel.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 10);
     this.sentriesNeutralized++;
     this.pushFeed('SENTRY NEUTRALIZED', 'cyan');
+    this.rewardKill('sentry', this.sentries, (x) => !x.active, true);
     this.updateHUDText();
   }
 
@@ -4124,7 +4284,7 @@ class NikitaGame {
       if (m.boost <= 0) {
         m.boost = 0;
         m.boostDepleted = true;
-        if (m.baseSpeedMode === 3) m.baseSpeedMode = 2;
+        if (m.baseSpeedMode === 3) this.setThrottle(CRUISE_THROTTLE);
         this.pushFeed('BOOST EMPTY — RECHARGING TO 100%', 'red');
       }
     } else {
@@ -4278,7 +4438,10 @@ class NikitaGame {
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     _v1.copy(_fwd).applyEuler(_e1).normalize();
 
-    const targetSpeed = hasFuel ? (profile.speed * this.cfg.speedMult) : 9.5;
+    let leverSpeed = this.throttleSpeed(m.throttle);
+    if (holdBoost) leverSpeed = SPEED_MAX;
+    else if (holdCrawl) leverSpeed = SPEED_MIN;
+    const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
     m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
 
     _v2.copy(_v1).multiplyScalar(m.currentSpeed);
@@ -4333,6 +4496,8 @@ class NikitaGame {
               Math.abs(_v3.z - g.pos.z) < g.halfZ + MISSILE_RADIUS) {
             g.active = false;
             g.mesh.visible = false;
+            this.rewardKill('grate', this.grates, (x) => !x.active);
+            this.flushRewards();
             this.vfx.spawnScrapeSparks(_v3, _v1, 16);
             this.audio.playScrape();
             m.hull -= 24;
@@ -4347,6 +4512,7 @@ class NikitaGame {
 
           if (l.relayActive && _v3.distanceTo(l.relayPos) < 0.72 + MISSILE_RADIUS) {
             this.disableLaserGrid(l, true);
+            this.flushRewards();
             this.audio.playScrape();
             m.hull = Math.max(0, m.hull - 10);
             if (m.hull <= 0) { this.detonateMissile(_v3, 'HULL BREACHED ON LASER RELAY'); return; }
@@ -4742,6 +4908,14 @@ class NikitaGame {
       this.camera.lookAt(this.killCamTarget);
       this.camera.fov += (65 - this.camera.fov) * Math.min(1, dt * 6);
       this.camera.updateProjectionMatrix();
+      return;
+    }
+
+    if (this.state === 'READY') {
+      this.camera.fov += (SPEED_MODES[m.baseSpeedMode].fov - this.camera.fov) * Math.min(1, dt * 7.5);
+      this.camera.updateProjectionMatrix();
+      this.camera.position.copy(this.spawnPos);
+      this.camera.rotation.set(0, 0, 0, 'YXZ');
       return;
     }
 
@@ -5174,12 +5348,17 @@ class NikitaGame {
      ------------------------------------------------------------------------ */
   triggerSectorClear() {
     this.state = 'CLEAR';
-    const used = MAX_SALVO - this.ammo;
+    const used = this.fired;
     const tCount = this.targets.length;
     let rank = 'PANTHER';
     if (used <= tCount + 1 && this.alertsTriggered === 0) rank = 'FOXHOUND';
     else if (used <= tCount + 4 && this.alertsTriggered <= 3) rank = 'HOUND';
     else if (used <= Math.min(30, tCount * 2 + 8)) rank = 'DOBERMAN';
+
+    // End-of-sector rocket rewards (carried into the next sector, up to MAX_ROCKETS)
+    this.awardRockets(REWARD_BONUS.rank[rank], `RANK ${rank}`, 'bonus');
+    if (this.alertsTriggered === 0) this.awardRockets(REWARD_BONUS.stealth, 'GHOST — NO ALERTS', 'bonus');
+    this.flushRewards();
 
     const isFinal = this.level >= MAX_LEVELS;
     document.getElementById('clear-title').textContent = isFinal ? 'CAMPAIGN COMPLETE' : 'SECTOR CLEAR';
@@ -5188,7 +5367,12 @@ class NikitaGame {
       : `SECTOR ${String(this.level).padStart(2, '0')} / ${MAX_LEVELS} NEUTRALIZED`;
     document.getElementById('btn-next-sector').textContent = isFinal ? 'NEW CAMPAIGN (SECTOR 01)' : 'DEPLOY NEXT SECTOR';
     document.getElementById('clear-rank').textContent = rank;
-    document.getElementById('res-missiles').textContent = `${used} / ${MAX_SALVO}`;
+    document.getElementById('res-missiles').textContent = `${used} FIRED`;
+    document.getElementById('res-rewards').textContent = `+${this.rewards.total}`;
+    const lg = this.rewards.log;
+    const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', barrel: 'BARRELS', grate: 'GRATES', bonus: 'BONUSES' };
+    const detail = Object.keys(names).filter((k) => lg[k]).map((k) => `${names[k]} +${lg[k]}`).join(' · ');
+    document.getElementById('res-rewards-detail').textContent = (detail || 'NO REWARDS EARNED') + `  |  RACK: ${this.ammo} / ${MAX_ROCKETS} (CARRIES OVER)`;
     document.getElementById('res-alerts').textContent = String(this.alertsTriggered);
     document.getElementById('res-sentries').textContent = `${this.sentriesNeutralized} / ${this.sentries.length}`;
     document.getElementById('res-time').textContent = `${this.missionTime.toFixed(1)}s`;
@@ -5211,10 +5395,34 @@ class NikitaGame {
     const p = SPEED_MODES[mode];
     badge.textContent = p.name;
     badge.className = p.badgeClass;
-    const base = this.missile.baseSpeedMode;
-    document.querySelectorAll('.speed-notch').forEach((n) => {
-      n.classList.toggle('on', parseInt(n.dataset.mode, 10) === base);
-    });
+    const pct = Math.round(this.missile.throttle * 100);
+    const fill = document.getElementById('thr-fill');
+    const thumb = document.getElementById('thr-thumb');
+    const readout = document.getElementById('thr-readout');
+    if (fill) fill.style.height = `${pct}%`;
+    if (thumb) thumb.style.bottom = `calc(${pct}% - 8px)`;
+    if (readout) readout.textContent = `${this.throttleSpeed(this.missile.throttle).toFixed(0)} m/s`;
+  }
+
+  throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (SPEED_MAX - SPEED_MIN); }
+
+  modeForThrottle(t) { return t < 0.2 ? 1 : (t > 0.8 ? 3 : 2); }
+
+  // Analog throttle: 0 = minimum speed, 1 = maximum. Mode (for FOV / fuel / boost drain) follows the lever.
+  setThrottle(t) {
+    const m = this.missile;
+    t = Math.max(0, Math.min(1, t));
+    if (t > 0.8 && m.boostDepleted && !this.cfg.infBoost) {
+      if (m.throttle <= 0.8) this.pushFeed('BOOST RECHARGING — OVERDRIVE LOCKED', 'red');
+      t = Math.min(t, 0.8);
+    }
+    m.throttle = t;
+    const mode = this.modeForThrottle(t);
+    if (mode !== m.baseSpeedMode) {
+      m.baseSpeedMode = mode;
+      if (this.state === 'PLAYING') this.audio.playSpeedShift(mode);
+    }
+    this.updateSpeedBadgeUI();
   }
 
   vibrate(ms = 14) {
@@ -5268,7 +5476,7 @@ class NikitaGame {
     const tc = document.getElementById('touch-controls');
     if (!tc) return;
     const show = (this.isTouchDevice || window.innerWidth <= 920) &&
-                 (this.state === 'PLAYING' || this.state === 'RESPAWNING') &&
+                 (this.state === 'PLAYING' || this.state === 'RESPAWNING' || this.state === 'READY') &&
                  !this.paused && !this.portraitBlocked;
     tc.style.display = show ? 'block' : 'none';
   }
@@ -5288,7 +5496,7 @@ class NikitaGame {
   updateHUDText() {
     document.getElementById('hud-sector').textContent = `${String(this.level).padStart(2, '0')} / ${MAX_LEVELS}`;
     document.getElementById('hud-tier').textContent = `TIER ${String(this.difficultyTier).padStart(2, '0')} / ${MAX_TIERS}`;
-    document.getElementById('hud-ammo').textContent = `${this.ammo} / ${MAX_SALVO}`;
+    document.getElementById('hud-ammo').textContent = `${this.ammo} / ${MAX_ROCKETS}`;
     const remT = this.targets.filter(t => t.active).length;
     document.getElementById('hud-targets').textContent = `${remT} / ${this.targets.length}`;
     const remS = this.sentries.filter(s => s.active).length;
@@ -5488,25 +5696,41 @@ class NikitaGame {
       if (this.overrideOpen) this.setPaused(false);
     });
 
-    // Speed Level Up / Down Stepper
+    document.getElementById('fire-btn').addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      this.fireRocket();
+    });
+
+    // Analog throttle lever (touch): drag anywhere on the track, bottom = min speed, top = max speed
     const stepSpeed = (delta) => {
       this.audio.unlock();
-      this.vibrate(12);
-      const cur = this.missile.baseSpeedMode;
-      let next = Math.max(1, Math.min(3, cur + delta));
-      if (next === 3 && this.missile.boostDepleted && !this.cfg.infBoost) {
-        next = 2;
-        this.pushFeed('BOOST RECHARGING — OVERDRIVE LOCKED', 'red');
-      }
-      this.setBaseSpeedMode(next);
-      this.updateSpeedBadgeUI();
+      this.setThrottle(this.missile.throttle + delta * 0.1);
     };
-    document.querySelectorAll('.speed-notch').forEach((btn) => {
-      btn.addEventListener('pointerdown', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        stepSpeed(parseInt(btn.dataset.mode, 10) - this.missile.baseSpeedMode);
-      });
+    this.stepSpeed = stepSpeed;
+    const lever = document.getElementById('throttle-lever');
+    const thrTrack = document.getElementById('thr-track');
+    let leverPid = null;
+    const leverFromEvent = (e) => {
+      const r = thrTrack.getBoundingClientRect();
+      this.setThrottle(1 - (e.clientY - r.top) / r.height);
+    };
+    lever.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      this.audio.unlock();
+      leverPid = e.pointerId;
+      try { lever.setPointerCapture(e.pointerId); } catch (_) {}
+      this.vibrate(8);
+      leverFromEvent(e);
     });
+    lever.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== leverPid) return;
+      e.preventDefault();
+      leverFromEvent(e);
+    });
+    const endLever = (e) => { if (e.pointerId === leverPid) leverPid = null; };
+    lever.addEventListener('pointerup', endLever);
+    lever.addEventListener('pointercancel', endLever);
+    lever.addEventListener('lostpointercapture', endLever);
 
     // Floating Virtual Analog Flight Stick (Entire Left Half of Screen)
     const leftZone = document.getElementById('left-flight-zone');
@@ -5731,9 +5955,9 @@ class NikitaGame {
         this.overrideOpen = !this.overrideOpen;
         document.getElementById('override-drawer').style.display = this.overrideOpen ? 'block' : 'none';
       }
-      if (e.code === 'Digit1') { this.setBaseSpeedMode(1); this.updateSpeedBadgeUI(); }
-      if (e.code === 'Digit2') { this.setBaseSpeedMode(2); this.updateSpeedBadgeUI(); }
-      if (e.code === 'Digit3') { this.setBaseSpeedMode(3); this.updateSpeedBadgeUI(); }
+      if (e.code === 'Digit1') this.setThrottle(0);
+      if (e.code === 'Digit2') this.setThrottle(CRUISE_THROTTLE);
+      if (e.code === 'Digit3') this.setThrottle(1);
       if (e.code === 'Minus' || e.code === 'BracketLeft') stepSpeed(-1);
       if (e.code === 'Equal' || e.code === 'BracketRight') stepSpeed(1);
 
@@ -5742,6 +5966,10 @@ class NikitaGame {
       }
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
+      }
+      if ((e.code === 'Enter' || e.code === 'Space') && this.state === 'READY') {
+        e.preventDefault();
+        this.fireRocket();
       }
       if (e.code === 'KeyR') {
         if (this.state === 'PLAYING' && this.missile.active) {
@@ -5821,7 +6049,7 @@ class NikitaGame {
     document.getElementById('btn-next-sector').addEventListener('click', () => {
       this.requestGameFullscreen();
       const nextLvl = this.level >= MAX_LEVELS ? 1 : this.level + 1;
-      this.startSector(nextLvl, this.generateRandomSeed());
+      this.startSector(nextLvl, this.generateRandomSeed(), this.level < MAX_LEVELS);
     });
     document.getElementById('btn-replay-sector').addEventListener('click', () => {
       this.requestGameFullscreen();
@@ -5974,10 +6202,7 @@ class NikitaGame {
   }
 
   setBaseSpeedMode(mode) {
-    if (this.missile.baseSpeedMode !== mode) {
-      this.missile.baseSpeedMode = mode;
-      if (this.state === 'PLAYING') this.audio.playSpeedShift(mode);
-    }
+    this.setThrottle(mode === 1 ? 0 : (mode === 3 ? 1 : CRUISE_THROTTLE));
   }
 
   toggleCameraMode() {
@@ -5985,7 +6210,7 @@ class NikitaGame {
     document.getElementById('cam-mode-badge').textContent = this.camMode === 'FPV' ? 'NOSE-CAM FPV' : 'TACTICAL CHASE-CAM';
   }
 
-  startSector(lvl, seed) {
+  startSector(lvl, seed, carryOver = false) {
     document.getElementById('clear-modal').style.display = 'none';
     document.getElementById('fail-modal').style.display = 'none';
     document.getElementById('killcam-banner').style.display = 'none';
@@ -5993,7 +6218,8 @@ class NikitaGame {
     document.getElementById('pause-modal').style.display = 'none';
     document.getElementById('hud-layer').style.display = 'block';
     this.paused = false;
-    this.ammo = MAX_SALVO;
+    // Advancing from a cleared sector keeps any rockets above the standard salvo (cap MAX_ROCKETS).
+    this.ammo = carryOver ? Math.min(MAX_ROCKETS, Math.max(MAX_SALVO, this.ammo)) : MAX_SALVO;
     this.radarOpen = true;
     document.getElementById('radar-container').style.display = 'block';
     document.getElementById('btn-hud-radar').classList.add('active');
@@ -6004,7 +6230,7 @@ class NikitaGame {
     if (ovSeedEl) ovSeedEl.value = activeSeed;
     this.resetAllInputs();
     this.generateLevel(lvl, activeSeed);
-    this.launchNextMissile();
+    this.enterReady();
     this.updateTouchControlsVisibility();
     if (this.difficultyTier > (this.lastStartedTier || 1)) {
       this.pushFeed(`DIFFICULTY UPGRADED — SECURITY TIER ${String(this.difficultyTier).padStart(2, '0')}`, 'red');
