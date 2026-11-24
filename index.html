@@ -1037,6 +1037,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
 #tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
 #tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
+#tbtn-flip    { width: 58px; height: 58px; right: 92px;  bottom: 126px; font-size: 9px; border-color: rgba(255, 170, 0, 0.85); color: var(--hud-amber); }
 #tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
@@ -1055,6 +1056,7 @@ body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
 body.lefty #tbtn-decoy { left: 92px; }
+body.lefty #tbtn-flip { left: 92px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
@@ -1201,6 +1203,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-cam">CAM<br/>VIEW</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
+    <button class="touch-act-btn" id="tbtn-flip">FLIP &amp;<br/>BURN</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
 </div>
@@ -1459,9 +1462,11 @@ const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
 const HEAR_WALL_DAMP = 0.65;
-const LAUNCH_DROP_TIME = 0.65;         // seconds the rocket falls with cold thrusters after launch
+const LAUNCH_DROP_TIME = 0.3;          // seconds the rocket falls with cold thrusters after launch
 const LAUNCH_DROP_SPEED = 3.0;         // launch momentum before ignition
 const LAUNCH_GRAVITY = 9.0;
+const FLIP_TIME = 0.5;                 // flip-and-burn: seconds for the 180 degree backflip (thrusters cut)
+const BURN_TIME = 1.2;                 // after the flip the engine burns hard to reverse course
 const AIM_YAW_RATE = 1.1;              // rad/s of launch-angle adjustment at full stick
 const AIM_PITCH_RATE = 0.9;
 const AIM_PITCH_LIMIT = 1.2;           // about 69 degrees up or down
@@ -2505,6 +2510,11 @@ class NikitaGame {
       yawRate: 0,
       pitchRate: 0,
       drop: 0,
+      flipping: false,
+      flipUsed: false,
+      flipT: 0,
+      flipStart: 0,
+      burnT: 0,
       throttle: CRUISE_THROTTLE,
       effThrottle: CRUISE_THROTTLE,
       baseSpeedMode: 2,
@@ -4116,6 +4126,8 @@ class NikitaGame {
     m.active = false;
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
+    m.flipping = false; m.flipUsed = false; m.burnT = 0;
+    this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
     this.resetOverlays();
@@ -4130,6 +4142,29 @@ class NikitaGame {
     this.updateTouchControlsVisibility();
     if (first && this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
     this.pushFeed(first ? 'NIKITA ARMED — AIM WITH THE STICK, THEN PRESS FIRE' : `ROCKET READY (${this.ammo} LEFT) — AIM, THEN PRESS FIRE`, 'cyan');
+  }
+
+  updateFlipButton() {
+    const b = document.getElementById('tbtn-flip');
+    if (!b) return;
+    const used = this.missile.flipUsed;
+    b.innerHTML = used ? 'FLIP<br/>USED' : 'FLIP &amp;<br/>BURN';
+    b.style.opacity = used ? '0.4' : '';
+  }
+
+  // Flip and burn: two small attitude jets backflip the rocket 180 degrees (thrusters cut, momentum kept),
+  // then the main engine burns hard in the new direction to reverse course. Once per rocket.
+  startFlip() {
+    const m = this.missile;
+    if (this.state !== 'PLAYING' || !m.active || this.paused || m.flipUsed || m.flipping || m.drop > 0) return;
+    m.flipping = true;
+    m.flipUsed = true;
+    m.flipT = 0;
+    m.flipStart = m.pitch;
+    this.audio.playSpeedShift(1);
+    this.vibrate(18);
+    this.pushFeed('FLIP & BURN — ATTITUDE JETS FIRING', 'amber');
+    this.updateFlipButton();
   }
 
   // While waiting on the pad the stick / keys / mouse / gyro adjust the launch angle.
@@ -4204,6 +4239,8 @@ class NikitaGame {
     // launched with cold thrusters: coast along the aim and fall for a moment before ignition
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
+    m.flipping = false; m.flipUsed = false; m.burnT = 0;
+    this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
     m.fuel = 100;
@@ -4890,7 +4927,7 @@ class NikitaGame {
       pitchInput += (Math.random() - 0.5) * 0.32;
     }
 
-    if (m.drop > 0) { yawInput = 0; pitchInput = 0; mouseYaw = 0; mousePitch = 0; }
+    if (m.drop > 0 || m.flipping) { yawInput = 0; pitchInput = 0; mouseYaw = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
     const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost;
     const targetYawRate = yawInput * agility;
@@ -4905,6 +4942,36 @@ class NikitaGame {
 
     if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked && Math.abs(m.pitch) < 1.2) {
       m.pitch += (0 - m.pitch) * Math.min(1, dt * 1.85);
+    }
+
+    if (m.flipping) {
+      m.flipT += dt;
+      const k = Math.min(1, m.flipT / FLIP_TIME);
+      const e = k * k * (3 - 2 * k);
+      m.pitch = wrapPi(m.flipStart + Math.PI * e);
+      m.pitchRate = 0;
+      m.yawRate *= 0.85;
+      // the two attitude jets: nose jet pushes the nose up (exhaust points up), tail jet the opposite
+      if (k < 0.75) {
+        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+        _v4.copy(_fwd).applyEuler(_e1);                 // rocket forward
+        _v5.set(0, 1, 0).applyEuler(_e1);               // rocket up
+        _v6.copy(m.pos).addScaledVector(_v4, 0.95);
+        _v7.copy(_v5).multiplyScalar(7).add(m.vel);
+        this.vfx.spawnSpark(_v6, _v7, 0.2, 0x9fe8ff, 0.6, 0);
+        _v6.copy(m.pos).addScaledVector(_v4, -0.95);
+        _v7.copy(_v5).multiplyScalar(-7).add(m.vel);
+        this.vfx.spawnSpark(_v6, _v7, 0.2, 0x9fe8ff, 0.6, 0);
+      }
+      if (k >= 1) {
+        m.flipping = false;
+        m.burnT = BURN_TIME;
+        this.vfx.spawnRing(m.pos, 3.0, 0.26, 0x33eeff, m.pitch, 0);
+        this.vfx.spawnLightFlash(m.pos, 0x33eeff, 12, 0.24);
+        this.audio.playSpeedShift(3);
+        this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.35);
+        this.pushFeed('BURN — REVERSING COURSE', 'cyan');
+      }
     }
 
     const bankDrive = Math.max(-1, Math.min(1, (m.yawRate / Math.max(0.5, agility)) + mouseYaw * 16));
@@ -4927,6 +4994,8 @@ class NikitaGame {
         this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.3);
         this.pushFeed('THRUSTERS ENGAGED', 'amber');
       }
+    } else if (m.flipping) {
+      m.vel.multiplyScalar(Math.max(0, 1 - 0.35 * dt));      // tumbling with cold engine: coast with slight drag
     } else {
       const leverSpeed = this.throttleSpeed(effT);
       const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
@@ -4936,7 +5005,8 @@ class NikitaGame {
       const gravDrop = hasFuel ? 0.35 : 7.5;
       _v2.y -= gravDrop * dt * (hasFuel ? 3.0 : 12.0);
 
-      const inertia = profile.inertia;
+      let inertia = profile.inertia;
+      if (m.burnT > 0) { m.burnT -= dt; inertia *= 2.6; m.currentSpeed = Math.max(m.currentSpeed, 14); }
       m.vel.lerp(_v2, Math.min(1, dt * inertia));
     }
 
@@ -5121,7 +5191,7 @@ class NikitaGame {
 
     this.thrusterMat.color.setHex(profile.exhaustColor);
     const flicker = 0.8 + Math.random() * 0.45;
-    const engineOn = hasFuel && m.drop <= 0;
+    const engineOn = hasFuel && m.drop <= 0 && !m.flipping;
     const plScaleXZ = engineOn ? profile.plumeXZ : 0.01;
     const plScaleY  = engineOn ? profile.plumeY * flicker : 0.01;
     this.thrusterCone.scale.set(plScaleXZ, plScaleY, plScaleXZ);
@@ -6119,7 +6189,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-cam', 'tbtn-decoy', 'tbtn-detonate'].forEach(id => {
+    ['tbtn-lock', 'tbtn-cam', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -6500,6 +6570,18 @@ class NikitaGame {
       btnLock.addEventListener('pointercancel', clearLockPress);
     }
 
+    const btnFlip = document.getElementById('tbtn-flip');
+    btnFlip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.audio.unlock();
+      btnFlip.classList.add('pressed');
+      this.startFlip();
+    });
+    const clearFlipPress = () => btnFlip.classList.remove('pressed');
+    btnFlip.addEventListener('pointerup', clearFlipPress);
+    btnFlip.addEventListener('pointercancel', clearFlipPress);
+
     const btnDecoy = document.getElementById('tbtn-decoy');
     btnDecoy.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -6600,6 +6682,7 @@ class NikitaGame {
       if (e.code === 'Equal' || e.code === 'BracketRight') stepSpeed(1);
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
+      if (e.code === 'KeyX' && this.state === 'PLAYING') this.startFlip();
       if (e.code === 'KeyE' && this.state === 'PLAYING') {
         this.toggleCameraMode();
       }
