@@ -17,15 +17,14 @@ Use landscape. On iPhone, tap Share, then Add to Home Screen for a full-screen e
 | Left half (drag) | Floating flight stick (pitch and yaw) |
 | Right half (drag) | Fine aim |
 | LOCK | Lock the target highlighted in the 15 degree seeker cone |
-| BOOST (hold) | Overdrive; recharges to 100% after emptying |
-| AIR BRAKE (hold) | Stealth crawl |
 | HOLD DET (hold 0.3 s) | Manual warhead detonation |
 | CAM | Nose-cam or chase-cam |
-| 1 / 2 / 3 strip | Crawl, cruise, overdrive |
+| Speed lever (screen edge) | Analog throttle from minimum to maximum speed. Above cruise it drains the boost capacitor, which recharges below cruise |
+| FIRE | Launches the rocket at the start of a sector |
 | MENU | Pause sheet: gyro, invert pitch, haptics, low-spec mode, left-handed layout, button size and opacity, radar, sound |
 | Radar (tap) | Enlarge or shrink the minimap |
 
-Desktop: click to capture the mouse, `WASD` or arrows steer, `L` lock, `Shift`/`Space` boost, `Ctrl` brake, `E` camera, `R` detonate, `1-3` speed, `Tab` radar, `~` developer overrides.
+Desktop: click to capture the mouse, `WASD` or arrows steer, `L` lock, `Shift`/`Space` boost, `Ctrl` brake, `Enter`/`Space` fire, `[` `]` fine throttle, `E` camera, `R` detonate, `1-3` speed, `Tab` radar, `~` developer overrides.
 
 ## Notes
 

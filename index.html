@@ -613,15 +613,6 @@
     color: #ffffff;
     box-shadow: 0 0 22px rgba(255, 40, 60, 0.75);
   }
-  #tbtn-boost {
-    border-color: var(--hud-cyan);
-    color: var(--hud-cyan);
-    box-shadow: 0 0 14px rgba(0, 229, 255, 0.24);
-  }
-  #tbtn-boost.pressed {
-    background: rgba(0, 229, 255, 0.36);
-    box-shadow: 0 0 22px rgba(0, 229, 255, 0.7);
-  }
   #tbtn-detonate {
     border-color: var(--hud-red);
     color: #ff6675;
@@ -631,14 +622,6 @@
     background: rgba(255, 51, 68, 0.42);
     color: #fff;
   }
-  #tbtn-crawl {
-    border-color: var(--hud-amber);
-    color: var(--hud-amber);
-  }
-  #tbtn-crawl.pressed {
-    background: rgba(255, 170, 0, 0.36);
-  }
-
   /* Modals (Briefing / Pause / Clear / Failed) */
   .modal-backdrop {
     position: fixed;
@@ -1009,13 +992,13 @@
 
 /* Analog throttle lever: side of the screen, bottom = minimum speed, top = maximum */
 #throttle-lever {
-  position: absolute; left: var(--safe-l); bottom: var(--safe-b);
+  position: absolute; right: var(--safe-r); bottom: var(--safe-b);
   width: 54px; height: min(52vh, 210px);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   pointer-events: auto; touch-action: none; z-index: 4; opacity: var(--btn-opacity);
   user-select: none; -webkit-user-select: none;
 }
-body.lefty #throttle-lever { left: auto; right: var(--safe-r); }
+body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 .thr-label { font: bold 9px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-green); pointer-events: none; }
 .thr-max { color: var(--hud-cyan); }
 .thr-min { color: var(--hud-amber); }
@@ -1037,17 +1020,15 @@ body.lefty #throttle-lever { left: auto; right: var(--safe-r); }
 
 /* Right-thumb action arc (container ignores touches so gaps still aim) */
 #touch-actions {
-  position: absolute; right: var(--safe-r); bottom: var(--safe-b);
-  width: 240px; height: 170px; display: block; grid-template-columns: none; grid-template-rows: none;
+  position: absolute; right: calc(var(--safe-r) + 68px); bottom: var(--safe-b);
+  width: 150px; height: 180px; display: block; grid-template-columns: none; grid-template-rows: none;
   pointer-events: none; opacity: var(--btn-opacity);
   transform: scale(var(--btn-scale)); transform-origin: bottom right;
 }
 #touch-actions .touch-act-btn { position: absolute; pointer-events: auto; }
 #tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
 #tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
-#tbtn-boost   { width: 64px; height: 64px; right: 98px;  bottom: 0;     }
-#tbtn-crawl   { width: 54px; height: 54px; right: 102px; bottom: 72px;  }
-#tbtn-cam     { width: 44px; height: 44px; right: 172px; bottom: 8px;   font-size: 8px; }
+#tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1060,12 +1041,10 @@ body.lefty #throttle-lever { left: auto; right: var(--safe-r); }
 /* Left-handed mirror */
 body.lefty #left-flight-zone { left: 50%; }
 body.lefty #right-aim-zone { right: auto; left: 0; }
-body.lefty #touch-actions { right: auto; left: var(--safe-l); transform-origin: bottom left; }
+body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 68px); transform-origin: bottom left; }
 body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
-body.lefty #tbtn-boost { left: 98px; }
-body.lefty #tbtn-crawl { left: 102px; }
-body.lefty #tbtn-cam { left: 172px; }
+body.lefty #tbtn-cam { left: 96px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
@@ -1197,8 +1176,6 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-cam">CAM<br/>VIEW</button>
-    <button class="touch-act-btn" id="tbtn-boost">BOOST<br/>OVER</button>
-    <button class="touch-act-btn" id="tbtn-crawl">AIR<br/>BRAKE</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
 </div>
@@ -1468,9 +1445,9 @@ const SPEED_MAX = 30.0;   // throttle lever fully up
 const CRUISE_THROTTLE = (16.0 - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
 
 const SPEED_MODES = {
-  1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, badgeClass: 'tier-1' },
-  2: { name: '[2] CRUISE',    speed: 16.0, fov: 75, turnMult: 1.00, fuelRate: 1.00, detectMult: 1.00, exhaustColor: 0xff6611, exhaustScale: 0.36, exhaustCadence: 0.028, badgeClass: 'tier-2' },
-  3: { name: '[3] OVERDRIVE', speed: 30.0, fov: 92, turnMult: 0.64, fuelRate: 1.72, detectMult: 1.15, exhaustColor: 0x33eeff, exhaustScale: 0.56, exhaustCadence: 0.014, badgeClass: 'tier-3' }
+  1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, plumeXZ: 0.68, plumeY: 0.58, inertia: 13.5, rollMult: 0.42, badgeClass: 'tier-1' },
+  2: { name: '[2] CRUISE',    speed: 16.0, fov: 75, turnMult: 1.00, fuelRate: 1.00, detectMult: 1.00, exhaustColor: 0xff6611, exhaustScale: 0.36, exhaustCadence: 0.028, plumeXZ: 0.95, plumeY: 1.05, inertia: 9.2, rollMult: 0.42, badgeClass: 'tier-2' },
+  3: { name: '[3] OVERDRIVE', speed: 30.0, fov: 92, turnMult: 0.64, fuelRate: 1.72, detectMult: 1.15, exhaustColor: 0x33eeff, exhaustScale: 0.56, exhaustCadence: 0.014, plumeXZ: 1.38, plumeY: 1.95, inertia: 5.5, rollMult: 0.58, badgeClass: 'tier-3' }
 };
 
 const _v1 = new THREE.Vector3();
@@ -1483,6 +1460,24 @@ const _v7 = new THREE.Vector3();
 const _v8 = new THREE.Vector3();
 const _e1 = new THREE.Euler(0, 0, 0, 'YXZ');
 const _c1 = new THREE.Color();
+const _c2 = new THREE.Color();
+const BLEND_KEYS = ['fov', 'turnMult', 'fuelRate', 'detectMult', 'exhaustScale', 'exhaustCadence', 'plumeXZ', 'plumeY', 'inertia', 'rollMult'];
+// Continuous flight profile: interpolates crawl -> cruise -> overdrive by lever position, so every
+// speed-dependent value (FOV, turning, fuel burn, detection, plume) changes smoothly, not in 3 steps.
+function blendProfile(t, out) {
+  const lo = t <= CRUISE_THROTTLE;
+  const a = SPEED_MODES[lo ? 1 : 2];
+  const b = SPEED_MODES[lo ? 2 : 3];
+  const k = lo ? t / CRUISE_THROTTLE : (t - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE);
+  for (let i = 0; i < BLEND_KEYS.length; i++) {
+    const key = BLEND_KEYS[i];
+    out[key] = a[key] + (b[key] - a[key]) * k;
+  }
+  _c1.setHex(a.exhaustColor).lerp(_c2.setHex(b.exhaustColor), k);
+  out.exhaustColor = _c1.getHex();
+  return out;
+}
+const _profile = {}, _profileCam = {}, _profileSent = {};
 const _dummy = new THREE.Object3D();
 const _up = new THREE.Vector3(0, 1, 0);
 const _fwd = new THREE.Vector3(0, 0, -1);
@@ -2424,6 +2419,7 @@ class NikitaGame {
       yawRate: 0,
       pitchRate: 0,
       throttle: CRUISE_THROTTLE,
+      effThrottle: CRUISE_THROTTLE,
       baseSpeedMode: 2,
       activeSpeedMode: 2,
       currentSpeed: 16.0,
@@ -2525,7 +2521,7 @@ class NikitaGame {
     this.el = {
       speedLines: $('speed-lines'), ecmOverlay: $('ecm-overlay'), ecmBanner: $('ecm-banner'),
       flashOverlay: $('flash-overlay'), alertBanner: $('alert-banner'),
-      btnLock: $('tbtn-lock'), btnBoost: $('tbtn-boost'),
+      btnLock: $('tbtn-lock'),
       speedReadout: $('speed-readout'), valFuel: $('val-fuel'), fillFuel: $('fill-fuel'),
       valBoost: $('val-boost'), fillBoost: $('fill-boost'),
       valHull: $('val-hull'), fillHull: $('fill-hull'),
@@ -4251,14 +4247,15 @@ class NikitaGame {
       m.boostDepleted = false;
     }
     const canBoost = !m.boostDepleted || this.cfg.infBoost;
-    const boostKeyHeld = Boolean(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['Space'] || this.touchInput.boost) && canBoost;
+    // Desktop keyboard overrides only (touch has just the analog lever): Shift/Space = full boost, Ctrl/C = brake
+    const boostKeyHeld = Boolean(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['Space']) && canBoost;
     const holdBoost = boostKeyHeld && m.boost > 0;
-    const holdCrawl = Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC'] || this.touchInput.crawl);
+    const holdCrawl = Boolean(this.keys['ControlLeft'] || this.keys['ControlRight'] || this.keys['KeyC']);
 
-    let desiredMode = m.baseSpeedMode;
-    if (holdBoost) desiredMode = 3;
-    else if (holdCrawl) desiredMode = 1;
-    else if (desiredMode === 3 && !canBoost) desiredMode = 2;
+    let effT = holdBoost ? 1 : (holdCrawl ? 0 : m.throttle);
+    if (!canBoost && effT > CRUISE_THROTTLE) effT = CRUISE_THROTTLE;   // overdrive locked while recharging
+    m.effThrottle = effT;
+    const desiredMode = this.modeForThrottle(effT);
 
     if (desiredMode !== m.activeSpeedMode) {
       m.activeSpeedMode = desiredMode;
@@ -4270,7 +4267,7 @@ class NikitaGame {
       }
     }
 
-    const profile = SPEED_MODES[m.activeSpeedMode];
+    const profile = blendProfile(effT, _profile);
 
     if (!this.cfg.infFuel) {
       m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate);
@@ -4279,12 +4276,14 @@ class NikitaGame {
     }
     const hasFuel = m.fuel > 0;
 
-    if (m.activeSpeedMode === 3 && !this.cfg.infBoost) {
-      m.boost = Math.max(0, m.boost - dt * 24.0);
+    // Boost capacitor drains in proportion to how far the lever is above cruise (full lever = 24%/s)
+    const boostLoad = Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));
+    if (boostLoad > 0 && !this.cfg.infBoost) {
+      m.boost = Math.max(0, m.boost - dt * 24.0 * boostLoad);
       if (m.boost <= 0) {
         m.boost = 0;
         m.boostDepleted = true;
-        if (m.baseSpeedMode === 3) this.setThrottle(CRUISE_THROTTLE);
+        if (m.throttle > CRUISE_THROTTLE) this.setThrottle(CRUISE_THROTTLE);
         this.pushFeed('BOOST EMPTY — RECHARGING TO 100%', 'red');
       }
     } else {
@@ -4432,15 +4431,13 @@ class NikitaGame {
     }
 
     const bankDrive = Math.max(-1, Math.min(1, (m.yawRate / Math.max(0.5, agility)) + mouseYaw * 16));
-    const targetRoll = bankDrive * (m.activeSpeedMode === 3 ? 0.58 : 0.42);
+    const targetRoll = bankDrive * profile.rollMult;
     m.roll += (targetRoll - m.roll) * Math.min(1, dt * 9.0);
 
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     _v1.copy(_fwd).applyEuler(_e1).normalize();
 
-    let leverSpeed = this.throttleSpeed(m.throttle);
-    if (holdBoost) leverSpeed = SPEED_MAX;
-    else if (holdCrawl) leverSpeed = SPEED_MIN;
+    const leverSpeed = this.throttleSpeed(effT);
     const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
     m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
 
@@ -4448,7 +4445,7 @@ class NikitaGame {
     const gravDrop = hasFuel ? 0.35 : 7.5;
     _v2.y -= gravDrop * dt * (hasFuel ? 3.0 : 12.0);
 
-    const inertia = m.activeSpeedMode === 3 ? 5.5 : (m.activeSpeedMode === 1 ? 13.5 : 9.2);
+    const inertia = profile.inertia;
     m.vel.lerp(_v2, Math.min(1, dt * inertia));
 
     // 3) 4-Substep Swept Collision Pass
@@ -4632,8 +4629,8 @@ class NikitaGame {
 
     this.thrusterMat.color.setHex(profile.exhaustColor);
     const flicker = 0.8 + Math.random() * 0.45;
-    const plScaleXZ = hasFuel ? (m.activeSpeedMode === 3 ? 1.38 : (m.activeSpeedMode === 1 ? 0.68 : 0.95)) : 0.01;
-    const plScaleY  = hasFuel ? (m.activeSpeedMode === 3 ? 1.95 : (m.activeSpeedMode === 1 ? 0.58 : 1.05)) * flicker : 0.01;
+    const plScaleXZ = hasFuel ? profile.plumeXZ : 0.01;
+    const plScaleY  = hasFuel ? profile.plumeY * flicker : 0.01;
     this.thrusterCone.scale.set(plScaleXZ, plScaleY, plScaleXZ);
     this.thrusterCore.scale.set(plScaleXZ * 0.85, plScaleY * 0.9, plScaleXZ * 0.85);
 
@@ -4711,7 +4708,7 @@ class NikitaGame {
   updateSentries(dt) {
     let anyAlert = false;
     const m = this.missile;
-    const speedProf = SPEED_MODES[m.activeSpeedMode];
+    const speedProf = blendProfile(m.effThrottle, _profileSent);
     const tierOffset = this.difficultyTier - 1;
     const detectRate = 1.65 + tierOffset * 0.12;
     const sentryFireDelay = Math.max(0.16, 0.42 - tierOffset * 0.014);
@@ -4912,7 +4909,7 @@ class NikitaGame {
     }
 
     if (this.state === 'READY') {
-      this.camera.fov += (SPEED_MODES[m.baseSpeedMode].fov - this.camera.fov) * Math.min(1, dt * 7.5);
+      this.camera.fov += (blendProfile(m.throttle, _profileCam).fov - this.camera.fov) * Math.min(1, dt * 7.5);
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.spawnPos);
       this.camera.rotation.set(0, 0, 0, 'YXZ');
@@ -4927,7 +4924,7 @@ class NikitaGame {
     }
 
     if (m.active) {
-      const profile = SPEED_MODES[m.activeSpeedMode];
+      const profile = blendProfile(m.effThrottle, _profileCam);
       this.camera.fov += (profile.fov - this.camera.fov) * Math.min(1, dt * 7.5);
       this.camera.updateProjectionMatrix();
 
@@ -5180,12 +5177,10 @@ class NikitaGame {
       this.cText(E.valBoost, `${Math.round(m.boost)}% RCHG`);
       this.cStyle(E.valBoost, 'color', '#ff3344');
       this.cStyle(E.fillBoost, 'background', '#ff3344');
-      this.cStyle(E.btnBoost, 'opacity', '0.45');
     } else {
       this.cText(E.valBoost, `${Math.round(m.boost)}%`);
       this.cStyle(E.valBoost, 'color', '');
       this.cStyle(E.fillBoost, 'background', '#00e5ff');
-      this.cStyle(E.btnBoost, 'opacity', '1');
     }
     this.cStyle(E.fillBoost, 'width', `${Math.round(m.boost)}%`);
     this.cText(E.valHull, `${Math.round(m.hull)}%`);
@@ -5412,11 +5407,16 @@ class NikitaGame {
   setThrottle(t) {
     const m = this.missile;
     t = Math.max(0, Math.min(1, t));
-    if (t > 0.8 && m.boostDepleted && !this.cfg.infBoost) {
-      if (m.throttle <= 0.8) this.pushFeed('BOOST RECHARGING — OVERDRIVE LOCKED', 'red');
-      t = Math.min(t, 0.8);
+    if (t > CRUISE_THROTTLE && m.boostDepleted && !this.cfg.infBoost) {
+      const now = performance.now();
+      if (now - (this._lockMsgT || 0) > 2000) {
+        this._lockMsgT = now;
+        this.pushFeed('BOOST RECHARGING — SPEED CAPPED AT CRUISE', 'red');
+      }
+      t = CRUISE_THROTTLE;
     }
     m.throttle = t;
+    if (!m.active) m.effThrottle = t;
     const mode = this.modeForThrottle(t);
     if (mode !== m.baseSpeedMode) {
       m.baseSpeedMode = mode;
@@ -5466,7 +5466,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-boost', 'tbtn-crawl', 'tbtn-cam', 'tbtn-detonate'].forEach(id => {
+    ['tbtn-lock', 'tbtn-cam', 'tbtn-detonate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -5830,35 +5830,6 @@ class NikitaGame {
     rightAimZone.addEventListener('lostpointercapture', endRightAim);
 
     // Right-Thumb Multi-Touch Combat Action Buttons
-    const bindHoldBtn = (id, propName) => {
-      const btn = document.getElementById(id);
-      let activePid = null;
-      const down = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.audio.unlock();
-        activePid = e.pointerId;
-        btn.setPointerCapture(e.pointerId);
-        this.touchInput[propName] = true;
-        btn.classList.add('pressed');
-        this.vibrate(14);
-      };
-      const up = (e) => {
-        if (activePid !== null && (!e || e.pointerId === activePid)) {
-          activePid = null;
-          this.touchInput[propName] = false;
-          btn.classList.remove('pressed');
-        }
-      };
-      btn.addEventListener('pointerdown', down);
-      btn.addEventListener('pointerup', up);
-      btn.addEventListener('pointercancel', up);
-      btn.addEventListener('lostpointercapture', up);
-    };
-
-    bindHoldBtn('tbtn-boost', 'boost');
-    bindHoldBtn('tbtn-crawl', 'crawl');
-
     const btnLock = document.getElementById('tbtn-lock');
     if (btnLock) {
       btnLock.addEventListener('pointerdown', (e) => {
