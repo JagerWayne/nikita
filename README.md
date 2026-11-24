@@ -55,6 +55,10 @@ Installed phones pick up the new version on the next launch. If an install ever 
 
 **Daily seed.** The DAILY button on the briefing screen fills in today's shared facility seed.
 
+**Shafts.** Slots with cyan rails cut through some walls. A shaft's opening is only a third of the wall height: the bottom, middle or top third (cyan squares on the radar). The rocket must be at the right height to fit; at the wrong height it hits the wall. A power-up floats inside every shaft. Most shafts go all the way through; some are dead ends: grab the power-up, then flip and burn back out or detonate at the end.
+
+**Points.** Everything destroyable scores: primary targets 150, CIWS turrets 60, sentries 40, lasers 35, fuel barrels 10, vent grates 10, cracked walls 40, plus clear-all, direct-hit, combo, stealth, rank and medal bonuses. Kill points are multiplied by your speed at impact: x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed. Every 100 points pays a package of 10 rockets (outside the sector reward cap). Collecting a power-up is worth 30 points. The score carries from sector to sector and restarts with a new campaign; the HUD shows `score / next package`.
+
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
 **Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about two thirds of a second, then the engine ignites.

@@ -1139,6 +1139,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <div class="stat-row"><span class="stat-label">AMMO</span><span class="stat-val amber" id="hud-ammo">50 / 100</span></div>
       <div class="stat-row"><span class="stat-label">TGT</span><span class="stat-val" id="hud-targets">1 / 1</span></div>
       <div class="stat-row"><span class="stat-label">SENT</span><span class="stat-val" id="hud-sentries">5 / 5</span></div>
+      <div class="stat-row"><span class="stat-label">PTS</span><span class="stat-val amber" id="hud-pts">0</span></div>
       <div class="stat-row minor"><span class="stat-label">SEED</span><span class="stat-val" id="hud-seed">1998</span></div>
     </div>
     <div class="hud-box" id="fps-badge">FPS: 60 | 16.6ms | DC: 0</div>
@@ -1335,6 +1336,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <div class="result-grid">
       <div>ROCKETS FIRED: <strong id="res-missiles">1</strong></div>
       <div>ROCKET REWARDS: <strong id="res-rewards" style="color:var(--hud-amber, #ffbb33)">+0</strong></div>
+      <div>POINTS: <strong id="res-points">0</strong></div>
       <div>ALERTS TRIGGERED: <strong id="res-alerts">0</strong></div>
       <div>SENTRIES NEUTRALIZED: <strong id="res-sentries">0</strong></div>
       <div>MISSION TIME: <strong id="res-time">00.0s</strong></div>
@@ -1496,6 +1498,22 @@ const BURN_TIME = 1.2;                 // after the flip the engine burns hard t
 const AIM_YAW_RATE = 1.1;              // rad/s of launch-angle adjustment at full stick
 const AIM_PITCH_RATE = 0.9;
 const AIM_PITCH_LIMIT = 1.2;           // about 69 degrees up or down
+// Points. Kills score base points times a speed multiplier (slow impact x0.75 ... full speed x2).
+// Every 100 points pays out a package of 10 rockets.
+const POINTS = {
+  target: { each: 150, all: 200 },
+  sentry: { each: 40,  all: 100 },
+  laser:  { each: 35,  all: 100 },
+  turret: { each: 60,  all: 120 },
+  barrel: { each: 10,  all: 50 },
+  grate:  { each: 10,  all: 40 }
+};
+const POINTS_BONUS = { directHit: 50, combo3: 50, combo5: 150, stealth: 200, wall: 40, pickup: 30, medal: 75,
+                       rank: { PANTHER: 0, DOBERMAN: 50, HOUND: 100, FOXHOUND: 200 } };
+const MULT_SLOW = 0.75;
+const MULT_FAST = 2.0;
+const POINTS_PER_PACKAGE = 100;
+const PACKAGE_ROCKETS = 10;
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
@@ -1520,7 +1538,10 @@ const CELL_WALL = 1;
 const CELL_FLOOR = 0;
 const CELL_RUNWAY = 2;
 const CELL_CRACKED = 3;   // destroyable wall: solid until a blast shatters it
-const isWallLike = (v) => v === CELL_WALL || v === CELL_CRACKED;
+const CELL_SHAFT_LOW = 4;   // 4 / 5 / 6 = a shaft through the wall whose opening is the bottom / middle / top third
+const CELL_SHAFT_HIGH = 6;
+const isShaft = (v) => v >= CELL_SHAFT_LOW && v <= CELL_SHAFT_HIGH;
+const isWallLike = (v) => v === CELL_WALL || v === CELL_CRACKED || isShaft(v);
 
 const SPEED_MIN = 7.5;    // throttle lever fully down
 const SPEED_MAX = 30.0;   // throttle lever fully up
@@ -2506,6 +2527,11 @@ class NikitaGame {
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
+    this.score = 0;
+    this.sectorStartScore = 0;
+    this.nextPackage = POINTS_PER_PACKAGE;
+    this.ptsPending = [];
+    this.blastMult = 1;
     this.decoys = DECOYS_PER_SECTOR;
     this.decoyObjs = [];
     this.modifier = null;
@@ -3213,6 +3239,7 @@ class NikitaGame {
     }
 
     this.placeBreakables(numericSeed, tier);
+    this.placeShafts(numericSeed, tier);
 
     let wallCount = 0, floorCount = 0, runwayCount = 0;
     for (let z = 0; z < GRID_SIZE; z++) {
@@ -3809,11 +3836,102 @@ class NikitaGame {
     }
   }
 
-  spawnPickup(x, z, type, owner) {
+  // Shafts: 1-3 cell tunnels through a wall whose opening is only a third of the wall height (bottom, middle or
+  // top). A power-up floats in the middle of each one. The rocket must be at the right height to fit.
+  placeShafts(numericSeed, tier) {
+    const rngS = mulberry32((numericSeed ^ 0x51ED270B) >>> 0);
+    const G = GRID_SIZE;
+    const at = (x, z) => this.grid[z * G + x];
+    const open = (x, z) => x >= 0 && z >= 0 && x < G && z < G && !isWallLike(at(x, z));
+    const sp = this.rooms[0];
+    const nearSpawn = (x, z) => x >= sp.x - 2 && x < sp.x + sp.w + 2 && z >= sp.z - 2 && z < sp.z + sp.h + 2;
+
+    const cands = [];
+    for (let z = 3; z < G - 3; z++) {
+      for (let x = 3; x < G - 3; x++) {
+        if (!open(x, z) || nearSpawn(x, z)) continue;
+        for (const [dx, dz] of PROBE_DIRS) {
+          const px = -dz, pz = dx;
+          const cells = [];
+          for (let k = 1; k <= 6; k++) {
+            const cx = x + dx * k, cz = z + dz * k;
+            if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) break;
+            if (open(cx, cz)) {
+              if (cells.length >= 1) cands.push({ cells: cells.slice(), r: rngS() + cells.length * 0.04 });
+              break;
+            }
+            if (at(cx, cz) !== CELL_WALL || nearSpawn(cx, cz)) break;
+            if (at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL) break;
+            cells.push([cx, cz]);
+          }
+        }
+      }
+    }
+    cands.sort((a, b) => a.r - b.r);
+
+    // Dead-end shafts (3 cells deep, sealed at the far end) fill the quota where no through-wall run exists:
+    // fly in, grab the power-up, then flip and burn back out, or detonate at the end.
+    const dead = [];
+    for (let z = 4; z < G - 4; z++) {
+      for (let x = 4; x < G - 4; x++) {
+        if (!open(x, z) || nearSpawn(x, z)) continue;
+        for (const [dx, dz] of PROBE_DIRS) {
+          const px = -dz, pz = dx;
+          const cells = [1, 2, 3].map((k) => [x + dx * k, z + dz * k]);
+          const endc = [x + dx * 4, z + dz * 4];
+          if ([...cells, endc].some(([cx, cz]) => cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4 || at(cx, cz) !== CELL_WALL)) continue;
+          if (cells.some(([cx, cz]) => at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL)) continue;
+          dead.push({ cells, r: rngS() });
+        }
+      }
+    }
+    dead.sort((a, b) => a.r - b.r);
+    const all = cands.concat(dead);
+
+    const taken = this.breakables.map((b) => [b.gx, b.gz]);
+    const nShaft = Math.min(8, 2 + Math.floor(tier / 2));
+    const bag = ['ROCKETS', 'ROCKETS', 'ROCKETS', 'BOOST', 'BOOST', 'REPAIR', 'REPAIR', 'STEALTH', 'STEALTH', 'OVERCHARGE', 'OVERCHARGE'];
+    const trimMat = new THREE.MeshBasicMaterial({ color: 0x33ddff });
+    let n = 0;
+    for (const c of all) {
+      if (n >= nShaft) break;
+      if (!c.cells.every(([cx, cz]) => at(cx, cz) === CELL_WALL)) continue;
+      const mid = c.cells[Math.floor(c.cells.length / 2)];
+      if (taken.some(([tx, tz]) => Math.hypot(tx - mid[0], tz - mid[1]) < 7)) continue;
+      taken.push(mid);
+      const band = Math.floor(rngS() * 3);               // 0 bottom, 1 middle, 2 top third
+      const lo = band * WALL_H / 3, hi = lo + WALL_H / 3;
+      for (const [cx, cz] of c.cells) {
+        this.grid[cz * G + cx] = CELL_SHAFT_LOW + band;
+        const wx = gridToWorldX(cx), wz = gridToWorldZ(cz);
+        if (lo > 0.01) {
+          const m = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE, lo, CELL_SIZE), this.wallMat);
+          m.position.set(wx, lo * 0.5, wz);
+          this.levelGroup.add(m);
+        }
+        if (hi < WALL_H - 0.01) {
+          const h = WALL_H - hi;
+          const m = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE, h, CELL_SIZE), this.wallMat);
+          m.position.set(wx, hi + h * 0.5, wz);
+          this.levelGroup.add(m);
+        }
+        for (const ty of [lo + 0.05, hi - 0.05]) {          // glowing rails mark the opening
+          const t = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE * 0.98, 0.1, CELL_SIZE * 0.98), trimMat);
+          t.position.set(wx, ty, wz);
+          this.levelGroup.add(t);
+        }
+      }
+      const px = gridToWorldX(mid[0]), pz = gridToWorldZ(mid[1]);
+      this.spawnPickup(px, pz, bag[Math.floor(rngS() * bag.length)], { active: false, shaft: true }, (lo + hi) * 0.5, 1.8);
+      n++;
+    }
+  }
+
+  spawnPickup(x, z, type, owner, y = 1.7, radius = 2.3) {
     const COLORS = { ROCKETS: 0xffaa00, BOOST: 0x00e5ff, REPAIR: 0x44ff88, STEALTH: 0xaa66ff, OVERCHARGE: 0xff3344 };
     const col = COLORS[type] || 0xffffff;
     const grp = new THREE.Group();
-    grp.position.set(x, 1.7, z);
+    grp.position.set(x, y, z);
     const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.55), new THREE.MeshBasicMaterial({ color: col }));
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.05, 6, 24), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.8 }));
     ring.rotation.x = Math.PI * 0.5;
@@ -3822,7 +3940,7 @@ class NikitaGame {
     }));
     grp.add(core, ring, halo);
     this.levelGroup.add(grp);
-    this.pickups.push({ active: true, type, owner, pos: new THREE.Vector3(x, 1.7, z), mesh: grp, core, ring, phase: Math.random() * 6.28 });
+    this.pickups.push({ active: true, type, owner, baseY: y, radius, pos: new THREE.Vector3(x, y, z), mesh: grp, core, ring, phase: Math.random() * 6.28 });
   }
 
   breakWall(bw) {
@@ -3832,6 +3950,7 @@ class NikitaGame {
     this.grid[bw.gz * GRID_SIZE + bw.gx] = CELL_FLOOR;
     for (const ci of bw.chamber) this.secretHidden.delete(ci);
     this.radarDirty = true;
+    this.awardPoints(POINTS_BONUS.wall, 'WALL BREACH', true);
     _v5.copy(bw.pos); _v5.y = 1.8;
     this.vfx.spawnExplosion(_v5, 6.5, 1.0);
     this.vfx.spawnScrapeSparks(_v5, _up, 34);
@@ -3849,6 +3968,7 @@ class NikitaGame {
     pk.mesh.visible = false;
     const m = this.missile;
     this.audio.playTargetChime();
+    this.awardPoints(POINTS_BONUS.pickup, 'POWER-UP', false);
     this.vfx.spawnRing(pk.pos, 3.2, 0.3, 0xffffff, 0, 0);
     this.popAmmoHUD();
     switch (pk.type) {
@@ -3877,6 +3997,7 @@ class NikitaGame {
         this.pushFeed('POWER-UP: OVERCHARGED WARHEAD — NEXT BLAST x1.6', 'red');
         break;
     }
+    this.flushPoints();
     this.updateHUDText();
   }
 
@@ -3886,11 +4007,11 @@ class NikitaGame {
     const m = this.missile;
     for (const pk of this.pickups) {
       if (!pk.active) continue;
-      pk.mesh.position.y = 1.7 + Math.sin(t * 2.2 + pk.phase) * 0.18;
+      pk.mesh.position.y = pk.baseY + Math.sin(t * 2.2 + pk.phase) * 0.18;
       pk.core.rotation.y += dt * 2.4;
       pk.core.rotation.x += dt * 1.1;
       pk.ring.rotation.z += dt * 1.6;
-      if (m.active && this.state === 'PLAYING' && pk.pos.distanceToSquared(m.pos) < 2.3 * 2.3) this.collectPickup(pk);
+      if (m.active && this.state === 'PLAYING' && pk.pos.distanceToSquared(m.pos) < pk.radius * pk.radius) this.collectPickup(pk);
     }
     // active power-up strip
     const pw = this.power;
@@ -3995,6 +4116,7 @@ class NikitaGame {
   }
 
   flushRewards() {
+    this.flushPoints();
     const r = this.rewards;
     const labels = Object.keys(r.pending);
     if (labels.length === 0) return;
@@ -4027,6 +4149,42 @@ class NikitaGame {
     this.updateHUDText();
   }
 
+  hitMultNow() {
+    const f = Math.max(0, Math.min(1, (this.missile.vel.length() - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)));
+    return MULT_SLOW + (MULT_FAST - MULT_SLOW) * f;
+  }
+
+  // Queue points; kills use the speed multiplier of the hit that caused them, bonuses are fixed.
+  awardPoints(base, label, useMult) {
+    if (base <= 0 || this.state === 'BRIEFING' || this.state === 'FAILED') return;
+    const mult = useMult ? this.blastMult : 1;
+    const pts = Math.round(base * mult);
+    const lb = useMult ? `${label} ×${mult.toFixed(2)}` : label;
+    const e = this.ptsPending.find((x) => x.label === lb);
+    if (e) { e.pts += pts; e.count++; } else this.ptsPending.push({ label: lb, pts, count: 1 });
+  }
+
+  flushPoints() {
+    if (this.ptsPending.length === 0) return;
+    let total = 0;
+    const parts = [];
+    for (const e of this.ptsPending) { total += e.pts; parts.push(e.count > 1 ? `${e.count}× ${e.label}` : e.label); }
+    this.ptsPending = [];
+    this.score += total;
+    this.pushFeed(`+${total} PTS — ${parts.join(' · ')}`, 'amber');
+    while (this.score >= this.nextPackage) {
+      this.nextPackage += POINTS_PER_PACKAGE;
+      const add = Math.max(0, Math.min(PACKAGE_ROCKETS, MAX_ROCKETS - this.ammo));
+      this.ammo += add;
+      this.rewards.total += add;
+      this.rewards.log.points = (this.rewards.log.points || 0) + add;
+      this.pushFeed(add > 0 ? `POINT PACKAGE: +${add} ROCKETS` : `POINT PACKAGE — RACK FULL (${MAX_ROCKETS})`, 'cyan');
+      this.audio.playTargetChime();
+      this.popAmmoHUD();
+    }
+    this.updateHUDText();
+  }
+
   popAmmoHUD() {
     const el = document.getElementById('hud-ammo');
     if (!el) return;
@@ -4039,10 +4197,12 @@ class NikitaGame {
   rewardKill(key, list, isDone, isLiveHostile = false) {
     const def = REWARDS[key];
     this.awardRockets(def.each, def.label, key);
+    this.awardPoints(POINTS[key].each, def.label, true);
     if (isLiveHostile) this._blastHostiles++;
     if (list.length > 0 && !this.rewards.flags[key] && list.every(isDone)) {
       this.rewards.flags[key] = true;
       this.awardRockets(def.all, def.allLabel, key);
+      this.awardPoints(POINTS[key].all, def.allLabel, false);
     }
   }
 
@@ -4292,11 +4452,18 @@ class NikitaGame {
   /* ------------------------------------------------------------------------
      COLLISION HELPERS & DDA WALL-OCCLUSION RAYCAST
      ------------------------------------------------------------------------ */
-  isGridSolid(wx, wz) {
+  // wy is optional: when given, shaft cells are open between the heights of their opening (the rocket can fly through).
+  isGridSolid(wx, wz, wy) {
     const gx = worldToGridX(wx);
     const gz = worldToGridZ(wz);
     if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return true;
-    return isWallLike(this.grid[gz * GRID_SIZE + gx]);
+    const v = this.grid[gz * GRID_SIZE + gx];
+    if (isShaft(v)) {
+      if (wy === undefined) return true;
+      const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3;
+      return wy < lo + MISSILE_RADIUS || wy > lo + WALL_H / 3 - MISSILE_RADIUS;
+    }
+    return v === CELL_WALL || v === CELL_CRACKED;
   }
 
   hasLineOfSight(ax, az, bx, bz) {
@@ -4327,6 +4494,7 @@ class NikitaGame {
     this.ammo = Math.max(0, this.ammo - 1);
     this.updateHUDText();
 
+    this.blastMult = this.hitMultNow();      // speed at impact decides the kill multiplier
     const over = this.power.overcharge;
     this.power.overcharge = false;
     if (over) this.pushFeed('OVERCHARGED WARHEAD', 'red');
@@ -4390,7 +4558,7 @@ class NikitaGame {
         this.audio.playTargetChime();
         this.pushFeed(`PRIMARY TARGET DESTROYED: ${t.name}`, 'amber');
         this.rewardKill('target', this.targets, (x) => !x.active, true);
-        if (t === directTarget) this.awardRockets(REWARD_BONUS.directHit, 'DIRECT HIT', 'bonus');
+        if (t === directTarget) { this.awardRockets(REWARD_BONUS.directHit, 'DIRECT HIT', 'bonus'); this.awardPoints(POINTS_BONUS.directHit, 'DIRECT HIT', false); }
       }
     }
 
@@ -4409,7 +4577,7 @@ class NikitaGame {
       if (d <= radius + 1.2 && this.hasLineOfSight(epicenter.x, epicenter.z, b.pos.x, b.pos.z)) {
         b.active = false;
         this.rewardKill('barrel', this.barrels, (x) => !x.active);
-        this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: 9.2, power: 1.4, label: 'FUEL BARREL CHAIN REACTION' });
+        this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: 9.2, power: 1.4, label: 'FUEL BARREL CHAIN REACTION', mult: this.blastMult });
       }
     }
 
@@ -4445,8 +4613,8 @@ class NikitaGame {
       }
     }
 
-    if (this._blastHostiles >= 5) this.awardRockets(REWARD_BONUS.combo5, `${this._blastHostiles}-KILL BLAST`, 'bonus');
-    else if (this._blastHostiles >= 3) this.awardRockets(REWARD_BONUS.combo3, `${this._blastHostiles}-KILL BLAST`, 'bonus');
+    if (this._blastHostiles >= 5) { this.awardRockets(REWARD_BONUS.combo5, `${this._blastHostiles}-KILL BLAST`, 'bonus'); this.awardPoints(POINTS_BONUS.combo5, `${this._blastHostiles}-KILL BLAST`, false); }
+    else if (this._blastHostiles >= 3) { this.awardRockets(REWARD_BONUS.combo3, `${this._blastHostiles}-KILL BLAST`, 'bonus'); this.awardPoints(POINTS_BONUS.combo3, `${this._blastHostiles}-KILL BLAST`, false); }
     this._blastHostiles = 0;
     this.flushRewards();
 
@@ -4501,6 +4669,7 @@ class NikitaGame {
       if (pb.delay <= 0) {
         this.pendingBlasts.splice(i, 1);
         this.pushFeed(pb.label, 'amber');
+        this.blastMult = pb.mult || 1;
         this.triggerBlast(pb.pos, pb.radius, pb.power);
         this.checkSectorWon(pb.pos);
       }
@@ -5090,6 +5259,7 @@ class NikitaGame {
               Math.abs(_v3.z - g.pos.z) < g.halfZ + MISSILE_RADIUS) {
             g.active = false;
             g.mesh.visible = false;
+            this.blastMult = this.hitMultNow();
             this.rewardKill('grate', this.grates, (x) => !x.active);
             this.flushRewards();
             this.vfx.spawnScrapeSparks(_v3, _v1, 16);
@@ -5105,6 +5275,7 @@ class NikitaGame {
           if (l.disabled) continue;
 
           if (l.relayActive && _v3.distanceTo(l.relayPos) < 0.72 + MISSILE_RADIUS) {
+            this.blastMult = this.hitMultNow();
             this.disableLaserGrid(l, true);
             this.flushRewards();
             this.audio.playScrape();
@@ -5172,9 +5343,9 @@ class NikitaGame {
         else if (_v3.y > WALL_H - MISSILE_RADIUS) { hitNormalY = -1; _v3.y = WALL_H - MISSILE_RADIUS; hitSurface = true; }
 
         if (!hitSurface) {
-          const hitX = this.isGridSolid(_v3.x + Math.sign(m.vel.x) * MISSILE_RADIUS, m.pos.z);
-          const hitZ = this.isGridSolid(m.pos.x, _v3.z + Math.sign(m.vel.z) * MISSILE_RADIUS);
-          const hitDiag = !hitX && !hitZ && this.isGridSolid(_v3.x + Math.sign(m.vel.x) * MISSILE_RADIUS, _v3.z + Math.sign(m.vel.z) * MISSILE_RADIUS);
+          const hitX = this.isGridSolid(_v3.x + Math.sign(m.vel.x) * MISSILE_RADIUS, m.pos.z, _v3.y);
+          const hitZ = this.isGridSolid(m.pos.x, _v3.z + Math.sign(m.vel.z) * MISSILE_RADIUS, _v3.y);
+          const hitDiag = !hitX && !hitZ && this.isGridSolid(_v3.x + Math.sign(m.vel.x) * MISSILE_RADIUS, _v3.z + Math.sign(m.vel.z) * MISSILE_RADIUS, _v3.y);
           if (hitX || hitDiag) {
             hitNormalX = -Math.sign(m.vel.x || 1);
             _v3.x = m.pos.x;
@@ -5827,7 +5998,7 @@ class NikitaGame {
       for (let i = 0; i < this.pickups.length; i++) {
         const pk = this.pickups[i];
         if (!pk.active || pk.owner.active) continue;
-        if (!this.hasLineOfSight(m.pos.x, m.pos.z, pk.pos.x, pk.pos.z)) continue;
+        if (pk.owner.shaft ? pk.pos.distanceTo(m.pos) > 40 : !this.hasLineOfSight(m.pos.x, m.pos.z, pk.pos.x, pk.pos.z)) continue;
         _v1.copy(pk.pos).project(this.camera);
         if (_v1.z > 1) continue;
         const sx = (_v1.x * 0.5 + 0.5) * w;
@@ -5926,6 +6097,9 @@ class NikitaGame {
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (v === CELL_CRACKED) {
           c.fillStyle = 'rgba(255, 150, 20, 0.7)';
+          c.fillRect(x * scale, z * scale, scale, scale);
+        } else if (isShaft(v)) {
+          c.fillStyle = 'rgba(51, 221, 255, 0.65)';
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (v === CELL_RUNWAY) {
           c.fillStyle = 'rgba(0, 255, 136, 0.16)';
@@ -6091,7 +6265,8 @@ class NikitaGame {
 
     // End-of-sector rocket rewards (carried into the next sector, up to MAX_ROCKETS)
     this.awardRockets(REWARD_BONUS.rank[rank], `RANK ${rank}`, 'bonus');
-    if (this.alertsTriggered === 0) this.awardRockets(REWARD_BONUS.stealth, 'GHOST — NO ALERTS', 'bonus');
+    this.awardPoints(POINTS_BONUS.rank[rank], `RANK ${rank}`, false);
+    if (this.alertsTriggered === 0) { this.awardRockets(REWARD_BONUS.stealth, 'GHOST — NO ALERTS', 'bonus'); this.awardPoints(POINTS_BONUS.stealth, 'GHOST — NO ALERTS', false); }
     this.flushRewards();
 
     // Medals: optional challenges, +1 rocket each (outside the sector cap)
@@ -6110,6 +6285,7 @@ class NikitaGame {
       this.rewards.total += add;
       this.rewards.log.bonus = (this.rewards.log.bonus || 0) + add;
     }
+    if (medalCount > 0) { this.awardPoints(POINTS_BONUS.medal * medalCount, `${medalCount} MEDAL${medalCount > 1 ? 'S' : ''}`, false); this.flushPoints(); }
     const medalText = medals.map((x) => (x.ok ? '★ ' : '☆ ') + x.name).join('  ·  ') + `   (+${medalCount})`;
 
     const isFinal = this.level >= MAX_LEVELS;
@@ -6121,9 +6297,10 @@ class NikitaGame {
     document.getElementById('clear-rank').textContent = rank;
     document.getElementById('res-missiles').textContent = `${used} FIRED`;
     document.getElementById('res-medals').textContent = medalText;
+    document.getElementById('res-points').textContent = `+${this.score - this.sectorStartScore}  (TOTAL ${this.score})`;
     document.getElementById('res-rewards').textContent = `+${this.rewards.total}  (KILL REWARDS ${this.rewards.capUsed} / ${this.rewards.cap})`;
     const lg = this.rewards.log;
-    const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', grate: 'GRATES', bonus: 'BONUSES', cache: 'CACHES' };
+    const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', grate: 'GRATES', bonus: 'BONUSES', cache: 'CACHES', points: 'POINT PACKAGES' };
     const detail = Object.keys(names).filter((k) => lg[k]).map((k) => `${names[k]} +${lg[k]}`).join(' · ');
     document.getElementById('res-rewards-detail').textContent = (detail || 'NO REWARDS EARNED') + `  |  RACK: ${this.ammo} / ${MAX_ROCKETS} (UP TO +${CARRY_CAP} CARRIES OVER)`;
     document.getElementById('res-alerts').textContent = String(this.alertsTriggered);
@@ -6256,6 +6433,8 @@ class NikitaGame {
     document.getElementById('hud-sector').textContent = `${String(this.level).padStart(2, '0')} / ${MAX_LEVELS}`;
     document.getElementById('hud-tier').textContent = `TIER ${String(this.difficultyTier).padStart(2, '0')} / ${MAX_TIERS}`;
     document.getElementById('hud-ammo').textContent = `${this.ammo} / ${MAX_ROCKETS}`;
+    const ptsEl = document.getElementById('hud-pts');
+    if (ptsEl) ptsEl.textContent = `${this.score} / ${this.nextPackage}`;
     const dBtn = document.getElementById('tbtn-decoy');
     if (dBtn) { dBtn.innerHTML = `DECOY<br/>x${this.decoys}`; dBtn.style.opacity = this.decoys > 0 ? '' : '0.4'; }
     const remT = this.targets.filter(t => t.active).length;
@@ -7004,6 +7183,12 @@ class NikitaGame {
     document.getElementById('pause-modal').style.display = 'none';
     document.getElementById('hud-layer').style.display = 'block';
     this.paused = false;
+    // score: a new campaign starts at 0; the next sector keeps it; a retry restores the sector's starting score
+    if (this.state === 'BRIEFING' || (lvl === 1 && !carryOver && this.state === 'CLEAR')) { this.score = 0; this.sectorStartScore = 0; }
+    else if (carryOver) this.sectorStartScore = this.score;
+    else this.score = this.sectorStartScore;
+    this.nextPackage = (Math.floor(this.score / POINTS_PER_PACKAGE) + 1) * POINTS_PER_PACKAGE;
+    this.ptsPending = [];
     // Advancing from a cleared sector keeps up to CARRY_CAP unspent rockets above the standard salvo.
     this.ammo = carryOver ? MAX_SALVO + Math.min(CARRY_CAP, Math.max(0, this.ammo - MAX_SALVO)) : MAX_SALVO;
     this.radarOpen = true;
