@@ -2,7 +2,7 @@
 
 A 3D tactical guided-missile simulation for phones (and desktop). Fly a wire-guided Nikita warhead through 100 procedurally generated facility sectors, destroy the primary targets, avoid sentries, lasers, turbines, CIWS turrets, ECM fields and sliding bulkheads.
 
-Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, loaded from unpkg at runtime.
+Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, bundled in `vendor/three/` so the game has no external dependencies and works offline.
 
 ## Play
 

@@ -1072,7 +1072,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.187.0/build/three.module.js"
+    "three": "./vendor/three/three.module.js"
   }
 }
 </script>
@@ -1089,7 +1089,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
 <!-- Offline Fallback Banner -->
 <div id="offline-banner">
   <h1 id="offline-title">[!] TACTICAL ENGINE OFFLINE</h1>
-  <p id="offline-msg">Unable to load Three.js <code>0.187.0</code> from <code>unpkg.com</code>. Please verify your internet connection and reload to initialize the 3D Shadow Ops simulation.</p>
+  <p id="offline-msg">Unable to load the Three.js <code>0.187.0</code> 3D engine. Please check your connection, reload, and if it persists clear this site's data and reopen the app.</p>
 </div>
 
 <!-- In-Game Vector HUD -->
@@ -1394,10 +1394,10 @@ try {
     p.textContent = 'This game needs a newer browser (import-map support: iOS / Safari 16.4+, Chrome or Edge 89+, Firefox 108+). Please update your browser and reload.';
   } else if (navigator.onLine === false) {
     t.textContent = '[!] YOU ARE OFFLINE';
-    p.textContent = 'The 3D engine (Three.js) is loaded from the internet. Connect to a network and reload.';
+    p.textContent = 'The 3D engine could not be loaded from the app cache. Connect to a network once and reload.';
   } else {
     t.textContent = '[!] 3D ENGINE BLOCKED';
-    p.textContent = 'Three.js could not be loaded from unpkg.com. A content blocker, VPN or network filter may be blocking it. Allow unpkg.com and reload.';
+    p.textContent = 'The Three.js 3D engine could not be loaded. Check your connection and reload; if it persists, clear the app data and reopen it.';
   }
   document.getElementById('offline-banner').style.display = 'flex';
   throw err;
@@ -6234,7 +6234,7 @@ window.__nikitaOps = new NikitaGame();
 /* ==========================================================================
    PWA: service worker (offline + installability) and the INSTALL APP button
    ========================================================================== */
-const APP_VERSION = '1.0';   // keep in sync with VERSION in sw.js when releasing
+const APP_VERSION = '1.0.1';   // keep in sync with VERSION in sw.js when releasing
 document.getElementById('app-version').textContent = `v${APP_VERSION}`;
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   // Auto-update: index.html is always fetched network-first, and the worker is re-checked on every
