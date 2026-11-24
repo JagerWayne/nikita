@@ -1232,7 +1232,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
   <div class="modal-card">
     <div class="modal-title">
       <span>NIKITA // SHADOW OPS</span>
-      <span class="modal-subtitle">TACTICAL GUIDED-MISSILE SIM</span>
+      <span class="modal-subtitle">TACTICAL GUIDED-MISSILE SIM &middot; <span id="app-version">v1.0</span></span>
     </div>
     <p class="briefing-desc">
       Infiltrate 100 procedurally generated sectors of the fortified Shadow Moses subterranean facility via remote-controlled Nikita warhead.
@@ -1241,8 +1241,8 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
     <div class="controls-grid">
       <div><span class="ctrl-key">LEFT STICK / GYRO</span> : Pitch & Yaw Flight</div>
       <div><span class="ctrl-key">15° SEEKER + LOCK</span> : Auto-Highlight & Lock Target</div>
-      <div><span class="ctrl-key">SPD - / SPD +</span> : Speed Level Down / Up</div>
-      <div><span class="ctrl-key">BOOST / AIR BRAKE</span> : Overdrive / Stealth Crawl</div>
+      <div><span class="ctrl-key">SPEED LEVER</span> : Analog Throttle, Min to Max (high speed drains boost)</div>
+      <div><span class="ctrl-key">FIRE</span> : Launch Rocket</div>
       <div><span class="ctrl-key">CAM VIEW</span> : Nose-Cam FPV / Chase-Cam</div>
       <div><span class="ctrl-key">DETONATE</span> : Manual Warhead Blast</div>
       <div><span class="ctrl-key">RADAR</span> : Side 64x64 Tactical Map</div>
@@ -1268,6 +1268,7 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
       </label>
     </div>
     <div class="btn-row">
+      <button class="tac-btn amber" id="btn-install" style="display:none;">INSTALL APP</button>
       <button class="tac-btn" id="btn-launch">INITIATE LAUNCH</button>
     </div>
   </div>
@@ -6225,6 +6226,61 @@ class NikitaGame {
 }
 
 window.__nikitaOps = new NikitaGame();
+
+</script>
+
+<!-- PWA: runs independently of the game module so install/offline/auto-update work even if Three.js fails to load -->
+<script>
+/* ==========================================================================
+   PWA: service worker (offline + installability) and the INSTALL APP button
+   ========================================================================== */
+const APP_VERSION = '1.0';   // keep in sync with VERSION in sw.js when releasing
+document.getElementById('app-version').textContent = `v${APP_VERSION}`;
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  // Auto-update: index.html is always fetched network-first, and the worker is re-checked on every
+  // launch and whenever the installed app returns to the foreground. A new worker takes over at once;
+  // the page then reloads itself (only while sitting on the briefing screen, never mid-mission).
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let updatePending = false;
+  const applyUpdate = () => {
+    const g = window.__nikitaOps;
+    if (g && g.state !== 'BRIEFING') {
+      if (!updatePending) g.pushFeed('UPDATE INSTALLED — RESTART APP TO APPLY', 'cyan');
+      updatePending = true;
+      return;
+    }
+    let guard = false;
+    try { guard = sessionStorage.getItem('nikita-sw-reload') === '1'; sessionStorage.setItem('nikita-sw-reload', '1'); } catch (_) {}
+    if (!guard) location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) applyUpdate(); });
+  window.addEventListener('load', () => {
+    try { sessionStorage.removeItem('nikita-sw-reload'); } catch (_) {}
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      reg.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {});
+  });
+}
+let deferredInstallPrompt = null;
+const installBtn = document.getElementById('btn-install');
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (installBtn) installBtn.style.display = '';
+});
+if (installBtn) {
+  installBtn.addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    try { await deferredInstallPrompt.userChoice; } catch (_) {}
+    deferredInstallPrompt = null;
+    installBtn.style.display = 'none';
+  });
+}
+window.addEventListener('appinstalled', () => { if (installBtn) installBtn.style.display = 'none'; });
 </script>
 </body>
 </html>

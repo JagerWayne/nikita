@@ -8,7 +8,18 @@ Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, 
 
 GitHub Pages: https://jagerwayne.github.io/nikita/
 
-Use landscape. On iPhone, tap Share, then Add to Home Screen for a full-screen experience (Safari has no fullscreen button). Gyro tilt flight needs HTTPS, which the Pages link provides.
+Use landscape. Gyro tilt flight needs HTTPS, which the Pages link provides.
+
+## Install (v1.0)
+
+The game is a PWA. Open the Pages link, then:
+
+- **Android / Chrome, Edge:** tap INSTALL APP on the briefing screen (or the browser menu, Install app).
+- **iPhone / iPad (Safari):** Share, Add to Home Screen.
+
+It then launches full-screen from the home screen and works offline after the first load. Every launch checks for a new version and updates itself automatically.
+
+**Releasing an update:** bump `APP_VERSION` in `index.html` and `VERSION` in `sw.js` to the same value, then push to `main`.
 
 ## Mobile controls
 
