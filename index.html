@@ -1467,6 +1467,7 @@ const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
 const HEAR_WALL_DAMP = 0.65;
+const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
 const DECOY_LIFE = 7;                  // seconds a decoy keeps making noise
 const DECOYS_PER_SECTOR = 2;
@@ -1538,6 +1539,8 @@ const _f1 = new THREE.Vector3();
 const _f2 = new THREE.Vector3();
 const _f3 = new THREE.Vector3();
 const _blast = new THREE.Vector3();
+const _aimR = new THREE.Vector3();
+const _aimU = new THREE.Vector3();
 const PROBE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 /* ==========================================================================
@@ -3861,6 +3864,29 @@ class NikitaGame {
     this.cText(this.el.hudPower, parts.join('  ·  '));
   }
 
+  // Aim a hostile shot. Only HOSTILE_ACCURACY of shots are aimed true; the rest pass 1.6-3.4 units wide,
+  // clear of the rocket's 0.95 hit radius. Returns the unit direction in `out`.
+  hostileAim(origin, target, out, jitter) {
+    out.subVectors(target, origin);
+    const dist = out.length() || 1;
+    out.divideScalar(dist);
+    if (Math.random() >= HOSTILE_ACCURACY) {
+      _aimR.crossVectors(out, _up);
+      if (_aimR.lengthSq() < 1e-6) _aimR.set(1, 0, 0);
+      _aimR.normalize();
+      _aimU.crossVectors(_aimR, out).normalize();
+      const ang = Math.random() * Math.PI * 2;
+      const off = 1.6 + Math.random() * 1.8;
+      out.multiplyScalar(dist).addScaledVector(_aimR, Math.cos(ang) * off).addScaledVector(_aimU, Math.sin(ang) * off).normalize();
+    } else if (jitter) {
+      out.x += (Math.random() - 0.5) * 0.08;
+      out.y += (Math.random() - 0.5) * 0.06;
+      out.z += (Math.random() - 0.5) * 0.08;
+      out.normalize();
+    }
+    return out;
+  }
+
   throwDecoy() {
     const m = this.missile;
     if (this.state !== 'PLAYING' || !m.active || this.decoys <= 0 || this.paused) return;
@@ -4565,7 +4591,7 @@ class NikitaGame {
         const d = tu.pos.distanceTo(this.missile.pos);
         if (d < ciwsRange && this.hasLineOfSight(tu.pos.x, tu.pos.z, this.missile.pos.x, this.missile.pos.z)) {
           tu.fireCooldown = ciwsCooldown;
-          _v1.subVectors(this.missile.pos, tu.pos).normalize().multiplyScalar(ciwsBoltSpeed);
+          this.hostileAim(tu.pos, this.missile.pos, _v1, false).multiplyScalar(ciwsBoltSpeed);
           this.vfx.spawnTracer(tu.pos, _v1);
           this.vfx.spawnLightFlash(tu.pos, 0xff3322, 5, 0.06);
           this.audio.playGunshot();
@@ -5242,11 +5268,7 @@ class NikitaGame {
         if (seesMissile && s.fireCooldown <= 0 && m.active) {
           s.fireCooldown = sentryFireDelay;
           _v7.set(s.pos.x, 1.45, s.pos.z);
-          _v8.subVectors(m.pos, _v7).normalize();
-          _v8.x += (Math.random() - 0.5) * 0.08;
-          _v8.y += (Math.random() - 0.5) * 0.06;
-          _v8.z += (Math.random() - 0.5) * 0.08;
-          _v8.normalize().multiplyScalar(sentryBoltSpeed);
+          this.hostileAim(_v7, m.pos, _v8, true).multiplyScalar(sentryBoltSpeed);
           this.vfx.spawnTracer(_v7, _v8);
           this.vfx.spawnLightFlash(_v7, 0xff4422, 4.5, 0.05);
           this.audio.playGunshot();
