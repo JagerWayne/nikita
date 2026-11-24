@@ -1234,6 +1234,10 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
       <span>NIKITA // SHADOW OPS</span>
       <span class="modal-subtitle">TACTICAL GUIDED-MISSILE SIM &middot; <span id="app-version">v1.0</span></span>
     </div>
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 8px;">
+      <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
+      <span class="ios-hint" id="install-help" style="display:none; margin:0; flex:1; min-width:200px;"></span>
+    </div>
     <p class="briefing-desc">
       Infiltrate 100 procedurally generated sectors of the fortified Shadow Moses subterranean facility via remote-controlled Nikita warhead.
       Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo. Earn bonus rockets (rack holds up to 100) for every kill, laser shutdown and clean sweep.
@@ -1268,7 +1272,6 @@ body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: n
       </label>
     </div>
     <div class="btn-row">
-      <button class="tac-btn amber" id="btn-install" style="display:none;">INSTALL APP</button>
       <button class="tac-btn" id="btn-launch">INITIATE LAUNCH</button>
     </div>
   </div>
@@ -6266,18 +6269,34 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 let deferredInstallPrompt = null;
 const installBtn = document.getElementById('btn-install');
+const installHelp = document.getElementById('install-help');
+const uaStr = navigator.userAgent || '';
+const isIOSDevice = /iPad|iPhone|iPod/.test(uaStr) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandaloneApp = ['standalone', 'fullscreen', 'minimal-ui'].some((m) => window.matchMedia && window.matchMedia(`(display-mode: ${m})`).matches) || navigator.standalone === true;
+// Already running as an installed app: nothing to offer.
+if (isStandaloneApp && installBtn) installBtn.style.display = 'none';
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (installBtn) installBtn.style.display = '';
 });
 if (installBtn) {
   installBtn.addEventListener('click', async () => {
-    if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    try { await deferredInstallPrompt.userChoice; } catch (_) {}
-    deferredInstallPrompt = null;
-    installBtn.style.display = 'none';
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      try { await deferredInstallPrompt.userChoice; } catch (_) {}
+      deferredInstallPrompt = null;
+      return;
+    }
+    // No one-tap prompt available (iPhone Safari, already installed, Firefox...): show the manual steps.
+    let msg;
+    if (isIOSDevice) {
+      msg = 'iPhone / iPad: open this page in Safari, tap the Share button (square with an arrow), then choose "Add to Home Screen".';
+    } else if (/Android/.test(uaStr)) {
+      msg = 'Android: open the browser menu (three dots), then tap "Install app" or "Add to Home screen". If it is missing, you may already have it installed: remove the old icon and reload this page.';
+    } else {
+      msg = 'Use your browser\'s menu: "Install app" / "Add to Home Screen". The install option appears in Chrome and Edge once the page has fully loaded.';
+    }
+    if (installHelp) { installHelp.textContent = msg; installHelp.style.display = 'block'; }
   });
 }
 window.addEventListener('appinstalled', () => { if (installBtn) installBtn.style.display = 'none'; });
