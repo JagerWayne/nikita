@@ -59,6 +59,16 @@ Installed phones pick up the new version on the next launch. If an install ever 
 
 **Points.** Everything destroyable scores: primary targets 150, CIWS turrets 60, sentries 40, lasers 35, fuel barrels 10, vent grates 10, cracked walls 40, plus clear-all, direct-hit, combo, stealth, rank and medal bonuses. Kill points are multiplied by your speed at impact: x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed. Every 100 points pays a package of 10 rockets (outside the sector reward cap). Collecting a power-up is worth 30 points. The score carries from sector to sector and restarts with a new campaign; the HUD shows `score / next package`.
 
+**Upgrades.** Every point you earn is also a credit. Spend credits on five rocket upgrades (saved on the device) from the title screen, the sector-clear screen, the mission-failed screen, or after EXIT TO MENU in the burger menu (it asks twice so a stray tap cannot throw away a sector).
+
+| Upgrade | Effect | Levels |
+| --- | --- | --- |
+| Max speed | Starts at 20 m/s (x2 points at full speed) and rises by 0.5 per purchase to 30 m/s (x3 points); the speed lever's top end is your max speed | 20 |
+| Fuel | Less fuel burned (-13% at level 1, over -50% at level 10) | 10 |
+| Boost | Boost drains slower and recharges faster | 10 |
+| Hull | Less damage from impacts, grates and laser relays | 10 |
+| Explosion force | Bigger blast radius (+6% per level) | 10 |
+
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
 **Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about two thirds of a second, then the engine ignites.

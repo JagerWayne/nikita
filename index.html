@@ -737,6 +737,14 @@
   }
 
   .btn-row.center { justify-content: center; }
+  .upg-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid rgba(0, 255, 136, 0.3); border-radius: 4px; background: rgba(0, 20, 12, 0.5); }
+  .upg-name { font-size: 13px; letter-spacing: 0.14em; color: var(--hud-green); }
+  .upg-name span { color: var(--hud-amber); margin-left: 8px; font-size: 11px; }
+  .upg-desc { font-size: 11px; opacity: 0.85; margin: 2px 0 5px; letter-spacing: 0.04em; }
+  .upg-bar { height: 5px; background: rgba(0, 255, 136, 0.15); border-radius: 3px; overflow: hidden; }
+  .upg-bar i { display: block; height: 100%; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); }
+  .upg-row .tac-btn { min-width: 104px; min-height: 40px; padding: 6px 10px; font-size: 12px; }
+  .tac-btn.dim, .tac-btn:disabled { opacity: 0.4; cursor: default; }
   .title-card { max-width: 460px; text-align: center; }
   .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
   .title-card .briefing-desc { margin: 6px 0 16px; }
@@ -1249,6 +1257,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <button class="tac-btn amber" id="btn-pause-recenter">CENTER GYRO</button>
       <button class="tac-btn amber" id="btn-pause-fullscrn">FULLSCREEN</button>
       <button class="tac-btn amber" id="btn-pause-restart">RESTART</button>
+      <button class="tac-btn danger" id="btn-pause-menu">EXIT TO MENU</button>
       <button class="tac-btn" id="btn-pause-resume">RESUME</button>
     </div>
   </div>
@@ -1318,10 +1327,25 @@ window.addEventListener('unhandledrejection', function (e) {
     </details>
 
     <div class="btn-row center" style="margin-top:12px;">
+      <button class="tac-btn amber" id="btn-upgrades" style="padding:6px 14px; font-size:12px;">UPGRADES</button>
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
       <button class="tac-btn danger" id="btn-exit" style="padding:6px 14px; font-size:12px;">EXIT</button>
     </div>
     <p class="ios-hint" id="install-help" style="display:none; margin:8px 0 0;"></p>
+  </div>
+</div>
+
+<!-- Upgrade Modal -->
+<div id="upgrade-modal" class="modal-backdrop" style="display:none; z-index:40;">
+  <div class="modal-card" style="max-width:640px;">
+    <div class="modal-title">
+      <span>ROCKET UPGRADES</span>
+      <span class="modal-subtitle">CREDITS: <strong id="upg-credits" style="color:#ffaa00">0</strong></span>
+    </div>
+    <div id="upg-list"></div>
+    <div class="btn-row" style="margin-top:12px;">
+      <button class="tac-btn" id="btn-upg-back">BACK</button>
+    </div>
   </div>
 </div>
 
@@ -1337,6 +1361,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <div>ROCKETS FIRED: <strong id="res-missiles">1</strong></div>
       <div>ROCKET REWARDS: <strong id="res-rewards" style="color:var(--hud-amber, #ffbb33)">+0</strong></div>
       <div>POINTS: <strong id="res-points">0</strong></div>
+      <div>CREDITS: <strong id="res-credits">0</strong></div>
       <div>ALERTS TRIGGERED: <strong id="res-alerts">0</strong></div>
       <div>SENTRIES NEUTRALIZED: <strong id="res-sentries">0</strong></div>
       <div>MISSION TIME: <strong id="res-time">00.0s</strong></div>
@@ -1344,6 +1369,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <div id="res-rewards-detail" style="margin:6px 0 4px; font-size:11px; letter-spacing:0.08em; opacity:0.8; text-align:center;"></div>
     <div id="res-medals" style="margin:0 0 10px; font-size:11px; letter-spacing:0.06em; color:var(--hud-amber); text-align:center;"></div>
     <div class="btn-row">
+      <button class="tac-btn amber" id="btn-clear-upgrades">UPGRADES</button>
       <button class="tac-btn amber" id="btn-replay-sector">REPLAY SECTOR</button>
       <button class="tac-btn" id="btn-next-sector">DEPLOY NEXT SECTOR</button>
     </div>
@@ -1359,6 +1385,7 @@ window.addEventListener('unhandledrejection', function (e) {
     </div>
     <p class="briefing-desc" id="fail-reason">All 50 Nikita rockets expended before primary objectives were neutralized.</p>
     <div class="btn-row">
+      <button class="tac-btn amber" id="btn-fail-upgrades">UPGRADES</button>
       <button class="tac-btn amber" id="btn-play-again">PLAY AGAIN (NEW SEED)</button>
       <button class="tac-btn" id="btn-retry-sector">RETRY SAME SECTOR [R]</button>
     </div>
@@ -1544,8 +1571,12 @@ const isShaft = (v) => v >= CELL_SHAFT_LOW && v <= CELL_SHAFT_HIGH;
 const isWallLike = (v) => v === CELL_WALL || v === CELL_CRACKED || isShaft(v);
 
 const SPEED_MIN = 7.5;    // throttle lever fully down
-const SPEED_MAX = 30.0;   // throttle lever fully up
-const CRUISE_THROTTLE = (16.0 - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
+const SPEED_MAX = 30.0;   // absolute ceiling the max-speed upgrade can reach
+const SPEED_START_CAP = 20.0;  // max speed before any upgrade (the lever's top end)
+const SPEED_STEP = 0.5;
+const CRUISE_THROTTLE = 0.378;
+const UPG_MAX_LEVEL = 10;
+const SAVE_KEY = 'nikita-save-v1';
 
 const SPEED_MODES = {
   1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, plumeXZ: 0.68, plumeY: 0.58, inertia: 13.5, rollMult: 0.42, badgeClass: 'tier-1' },
@@ -2527,6 +2558,9 @@ class NikitaGame {
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
+    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0 };
+    this.credits = 0;
+    this.loadProgress();
     this.score = 0;
     this.sectorStartScore = 0;
     this.nextPackage = POINTS_PER_PACKAGE;
@@ -4149,9 +4183,120 @@ class NikitaGame {
     this.updateHUDText();
   }
 
+  /* ------------------------------------------------------------------------
+     ROCKET UPGRADES (bought with credits; saved on the device)
+     ------------------------------------------------------------------------ */
+  loadProgress() {
+    try {
+      const d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+      if (d && typeof d === 'object') {
+        this.credits = Math.max(0, Math.floor(d.credits || 0));
+        for (const k of Object.keys(this.upg)) this.upg[k] = Math.max(0, Math.min(k === 'speed' ? 20 : UPG_MAX_LEVEL, Math.floor((d.upg && d.upg[k]) || 0)));
+      }
+    } catch (_) {}
+  }
+
+  saveProgress() {
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify({ credits: this.credits, upg: this.upg })); } catch (_) {}
+  }
+
+  maxSpeed() { return Math.min(SPEED_MAX, SPEED_START_CAP + SPEED_STEP * this.upg.speed); }
+  fullSpeedMult() { return this.maxSpeed() / 10; }                       // 20 -> x2 ... 30 -> x3 points at full speed
+  fuelBurnMult() { return 1 / (1 + 0.15 * this.upg.fuel); }
+  boostDrainMult() { return 1 / (1 + 0.2 * this.upg.boost); }
+  boostRechargeMult() { return 1 + 0.15 * this.upg.boost; }
+  hullDmgMult() { return 1 / (1 + 0.12 * this.upg.hull); }
+  blastRadiusBase() { return 8.2 * (1 + 0.06 * this.upg.force); }
+  blastPowerBase() { return 1.25 * (1 + 0.04 * this.upg.force); }
+
+  upgradeCost(key) {
+    const l = this.upg[key];
+    return key === 'speed' ? 150 + 50 * l : 120 + 90 * l;
+  }
+
+  upgradeMax(key) { return key === 'speed' ? 20 : UPG_MAX_LEVEL; }
+
+  buyUpgrade(key) {
+    const max = this.upgradeMax(key);
+    if (this.upg[key] >= max) return;
+    const cost = this.upgradeCost(key);
+    if (this.credits < cost) return;
+    this.credits -= cost;
+    this.upg[key]++;
+    this.saveProgress();
+    this.audio.unlock();
+    this.audio.playTargetChime();
+    this.vibrate(14);
+    this.renderUpgrades();
+  }
+
+  renderUpgrades() {
+    const pct = (v) => `${Math.round(v * 100)}%`;
+    const defs = [
+      { key: 'speed', name: 'MAX SPEED', desc: () => `${this.maxSpeed().toFixed(1)} m/s  ·  x${this.fullSpeedMult().toFixed(2)} POINTS AT FULL SPEED` + (this.upg.speed < 20 ? `   (next ${(this.maxSpeed() + SPEED_STEP).toFixed(1)} m/s, x${((this.maxSpeed() + SPEED_STEP) / 10).toFixed(2)})` : '') },
+      { key: 'fuel', name: 'FUEL', desc: () => `FUEL BURN -${pct(1 - this.fuelBurnMult())}` },
+      { key: 'boost', name: 'BOOST', desc: () => `DRAIN -${pct(1 - this.boostDrainMult())}  ·  RECHARGE +${pct(this.boostRechargeMult() - 1)}` },
+      { key: 'hull', name: 'HULL', desc: () => `DAMAGE TAKEN -${pct(1 - this.hullDmgMult())}` },
+      { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` }
+    ];
+    const box = document.getElementById('upg-list');
+    box.innerHTML = '';
+    for (const d of defs) {
+      const lvl = this.upg[d.key], max = this.upgradeMax(d.key), maxed = lvl >= max;
+      const cost = this.upgradeCost(d.key);
+      const row = document.createElement('div');
+      row.className = 'upg-row';
+      row.innerHTML = `<div class="upg-info"><div class="upg-name">${d.name} <span>${lvl} / ${max}</span></div><div class="upg-desc">${d.desc()}</div><div class="upg-bar"><i style="width:${(lvl / max) * 100}%"></i></div></div>`;
+      const btn = document.createElement('button');
+      btn.className = 'tac-btn ' + (maxed ? '' : (this.credits >= cost ? 'amber' : 'dim'));
+      btn.textContent = maxed ? 'MAXED' : `BUY  ${cost}`;
+      btn.disabled = maxed || this.credits < cost;
+      btn.addEventListener('click', () => this.buyUpgrade(d.key));
+      row.appendChild(btn);
+      box.appendChild(row);
+    }
+    document.getElementById('upg-credits').textContent = String(this.credits);
+    this.updateCreditLabels();
+  }
+
+  updateCreditLabels() {
+    const b = document.getElementById('btn-upgrades');
+    if (b) b.textContent = `UPGRADES · ${this.credits} CR`;
+  }
+
+  openUpgrades() {
+    this.renderUpgrades();
+    document.getElementById('upgrade-modal').style.display = 'flex';
+  }
+
+  closeUpgrades() {
+    document.getElementById('upgrade-modal').style.display = 'none';
+  }
+
+  // Abandon the current sector and go back to the title screen (where upgrades can be bought).
+  exitToMenu() {
+    this.paused = false;
+    this.state = 'BRIEFING';
+    this.missile.active = false;
+    this.missileGroup.visible = false;
+    for (const id of ['pause-modal', 'clear-modal', 'fail-modal', 'upgrade-modal', 'killcam-banner', 'fire-btn', 'hud-layer']) {
+      const e = document.getElementById(id);
+      if (e) e.style.display = 'none';
+    }
+    document.getElementById('briefing-modal').style.display = 'flex';
+    const lv = document.getElementById('brief-level');
+    if (lv) lv.value = String(this.level);
+    this.resetOverlays();
+    this.resetAllInputs();
+    try { if (document.exitPointerLock) document.exitPointerLock(); } catch (_) {}
+    this.updateCreditLabels();
+    this.updateTouchControlsVisibility();
+  }
+
   hitMultNow() {
-    const f = Math.max(0, Math.min(1, (this.missile.vel.length() - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)));
-    return MULT_SLOW + (MULT_FAST - MULT_SLOW) * f;
+    const cap = this.maxSpeed();
+    const f = Math.max(0, Math.min(1, (this.missile.vel.length() - SPEED_MIN) / (cap - SPEED_MIN)));
+    return MULT_SLOW + (this.fullSpeedMult() - MULT_SLOW) * f;
   }
 
   // Queue points; kills use the speed multiplier of the hit that caused them, bonuses are fixed.
@@ -4171,6 +4316,8 @@ class NikitaGame {
     for (const e of this.ptsPending) { total += e.pts; parts.push(e.count > 1 ? `${e.count}× ${e.label}` : e.label); }
     this.ptsPending = [];
     this.score += total;
+    this.credits += total;      // every point earned is also a credit to spend on upgrades
+    this.saveProgress();
     this.pushFeed(`+${total} PTS — ${parts.join(' · ')}`, 'amber');
     while (this.score >= this.nextPackage) {
       this.nextPackage += POINTS_PER_PACKAGE;
@@ -4498,7 +4645,7 @@ class NikitaGame {
     const over = this.power.overcharge;
     this.power.overcharge = false;
     if (over) this.pushFeed('OVERCHARGED WARHEAD', 'red');
-    this.triggerBlast(impactPos, over ? 13.2 : 8.2, over ? 1.7 : 1.25, directHitTarget, directHitSentry);
+    this.triggerBlast(impactPos, this.blastRadiusBase() * (over ? 1.6 : 1), this.blastPowerBase() * (over ? 1.36 : 1), directHitTarget, directHitSentry);
     if (reason) this.pushFeed(reason, 'amber');
 
     const remaining = this.targets.filter(t => t.active).length;
@@ -4979,7 +5126,7 @@ class NikitaGame {
     const profile = blendProfile(effT, _profile);
 
     if (!this.cfg.infFuel) {
-      m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate * (this.modifier === 'LOW FUEL' ? 1.6 : 1));
+      m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult());
     } else {
       m.fuel = 100;
     }
@@ -4990,7 +5137,7 @@ class NikitaGame {
     if (this.power.freeBoost > 0) { boostLoad = 0; m.boost = 100; this.power.freeBoost = Math.max(0, this.power.freeBoost - dt); }
     if (this.power.stealth > 0) this.power.stealth = Math.max(0, this.power.stealth - dt);
     if (boostLoad > 0 && !this.cfg.infBoost) {
-      m.boost = Math.max(0, m.boost - dt * 24.0 * boostLoad);
+      m.boost = Math.max(0, m.boost - dt * 24.0 * boostLoad * this.boostDrainMult());
       if (m.boost <= 0) {
         m.boost = 0;
         m.boostDepleted = true;
@@ -4998,7 +5145,7 @@ class NikitaGame {
         this.pushFeed('BOOST EMPTY — RECHARGING TO 100%', 'red');
       }
     } else {
-      m.boost = Math.min(100, m.boost + dt * 11.5);
+      m.boost = Math.min(100, m.boost + dt * 11.5 * this.boostRechargeMult());
       if (m.boostDepleted && m.boost >= 100) {
         m.boostDepleted = false;
         this.pushFeed('BOOST CAPACITOR READY [100%]', 'cyan');
@@ -5264,7 +5411,7 @@ class NikitaGame {
             this.flushRewards();
             this.vfx.spawnScrapeSparks(_v3, _v1, 16);
             this.audio.playScrape();
-            m.hull -= 24;
+            m.hull -= 24 * this.hullDmgMult();
             this.pushFeed('GRATE SHATTERED (-24% HULL)', 'cyan');
             if (m.hull <= 0) { this.detonateMissile(_v3, 'HULL BREACHED ON GRATE'); return; }
           }
@@ -5279,7 +5426,7 @@ class NikitaGame {
             this.disableLaserGrid(l, true);
             this.flushRewards();
             this.audio.playScrape();
-            m.hull = Math.max(0, m.hull - 10);
+            m.hull = Math.max(0, m.hull - 10 * this.hullDmgMult());
             if (m.hull <= 0) { this.detonateMissile(_v3, 'HULL BREACHED ON LASER RELAY'); return; }
             continue;
           }
@@ -5368,7 +5515,7 @@ class NikitaGame {
             const flatLen = Math.hypot(m.vel.x, m.vel.z);
             if (flatLen > 0.01) m.yaw = Math.atan2(-m.vel.x, -m.vel.z);
             m.pitch = Math.max(-1.0, Math.min(1.0, Math.atan2(m.vel.y, Math.max(0.01, flatLen))));
-            m.hull = Math.max(0, m.hull - 22);
+            m.hull = Math.max(0, m.hull - 22 * this.hullDmgMult());
             this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.28);
             this.vfx.spawnScrapeSparks(_v3, _v4, 14);
             this.audio.playScrape();
@@ -5463,7 +5610,7 @@ class NikitaGame {
       }
     }
 
-    this.audio.updateEngine(true, m.activeSpeedMode, m.currentSpeed / 30, engineOn);
+    this.audio.updateEngine(true, m.activeSpeedMode, m.currentSpeed / this.maxSpeed(), engineOn);
 
     this.cStyle(this.el.speedLines, 'opacity', m.activeSpeedMode === 3 ? '0.85' : '0');
     if (m.activeSpeedMode === 3) {
@@ -6298,6 +6445,7 @@ class NikitaGame {
     document.getElementById('res-missiles').textContent = `${used} FIRED`;
     document.getElementById('res-medals').textContent = medalText;
     document.getElementById('res-points').textContent = `+${this.score - this.sectorStartScore}  (TOTAL ${this.score})`;
+    document.getElementById('res-credits').textContent = String(this.credits);
     document.getElementById('res-rewards').textContent = `+${this.rewards.total}  (KILL REWARDS ${this.rewards.capUsed} / ${this.rewards.cap})`;
     const lg = this.rewards.log;
     const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', grate: 'GRATES', bonus: 'BONUSES', cache: 'CACHES', points: 'POINT PACKAGES' };
@@ -6334,7 +6482,7 @@ class NikitaGame {
     if (readout) readout.textContent = `${this.throttleSpeed(this.missile.throttle).toFixed(0)} m/s`;
   }
 
-  throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (SPEED_MAX - SPEED_MIN); }
+  throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (this.maxSpeed() - SPEED_MIN); }
 
   modeForThrottle(t) { return t < 0.2 ? 1 : (t > 0.8 ? 3 : 2); }
 
@@ -6994,6 +7142,20 @@ class NikitaGame {
     }
 
     document.getElementById('btn-exit').addEventListener('click', () => this.exitGame());
+    document.getElementById('btn-upgrades').addEventListener('click', () => this.openUpgrades());
+    document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
+    document.getElementById('btn-fail-upgrades').addEventListener('click', () => this.openUpgrades());
+    document.getElementById('btn-upg-back').addEventListener('click', () => this.closeUpgrades());
+    // Exit to menu asks twice so a stray tap cannot throw away a sector
+    const menuBtn = document.getElementById('btn-pause-menu');
+    let menuArmed = 0;
+    menuBtn.addEventListener('click', () => {
+      if (menuArmed && performance.now() - menuArmed < 3000) { menuArmed = 0; menuBtn.textContent = 'EXIT TO MENU'; this.exitToMenu(); return; }
+      menuArmed = performance.now();
+      menuBtn.textContent = 'TAP AGAIN TO EXIT';
+      setTimeout(() => { if (menuArmed && performance.now() - menuArmed >= 2900) { menuArmed = 0; menuBtn.textContent = 'EXIT TO MENU'; } }, 3100);
+    });
+    this.updateCreditLabels();
 
     document.getElementById('btn-launch').addEventListener('click', () => {
       this.audio.unlock();
