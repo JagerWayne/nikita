@@ -27,6 +27,26 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Stealth, rewards and secrets (v1.1)
+
+**Hearing.** Sentries hear the rocket as well as see it. The hearing radius grows with the speed lever: about 6 units at minimum speed, 15 at cruise, 46 at full throttle. Walls muffle the sound, so a fast rocket is loud in open halls but quieter next door. A sentry that hears you shows `?`, walks to the noise and looks around; a sentry that hears you at close range at top speed goes straight to alert `!`. An alerted sentry radios nearby guards. The dashed amber ring on the radar is your current noise radius.
+
+**Rocket rewards.** Kills and shutdowns pay a few rockets (sentry +1, laser off +1, turret +2, primary target +2, plus small clear-all, combo, direct-hit, stealth and rank bonuses). Each sector caps rewards at `12 + 2 x tier`; the rack holds 100 rockets and up to 25 unspent rockets carry into the next sector.
+
+**Cracked walls.** Orange cracked walls (amber squares on the radar) shatter when a warhead blows up next to them.
+- **Shortcut:** opens a hidden tunnel that cuts across the facility.
+- **Secret chamber:** a sealed pocket holding a power-up. Fly into it to collect it.
+
+| Power-up | Effect |
+| --- | --- |
+| Supply cache | +8 rockets (outside the sector cap) |
+| Boost cell | Full boost and unlimited boost for 8 s |
+| Repair kit | Hull and fuel restored |
+| Silent running | Engine noise and detection cut for 12 s |
+| Overcharge | Next warhead blast is 1.6x bigger |
+
+**Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
+
 ## Mobile controls
 
 | Control | Action |

@@ -980,6 +980,11 @@
 
 @media (max-width: 700px) { #hud-bottom-right { width: 156px; } }
 
+#hud-power {
+  position: absolute; right: var(--safe-r); top: calc(var(--safe-t) + 92px); text-align: right;
+  font: bold 11px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-cyan);
+  text-shadow: 0 0 6px rgba(0, 229, 255, 0.7); pointer-events: none; z-index: 5;
+}
 #fire-btn {
   position: fixed; left: 50%; bottom: calc(var(--safe-b) + 6px); transform: translateX(-50%);
   min-width: 170px; min-height: 64px; padding: 6px 22px; z-index: 12;
@@ -1165,6 +1170,8 @@ window.addEventListener('unhandledrejection', function (e) {
     </div>
   </div>
 
+  <div id="hud-power"></div>
+
   <div id="hud-bottom-right"></div>
 </div>
 
@@ -1255,7 +1262,7 @@ window.addEventListener('unhandledrejection', function (e) {
     </div>
     <p class="briefing-desc">
       Infiltrate 100 procedurally generated sectors of the fortified Shadow Moses subterranean facility via remote-controlled Nikita warhead.
-      Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo. Earn bonus rockets (rack holds up to 100) for every kill, laser shutdown and clean sweep.
+      Each run generates a randomized facility seed. Destroy all hardened primary targets using your 50-rocket salvo. Earn a few bonus rockets for kills, laser shutdowns and clean sweeps. Shatter cracked walls for shortcuts and hidden power-ups. Fast rockets are loud: sentries hear them from afar.
     </p>
     <div class="controls-grid">
       <div><span class="ctrl-key">LEFT STICK / GYRO</span> : Pitch & Yaw Flight</div>
@@ -1432,21 +1439,29 @@ const SUBSTEPS = 4;
 const MISSILE_RADIUS = 0.42;
 const MAX_SALVO = 50;          // rockets issued at the start of a fresh sector
 const MAX_ROCKETS = 100;       // hard cap on rockets the player can hold (rewards stop here)
-// Rocket rewards. each = per kill / shutdown, all = bonus for wiping a whole category in a sector.
+// Rocket rewards (balanced: rockets stay scarce). each = per kill / shutdown, all = bonus for wiping a category.
 const REWARDS = {
-  target: { each: 5, all: 10, label: 'PRIMARY TARGET',  allLabel: 'ALL PRIMARY TARGETS DESTROYED' },
-  sentry: { each: 3, all: 5,  label: 'SENTRY',          allLabel: 'ALL SENTRIES NEUTRALIZED' },
-  laser:  { each: 2, all: 5,  label: 'LASER GRID OFF',  allLabel: 'ALL LASER GRIDS OFFLINE' },
-  turret: { each: 4, all: 5,  label: 'CIWS TURRET',     allLabel: 'ALL CIWS TURRETS DESTROYED' },
-  barrel: { each: 1, all: 5,  label: 'FUEL BARREL',     allLabel: 'ALL FUEL BARRELS DETONATED' },
-  grate:  { each: 1, all: 3,  label: 'VENT GRATE',      allLabel: 'ALL VENT GRATES BREACHED' }
+  target: { each: 2, all: 5, label: 'PRIMARY TARGET',  allLabel: 'ALL PRIMARY TARGETS DESTROYED' },
+  sentry: { each: 1, all: 3, label: 'SENTRY',          allLabel: 'ALL SENTRIES NEUTRALIZED' },
+  laser:  { each: 1, all: 3, label: 'LASER GRID OFF',  allLabel: 'ALL LASER GRIDS OFFLINE' },
+  turret: { each: 2, all: 3, label: 'CIWS TURRET',     allLabel: 'ALL CIWS TURRETS DESTROYED' },
+  barrel: { each: 0, all: 0, label: 'FUEL BARREL',     allLabel: 'ALL FUEL BARRELS DETONATED' },
+  grate:  { each: 0, all: 1, label: 'VENT GRATE',      allLabel: 'ALL VENT GRATES BREACHED' }
 };
 const REWARD_BONUS = {
-  directHit: 2,                       // primary target destroyed by a direct hit
-  combo3: 3, combo5: 6,               // 3+ / 5+ hostiles (targets, sentries, turrets) in one blast
-  stealth: 5,                         // sector cleared with zero alerts
-  rank: { PANTHER: 0, DOBERMAN: 2, HOUND: 4, FOXHOUND: 8 }
+  directHit: 1,                       // primary target destroyed by a direct hit
+  combo3: 1, combo5: 3,               // 3+ / 5+ hostiles (targets, sentries, turrets) in one blast
+  stealth: 3,                         // sector cleared with zero alerts
+  rank: { PANTHER: 0, DOBERMAN: 1, HOUND: 2, FOXHOUND: 4 }
 };
+const REWARD_CAP_BASE = 12;            // rewards per sector are capped at BASE + PER_TIER * tier
+const REWARD_CAP_PER_TIER = 2;
+const CARRY_CAP = 25;                  // unspent rockets above the standard salvo that carry into the next sector
+const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber (outside the sector cap)
+// Hearing: sentries hear the rocket within a radius that grows with throttle
+const HEAR_MIN = 6;                    // radius at minimum speed
+const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
+const HEAR_WALL_DAMP = 0.65;           // radius multiplier per wall-cell of thickness between sentry and rocket
 const MAX_LEVELS = 100;
 const LEVELS_PER_TIER = 5;
 const MAX_TIERS = MAX_LEVELS / LEVELS_PER_TIER;
@@ -1458,6 +1473,8 @@ const MAX_LOCK_RANGE = 68.0;
 const CELL_WALL = 1;
 const CELL_FLOOR = 0;
 const CELL_RUNWAY = 2;
+const CELL_CRACKED = 3;   // destroyable wall: solid until a blast shatters it
+const isWallLike = (v) => v === CELL_WALL || v === CELL_CRACKED;
 
 const SPEED_MIN = 7.5;    // throttle lever fully down
 const SPEED_MAX = 30.0;   // throttle lever fully up
@@ -2389,6 +2406,25 @@ class NikitaGame {
       emissive: new THREE.Color(0x0a1c22), emissiveIntensity: 0.55
     });
     this.hazardMat = new THREE.MeshStandardMaterial({ map: this.textures.hazardTex, roughness: 0.45, metalness: 0.3 });
+    {
+      // Procedural cracked-plate texture for destroyable walls
+      const cc = document.createElement('canvas'); cc.width = 256; cc.height = 256;
+      const cx = cc.getContext('2d');
+      cx.fillStyle = '#2a1f1a'; cx.fillRect(0, 0, 256, 256);
+      for (let i = 0; i < 40; i++) { cx.fillStyle = `rgba(0,0,0,${0.05 + Math.random() * 0.08})`; cx.fillRect(Math.random() * 256, Math.random() * 256, 10 + Math.random() * 40, 2 + Math.random() * 6); }
+      cx.strokeStyle = '#ff7a1a'; cx.shadowColor = '#ff5a00'; cx.shadowBlur = 10; cx.lineWidth = 4; cx.lineCap = 'round';
+      for (let k = 0; k < 7; k++) {
+        let x = 128 + (Math.random() - 0.5) * 60, y = 128 + (Math.random() - 0.5) * 60;
+        cx.beginPath(); cx.moveTo(x, y);
+        const ang = (k / 7) * Math.PI * 2 + Math.random() * 0.5;
+        for (let seg = 0; seg < 6; seg++) { x += Math.cos(ang + (Math.random() - 0.5) * 1.0) * 24; y += Math.sin(ang + (Math.random() - 0.5) * 1.0) * 24; cx.lineTo(x, y); }
+        cx.stroke();
+      }
+      cx.shadowBlur = 0; cx.fillStyle = '#ffaa00';
+      for (let x = -256; x < 256; x += 32) { cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x + 16, 0); cx.lineTo(x + 16 + 14, 14); cx.lineTo(x + 14, 14); cx.fill(); }
+      const tex = new THREE.CanvasTexture(cc); tex.colorSpace = THREE.SRGBColorSpace;
+      this.crackMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8, metalness: 0.15, emissive: new THREE.Color(0xffffff), emissiveMap: tex, emissiveIntensity: 0.6 });
+    }
 
     this.maxSentries = 40;
     this.maxBarrels = 48;
@@ -2412,6 +2448,13 @@ class NikitaGame {
     this.ammo = MAX_SALVO;
     this.fired = 0;
     this.resetRewards();
+    this.breakables = [];
+    this.pickups = [];
+    this.secretHidden = new Set();
+    this.power = { stealth: 0, freeBoost: 0, overcharge: false };
+    this.noiseRadius = HEAR_MIN;
+    this.secretsFound = 0;
+    this.shortcutsOpened = 0;
     this.targets = [];
     this.barrels = [];
     this.sentries = [];
@@ -2540,7 +2583,7 @@ class NikitaGame {
     this.el = {
       speedLines: $('speed-lines'), ecmOverlay: $('ecm-overlay'), ecmBanner: $('ecm-banner'),
       flashOverlay: $('flash-overlay'), alertBanner: $('alert-banner'),
-      btnLock: $('tbtn-lock'),
+      btnLock: $('tbtn-lock'), hudPower: $('hud-power'),
       speedReadout: $('speed-readout'), valFuel: $('val-fuel'), fillFuel: $('fill-fuel'),
       valBoost: $('val-boost'), fillBoost: $('fill-boost'),
       valHull: $('val-hull'), fillHull: $('fill-hull'),
@@ -3017,6 +3060,12 @@ class NikitaGame {
     this.turrets = [];
     this.steamVents = [];
     this.pendingBlasts = [];
+    this.breakables = [];
+    this.pickups = [];
+    this.secretHidden = new Set();
+    this.power = { stealth: 0, freeBoost: 0, overcharge: false };
+    this.secretsFound = 0;
+    this.shortcutsOpened = 0;
     this.rooms = [];
     this.grid.fill(CELL_WALL);
 
@@ -3094,6 +3143,8 @@ class NikitaGame {
         carveCorridor(curr.cx, curr.cz, alt.cx, alt.cz, 2);
       }
     }
+
+    this.placeBreakables(numericSeed, tier);
 
     let wallCount = 0, floorCount = 0, runwayCount = 0;
     for (let z = 0; z < GRID_SIZE; z++) {
@@ -3177,7 +3228,7 @@ class NikitaGame {
     for (let z = 4; z < GRID_SIZE - 4; z += 5) {
       for (let x = 4; x < GRID_SIZE - 4; x += 5) {
         const v = this.grid[z * GRID_SIZE + x];
-        if (v !== CELL_WALL) {
+        if (!isWallLike(v)) {
           lightFixtureSpots.push({ x: gridToWorldX(x), z: gridToWorldZ(z), isRunway: v === CELL_RUNWAY });
         }
       }
@@ -3268,6 +3319,13 @@ class NikitaGame {
         detectMeter: 0,
         alerted: false,
         alertTimer: 0,
+        hearT: rng() * 0.2,
+        heardNow: false,
+        heardLoud: 0,
+        heardClose: false,
+        invT: 0,
+        invX: 0,
+        invZ: 0,
         fireCooldown: 0.4,
         walkPhase: rng() * 6.28
       });
@@ -3297,14 +3355,15 @@ class NikitaGame {
 
         const gz = Math.max(rm.z + 1, Math.min(rm.z + rm.h - 2, rm.cz + (i >= patrolRooms.length ? (rng() < 0.5 ? -1 : 1) : 0)));
         let gxLeft = rm.cx;
-        while (gxLeft > 1 && this.grid[gz * GRID_SIZE + (gxLeft - 1)] !== CELL_WALL) gxLeft--;
+        while (gxLeft > 1 && !isWallLike(this.grid[gz * GRID_SIZE + (gxLeft - 1)])) gxLeft--;
         let gxRight = rm.cx;
-        while (gxRight < GRID_SIZE - 2 && this.grid[gz * GRID_SIZE + (gxRight + 1)] !== CELL_WALL) gxRight++;
+        while (gxRight < GRID_SIZE - 2 && !isWallLike(this.grid[gz * GRID_SIZE + (gxRight + 1)])) gxRight++;
 
         const xMin = gridToWorldX(gxLeft) - CELL_SIZE * 0.48;
         const xMax = gridToWorldX(gxRight) + CELL_SIZE * 0.48;
         const lz = gridToWorldZ(gz);
-        this.spawnLaserGrid(xMin, xMax, lz, mode, phase, laserSpeed);
+        const relaySide = mulberry32((numericSeed + Math.imul(i + 1, 7919)) >>> 0)() < 0.5 ? 'L' : 'R';
+        this.spawnLaserGrid(xMin, xMax, lz, mode, phase, laserSpeed, relaySide);
       }
     }
 
@@ -3423,7 +3482,8 @@ class NikitaGame {
     });
   }
 
-  spawnLaserGrid(xMin, xMax, z, mode, phase, speed) {
+  spawnLaserGrid(xMin, xMax, z, mode, phase, speed, relaySide = 'L') {
+    const relayX = relaySide === 'R' ? xMax - 0.34 : xMin + 0.34;
     const spanX = Math.max(2.0, xMax - xMin);
     const midX = (xMin + xMax) * 0.5;
 
@@ -3463,14 +3523,14 @@ class NikitaGame {
     };
 
     const relayGroup = new THREE.Group();
-    relayGroup.position.set(xMin + 0.34, 2.75, z + 0.68);
+    relayGroup.position.set(relayX, 2.75, z + 0.68);
     const relayBody = new THREE.Mesh(
       new THREE.BoxGeometry(0.48, 0.88, 0.52),
       new THREE.MeshStandardMaterial({ color: 0x2b363c, metalness: 0.72, roughness: 0.3 })
     );
     const relayCoreMat = new THREE.MeshBasicMaterial({ color: 0xff5522 });
     const relayCore = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.52, 0.26), relayCoreMat);
-    relayCore.position.x = 0.22;
+    relayCore.position.x = relaySide === 'R' ? -0.22 : 0.22;
     relayGroup.add(relayBody, relayCore);
     this.levelGroup.add(relayGroup);
 
@@ -3540,7 +3600,8 @@ class NikitaGame {
       state: 'ACTIVE',
       disabled: false,
       relayActive: true,
-      relayPos: new THREE.Vector3(xMin + 0.34, 2.75, z + 0.68),
+      relaySide,
+      relayPos: new THREE.Vector3(relayX, 2.75, z + 0.68),
       relayGroup,
       relayCoreMat,
       lensMat,
@@ -3550,10 +3611,237 @@ class NikitaGame {
   }
 
   /* ------------------------------------------------------------------------
+     DESTROYABLE WALLS: SHORTCUTS + SECRET CHAMBERS WITH POWER-UPS
+     ------------------------------------------------------------------------ */
+  placeBreakables(numericSeed, tier) {
+    const rngW = mulberry32((numericSeed ^ 0x9E3779B1) >>> 0);   // own stream: leaves the rest of the level untouched
+    const G = GRID_SIZE;
+    const at = (x, z) => this.grid[z * G + x];
+    const open = (x, z) => x >= 0 && z >= 0 && x < G && z < G && !isWallLike(at(x, z));
+    const sp = this.rooms[0];
+    const nearSpawn = (x, z) => x >= sp.x - 2 && x < sp.x + sp.w + 2 && z >= sp.z - 2 && z < sp.z + sp.h + 2;
+
+    // path distance from the launch pad
+    const dist = new Int16Array(G * G).fill(-1);
+    const q = [32 + 56 * G];
+    dist[q[0]] = 0;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], x = i % G, z = (i / G) | 0;
+      for (const [dx, dz] of PROBE_DIRS) {
+        const nx = x + dx, nz = z + dz;
+        if (open(nx, nz) && dist[nz * G + nx] < 0) { dist[nz * G + nx] = dist[i] + 1; q.push(nz * G + nx); }
+      }
+    }
+
+    const placed = [];
+    const farFromOthers = (x, z, d) => placed.every((b) => Math.hypot(b.gx - x, b.gz - z) >= d);
+
+    // 1) Shortcuts: a hidden tunnel (up to 12 cells) through solid rock behind a cracked wall, joining two spots
+    //    that are far apart by path. One blast on the cracked wall opens the whole tunnel.
+    const cands = [];
+    for (let z = 3; z < G - 3; z++) {
+      for (let x = 3; x < G - 3; x++) {
+        if (!open(x, z) || nearSpawn(x, z)) continue;
+        for (const [dx, dz] of PROBE_DIRS) {
+          const px = -dz, pz = dx;
+          const cells = [];
+          for (let k = 1; k <= 12; k++) {
+            const cx = x + dx * k, cz = z + dz * k;
+            if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) break;
+            if (open(cx, cz)) {
+              const a1 = dist[z * G + x], b1 = dist[cz * G + cx];
+              const saving = Math.abs(a1 - b1) - k;
+              if (cells.length >= 1 && a1 >= 0 && b1 >= 0 && saving >= 7) cands.push({ cells: cells.slice(), gap: saving + rngW() * 8 });
+              break;
+            }
+            if (at(cx, cz) !== CELL_WALL || nearSpawn(cx, cz)) break;
+            if (k >= 2 && (at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL)) break;
+            cells.push([cx, cz]);
+          }
+        }
+      }
+    }
+    cands.sort((p1, p2) => p2.gap - p1.gap);
+    const nShort = Math.min(6, 1 + Math.floor(tier / 3));
+    let nSh = 0;
+    for (const c of cands) {
+      if (nSh >= nShort) break;
+      if (!c.cells.every(([cx, cz]) => at(cx, cz) === CELL_WALL && farFromOthers(cx, cz, 9))) continue;
+      const [fx, fz] = c.cells[0];
+      const tunnel = c.cells.slice(1).map(([cx, cz]) => cz * G + cx);
+      this.grid[fz * G + fx] = CELL_CRACKED;
+      for (const ci of tunnel) this.grid[ci] = CELL_FLOOR;
+      placed.push({ gx: fx, gz: fz, kind: 'shortcut', chamber: tunnel, pickup: null });
+      for (const [cx, cz] of c.cells.slice(1)) placed.push({ gx: cx, gz: cz, kind: 'tunnel-marker', chamber: [], pickup: null, marker: true });
+      nSh++;
+    }
+
+    // 2) Secret chambers: a 1x2 sealed pocket behind a cracked wall, holding a power-up
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const secrets = [];
+    for (let z = 4; z < G - 4; z++) {
+      for (let x = 4; x < G - 4; x++) {
+        if (at(x, z) !== CELL_FLOOR || nearSpawn(x, z)) continue;
+        for (const [dx, dz] of dirs) {
+          const cells = [1, 2, 3, 4].map((k) => [x + dx * k, z + dz * k]);
+          if (cells.some(([cx, cz]) => cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4)) continue;
+          if (cells.some(([cx, cz]) => at(cx, cz) !== CELL_WALL)) continue;
+          const px = -dz, pz = dx;
+          let sealed = true;
+          for (let k = 0; k < 3 && sealed; k++) {
+            const [cx, cz] = cells[k];
+            if (at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL) sealed = false;
+          }
+          if (sealed) secrets.push({ e: cells[0], p1: cells[1], p2: cells[2] });
+        }
+      }
+    }
+    for (let i = secrets.length - 1; i > 0; i--) { const j = Math.floor(rngW() * (i + 1)); [secrets[i], secrets[j]] = [secrets[j], secrets[i]]; }
+    const nSecret = Math.min(5, 1 + Math.floor(tier / 2));
+    const bag = ['ROCKETS', 'ROCKETS', 'ROCKETS', 'BOOST', 'BOOST', 'REPAIR', 'REPAIR', 'STEALTH', 'STEALTH', 'OVERCHARGE', 'OVERCHARGE'];
+    let nS = 0;
+    for (const sc of secrets) {
+      if (nS >= nSecret) break;
+      if (!farFromOthers(sc.e[0], sc.e[1], 10)) continue;
+      if (at(sc.e[0], sc.e[1]) !== CELL_WALL || at(sc.p1[0], sc.p1[1]) !== CELL_WALL || at(sc.p2[0], sc.p2[1]) !== CELL_WALL) continue;
+      this.grid[sc.e[1] * G + sc.e[0]] = CELL_CRACKED;
+      this.grid[sc.p1[1] * G + sc.p1[0]] = CELL_FLOOR;
+      this.grid[sc.p2[1] * G + sc.p2[0]] = CELL_FLOOR;
+      placed.push({ gx: sc.e[0], gz: sc.e[1], kind: 'secret', chamber: [sc.p1[1] * G + sc.p1[0], sc.p2[1] * G + sc.p2[0]], pickup: bag[Math.floor(rngW() * bag.length)], p1: sc.p1, p2: sc.p2 });
+      nS++;
+    }
+
+    // Commit to the grid and build the visuals
+    const blockGeo = new THREE.BoxGeometry(CELL_SIZE * 0.985, WALL_H, CELL_SIZE * 0.985);
+    for (const b of placed) {
+      if (b.marker) continue;
+      for (const ci of b.chamber) this.secretHidden.add(ci);
+      const wx = gridToWorldX(b.gx), wz = gridToWorldZ(b.gz);
+      const mesh = new THREE.Mesh(blockGeo, this.crackMat);
+      mesh.position.set(wx, WALL_H * 0.5, wz);
+      this.levelGroup.add(mesh);
+      b.active = true;
+      b.mesh = mesh;
+      b.pos = new THREE.Vector3(wx, WALL_H * 0.5, wz);
+      this.breakables.push(b);
+      if (b.pickup) {
+        const mx = (gridToWorldX(b.p1[0]) + gridToWorldX(b.p2[0])) * 0.5;
+        const mz = (gridToWorldZ(b.p1[1]) + gridToWorldZ(b.p2[1])) * 0.5;
+        this.spawnPickup(mx, mz, b.pickup, b);
+      }
+    }
+  }
+
+  spawnPickup(x, z, type, owner) {
+    const COLORS = { ROCKETS: 0xffaa00, BOOST: 0x00e5ff, REPAIR: 0x44ff88, STEALTH: 0xaa66ff, OVERCHARGE: 0xff3344 };
+    const col = COLORS[type] || 0xffffff;
+    const grp = new THREE.Group();
+    grp.position.set(x, 1.7, z);
+    const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.55), new THREE.MeshBasicMaterial({ color: col }));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.05, 6, 24), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.8 }));
+    ring.rotation.x = Math.PI * 0.5;
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(1.25, 14, 10), new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    grp.add(core, ring, halo);
+    this.levelGroup.add(grp);
+    this.pickups.push({ active: true, type, owner, pos: new THREE.Vector3(x, 1.7, z), mesh: grp, core, ring, phase: Math.random() * 6.28 });
+  }
+
+  breakWall(bw) {
+    if (!bw.active) return;
+    bw.active = false;
+    bw.mesh.visible = false;
+    this.grid[bw.gz * GRID_SIZE + bw.gx] = CELL_FLOOR;
+    for (const ci of bw.chamber) this.secretHidden.delete(ci);
+    this.radarDirty = true;
+    _v5.copy(bw.pos); _v5.y = 1.8;
+    this.vfx.spawnExplosion(_v5, 6.5, 1.0);
+    this.vfx.spawnScrapeSparks(_v5, _up, 34);
+    if (bw.kind === 'secret') {
+      this.secretsFound++;
+      this.pushFeed('SECRET CHAMBER BREACHED', 'cyan');
+    } else {
+      this.shortcutsOpened++;
+      this.pushFeed('WALL BREACHED — SHORTCUT OPENED', 'cyan');
+    }
+  }
+
+  collectPickup(pk) {
+    pk.active = false;
+    pk.mesh.visible = false;
+    const m = this.missile;
+    this.audio.playTargetChime();
+    this.vfx.spawnRing(pk.pos, 3.2, 0.3, 0xffffff, 0, 0);
+    this.popAmmoHUD();
+    switch (pk.type) {
+      case 'ROCKETS': {
+        const add = Math.max(0, Math.min(CACHE_ROCKETS, MAX_ROCKETS - this.ammo));
+        this.ammo += add;
+        this.rewards.total += add;
+        this.rewards.log.cache = (this.rewards.log.cache || 0) + add;
+        this.pushFeed(add > 0 ? `SUPPLY CACHE: +${add} ROCKETS` : `SUPPLY CACHE — RACK FULL (${MAX_ROCKETS})`, 'amber');
+        break;
+      }
+      case 'BOOST':
+        m.boost = 100; m.boostDepleted = false; this.power.freeBoost = 8;
+        this.pushFeed('POWER-UP: BOOST CELL — UNLIMITED BOOST 8s', 'cyan');
+        break;
+      case 'REPAIR':
+        m.hull = 100; m.fuel = 100;
+        this.pushFeed('POWER-UP: REPAIR KIT — HULL + FUEL RESTORED', 'cyan');
+        break;
+      case 'STEALTH':
+        this.power.stealth = 12;
+        this.pushFeed('POWER-UP: SILENT RUNNING 12s — QUIET ENGINE', 'cyan');
+        break;
+      case 'OVERCHARGE':
+        this.power.overcharge = true;
+        this.pushFeed('POWER-UP: OVERCHARGED WARHEAD — NEXT BLAST x1.6', 'red');
+        break;
+    }
+    this.updateHUDText();
+  }
+
+  updatePickups(dt) {
+    const t = this.gameClock;
+    this.crackMat.emissiveIntensity = 0.62 + Math.sin(t * 3.2) * 0.22;
+    const m = this.missile;
+    for (const pk of this.pickups) {
+      if (!pk.active) continue;
+      pk.mesh.position.y = 1.7 + Math.sin(t * 2.2 + pk.phase) * 0.18;
+      pk.core.rotation.y += dt * 2.4;
+      pk.core.rotation.x += dt * 1.1;
+      pk.ring.rotation.z += dt * 1.6;
+      if (m.active && this.state === 'PLAYING' && pk.pos.distanceToSquared(m.pos) < 2.3 * 2.3) this.collectPickup(pk);
+    }
+    // active power-up strip
+    const pw = this.power;
+    const parts = [];
+    if (pw.freeBoost > 0) parts.push(`BOOST CELL ${Math.ceil(pw.freeBoost)}s`);
+    if (pw.stealth > 0) parts.push(`SILENT ${Math.ceil(pw.stealth)}s`);
+    if (pw.overcharge) parts.push('OVERCHARGE READY');
+    this.cText(this.el.hudPower, parts.join('  ·  '));
+  }
+
+  // Thickness of wall (in cells) between two points: used to muffle sound.
+  wallThickness(ax, az, bx, bz) {
+    const dx = bx - ax, dz = bz - az;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 0.01) return 0;
+    const steps = Math.ceil(dist / 1.0);
+    let solid = 0;
+    for (let i = 1; i < steps; i++) {
+      if (this.isGridSolid(ax + dx * i / steps, az + dz * i / steps)) solid++;
+    }
+    return (solid * (dist / steps)) / CELL_SIZE;
+  }
+
+  /* ------------------------------------------------------------------------
      ROCKET REWARD SYSTEM
      ------------------------------------------------------------------------ */
   resetRewards() {
-    this.rewards = { total: 0, log: {}, flags: {}, pending: {} };
+    this.rewards = { total: 0, capUsed: 0, cap: REWARD_CAP_BASE + REWARD_CAP_PER_TIER * (this.difficultyTier || 1), log: {}, flags: {}, pending: {} };
     this._blastHostiles = 0;
   }
 
@@ -3570,25 +3858,31 @@ class NikitaGame {
     const r = this.rewards;
     const labels = Object.keys(r.pending);
     if (labels.length === 0) return;
-    let asked = 0;
+    // Pay out in order, limited by the per-sector cap and by the 100-rocket rack.
+    let capLeft = Math.max(0, r.cap - r.capUsed);
+    let rackLeft = Math.max(0, MAX_ROCKETS - this.ammo);
+    let added = 0, denied = 0;
     const parts = [];
     for (const lb of labels) {
       const e = r.pending[lb];
-      asked += e.n;
-      parts.push(e.count > 1 ? `${e.count}× ${lb}` : lb);
-      r.log[e.key] = (r.log[e.key] || 0) + e.n;
+      const give = Math.min(e.n, capLeft, rackLeft);
+      denied += e.n - give;
+      if (give > 0) {
+        capLeft -= give; rackLeft -= give; added += give;
+        r.log[e.key] = (r.log[e.key] || 0) + give;
+        parts.push(e.count > 1 ? `${e.count}× ${lb}` : lb);
+      }
     }
     r.pending = {};
-    const room = Math.max(0, MAX_ROCKETS - this.ammo);
-    const added = Math.min(asked, room);
     this.ammo += added;
     r.total += added;
+    r.capUsed += added;
     if (added > 0) {
       this.pushFeed(`+${added} ROCKETS — ${parts.join(' · ')}`, 'cyan');
       this.audio.playTargetChime();
       this.popAmmoHUD();
-    } else {
-      this.pushFeed(`ROCKET RACK FULL (${MAX_ROCKETS}) — REWARD WASTED`, 'amber');
+    } else if (denied > 0) {
+      this.pushFeed(capLeft <= 0 ? 'SECTOR REWARD CAP REACHED' : `ROCKET RACK FULL (${MAX_ROCKETS})`, 'amber');
     }
     this.updateHUDText();
   }
@@ -3786,7 +4080,7 @@ class NikitaGame {
     const gx = worldToGridX(wx);
     const gz = worldToGridZ(wz);
     if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return true;
-    return this.grid[gz * GRID_SIZE + gx] === CELL_WALL;
+    return isWallLike(this.grid[gz * GRID_SIZE + gx]);
   }
 
   hasLineOfSight(ax, az, bx, bz) {
@@ -3817,7 +4111,10 @@ class NikitaGame {
     this.ammo = Math.max(0, this.ammo - 1);
     this.updateHUDText();
 
-    this.triggerBlast(impactPos, 8.2, 1.25, directHitTarget, directHitSentry);
+    const over = this.power.overcharge;
+    this.power.overcharge = false;
+    if (over) this.pushFeed('OVERCHARGED WARHEAD', 'red');
+    this.triggerBlast(impactPos, over ? 13.2 : 8.2, over ? 1.7 : 1.25, directHitTarget, directHitSentry);
     if (reason) this.pushFeed(reason, 'amber');
 
     const remaining = this.targets.filter(t => t.active).length;
@@ -3918,6 +4215,10 @@ class NikitaGame {
       }
     }
 
+    for (const bw of this.breakables) {
+      if (bw.active && bw.pos.distanceTo(epicenter) <= radius * 0.6 + 2.4) this.breakWall(bw);
+    }
+
     for (const tu of this.turrets) {
       if (!tu.active) continue;
       if (tu.pos.distanceTo(epicenter) <= radius + 1.0) {
@@ -3990,6 +4291,7 @@ class NikitaGame {
     }
 
     this.updateFacilityObjects(effectiveDt);
+    this.updatePickups(effectiveDt);
 
     if (this.state === 'PLAYING' && this.missile.active) {
       this.updateMissile(effectiveDt);
@@ -4296,7 +4598,9 @@ class NikitaGame {
     const hasFuel = m.fuel > 0;
 
     // Boost capacitor drains in proportion to how far the lever is above cruise (full lever = 24%/s)
-    const boostLoad = Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));
+    let boostLoad = Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));
+    if (this.power.freeBoost > 0) { boostLoad = 0; m.boost = 100; this.power.freeBoost = Math.max(0, this.power.freeBoost - dt); }
+    if (this.power.stealth > 0) this.power.stealth = Math.max(0, this.power.stealth - dt);
     if (boostLoad > 0 && !this.cfg.infBoost) {
       m.boost = Math.max(0, m.boost - dt * 24.0 * boostLoad);
       if (m.boost <= 0) {
@@ -4734,6 +5038,29 @@ class NikitaGame {
     const sentryBoltSpeed = 74 + tierOffset * 2.0;
     const sentryPatrolSpeed = 3.0 + tierOffset * 0.2;
 
+    // Hearing: the louder (faster) the rocket, the farther sentries hear it.
+    let noiseR = HEAR_MIN + HEAR_RANGE * Math.pow(m.effThrottle, 1.5);
+    if (this.power.stealth > 0) noiseR *= 0.3;
+    this.noiseRadius = noiseR;
+    const stealthDetect = this.power.stealth > 0 ? 0.5 : 1;
+    const raiseAlert = (sn) => {
+      if (!sn.alerted) {
+        sn.alerted = true;
+        this.alertsTriggered++;
+        this.audio.playAlertStinger();
+        this.pushFeed('! SENTRY ALERT — EVASIVE MANEUVERS !', 'red');
+        // an alerted sentry radios nearby guards, who come to investigate
+        for (const o of this.sentries) {
+          if (o === sn || !o.active || o.alerted) continue;
+          if (Math.hypot(o.pos.x - sn.pos.x, o.pos.z - sn.pos.z) < 16) {
+            o.invX = m.pos.x; o.invZ = m.pos.z; o.invT = 4.0;
+            o.detectMeter = Math.max(o.detectMeter, 0.4);
+          }
+        }
+      }
+      sn.alertTimer = 3.2;
+    };
+
     for (let i = 0; i < this.sentries.length; i++) {
       const s = this.sentries[i];
 
@@ -4770,16 +5097,34 @@ class NikitaGame {
         }
       }
 
-      if (seesMissile) {
-        s.detectMeter = Math.min(1, s.detectMeter + dt * detectRate * speedProf.detectMult);
-        if (s.detectMeter >= 0.75) {
-          if (!s.alerted) {
-            s.alerted = true;
-            this.alertsTriggered++;
-            this.audio.playAlertStinger();
-            this.pushFeed('! SENTRY ALERT — EVASIVE MANEUVERS !', 'red');
+      // hearing (sampled about 5 times a second per sentry; walls muffle the sound)
+      let heard = false;
+      if (m.active && !this.cfg.godMode) {
+        s.hearT -= dt;
+        if (s.hearT <= 0) {
+          s.hearT = 0.2;
+          s.heardNow = false;
+          const hd = Math.hypot(m.pos.x - s.pos.x, m.pos.z - s.pos.z);
+          if (hd < noiseR) {
+            const effR = noiseR * Math.pow(HEAR_WALL_DAMP, this.wallThickness(s.pos.x, s.pos.z, m.pos.x, m.pos.z));
+            if (hd < effR) { s.heardNow = true; s.heardLoud = 1 - hd / effR; s.heardClose = hd < effR * 0.6; }
           }
-          s.alertTimer = 3.2;
+        }
+        heard = s.heardNow;
+      } else {
+        s.heardNow = false;
+      }
+
+      if (seesMissile) {
+        s.detectMeter = Math.min(1, s.detectMeter + dt * detectRate * speedProf.detectMult * stealthDetect);
+        if (s.detectMeter >= 0.75) raiseAlert(s);
+      } else if (heard) {
+        s.invX = m.pos.x; s.invZ = m.pos.z; s.invT = 4.0;
+        if (!s.alerted) {
+          if (s.detectMeter < 0.62) s.detectMeter = Math.min(0.62, s.detectMeter + dt * detectRate * 0.4 * (0.5 + s.heardLoud));
+          if (m.effThrottle >= 0.85 && s.heardClose) { s.detectMeter = 1; raiseAlert(s); }
+        } else {
+          s.alertTimer = Math.max(s.alertTimer, 1.5);
         }
       } else {
         s.detectMeter = Math.max(0, s.detectMeter - dt * 0.65);
@@ -4809,6 +5154,25 @@ class NikitaGame {
           this.vfx.spawnTracer(_v7, _v8);
           this.vfx.spawnLightFlash(_v7, 0xff4422, 4.5, 0.05);
           this.audio.playGunshot();
+        }
+      } else if (s.invT > 0) {
+        // investigating a noise: walk to where the rocket was heard, then look around
+        s.invT -= dt;
+        const dx = s.invX - s.pos.x;
+        const dz = s.invZ - s.pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 1.5) {
+          const spd = sentryPatrolSpeed * 1.5;
+          const nx = s.pos.x + (dx / dist) * spd * dt;
+          const nz = s.pos.z + (dz / dist) * spd * dt;
+          if (!this.isGridSolid(nx, nz)) { s.pos.x = nx; s.pos.z = nz; s.walkPhase += dt * 9.0; }
+          const targetYaw = Math.atan2(-dx, -dz);
+          let dYaw = targetYaw - s.yaw;
+          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+          s.yaw += dYaw * Math.min(1, dt * 6.0);
+        } else {
+          s.yaw += dt * 1.6;
         }
       } else {
         const wp = s.waypoints[s.wpIndex];
@@ -4876,7 +5240,7 @@ class NikitaGame {
         _dummy.scale.set(1, 1, 1);
         _dummy.updateMatrix();
         this.sentryConeMesh.setMatrixAt(i, _dummy.matrix);
-        _c1.setHex(s.alerted ? 0xff2233 : (s.detectMeter > 0.15 ? 0xffaa00 : 0x00ff88));
+        _c1.setHex(s.alerted ? 0xff2233 : ((s.detectMeter > 0.15 || s.invT > 0) ? 0xffaa00 : 0x00ff88));
         this.sentryConeMesh.setColorAt(i, _c1);
       } else {
         _dummy.position.set(0, -500, 0);
@@ -5144,6 +5508,45 @@ class NikitaGame {
 
       for (let i = 0; i < this.sentries.length; i++) renderLOSBracket(this.sentries[i], 'SENTRY', 1.25);
       for (let i = 0; i < this.turrets.length; i++)  renderLOSBracket(this.turrets[i], 'CIWS', 0);
+
+      // "?" = heard something / suspicious, "!" = alerted (shown through walls: you know when you are loud)
+      for (let i = 0; i < this.sentries.length; i++) {
+        const sn = this.sentries[i];
+        if (!sn.active || (!sn.alerted && sn.invT <= 0 && sn.detectMeter <= 0.2)) continue;
+        _v2.set(sn.pos.x, sn.pos.y + 2.7, sn.pos.z);
+        if (_v2.distanceTo(m.pos) > 85) continue;
+        _v1.copy(_v2).project(this.camera);
+        if (_v1.z > 1) continue;
+        const sx = (_v1.x * 0.5 + 0.5) * w;
+        const sy = (-_v1.y * 0.5 + 0.5) * h;
+        if (sx < 12 || sx > w - 12 || sy < 12 || sy > h - 12) continue;
+        ctx.save();
+        ctx.font = 'bold 22px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = sn.alerted ? '#ff3344' : '#ffaa00';
+        ctx.shadowColor = ctx.fillStyle;
+        ctx.shadowBlur = 8;
+        ctx.fillText(sn.alerted ? '!' : '?', sx, sy);
+        ctx.restore();
+      }
+
+      // opened secret chambers: mark their power-ups
+      for (let i = 0; i < this.pickups.length; i++) {
+        const pk = this.pickups[i];
+        if (!pk.active || pk.owner.active) continue;
+        if (!this.hasLineOfSight(m.pos.x, m.pos.z, pk.pos.x, pk.pos.z)) continue;
+        _v1.copy(pk.pos).project(this.camera);
+        if (_v1.z > 1) continue;
+        const sx = (_v1.x * 0.5 + 0.5) * w;
+        const sy = (-_v1.y * 0.5 + 0.5) * h;
+        if (sx < 10 || sx > w - 10 || sy < 10 || sy > h - 10) continue;
+        ctx.save();
+        ctx.fillStyle = '#00e5ff';
+        ctx.font = 'bold 10px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${pk.type} ${Math.round(pk.pos.distanceTo(m.pos))}m`, sx, sy - 26);
+        ctx.restore();
+      }
     }
 
     // 15° Auto-Highlighted Candidate / Active Homing Lock Reticle
@@ -5225,8 +5628,11 @@ class NikitaGame {
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
         const v = this.grid[z * GRID_SIZE + x];
-        if (v === CELL_WALL) {
+        if (v === CELL_WALL || this.secretHidden.has(z * GRID_SIZE + x)) {
           c.fillStyle = '#0f2b20';
+          c.fillRect(x * scale, z * scale, scale, scale);
+        } else if (v === CELL_CRACKED) {
+          c.fillStyle = 'rgba(255, 150, 20, 0.7)';
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (v === CELL_RUNWAY) {
           c.fillStyle = 'rgba(0, 255, 136, 0.16)';
@@ -5328,17 +5734,30 @@ class NikitaGame {
 
       const coneRange = (22.0 / CELL_SIZE) * scale;
       const ang = Math.atan2(-Math.cos(s.yaw), -Math.sin(s.yaw));
-      ctx.fillStyle = s.alerted ? 'rgba(255, 40, 60, 0.38)' : 'rgba(0, 255, 136, 0.22)';
+      ctx.fillStyle = s.alerted ? 'rgba(255, 40, 60, 0.38)' : (s.invT > 0 ? 'rgba(255, 170, 0, 0.3)' : 'rgba(0, 255, 136, 0.22)');
       ctx.beginPath();
       ctx.moveTo(rx, rz);
       ctx.arc(rx, rz, coneRange, ang - 0.54, ang + 0.54);
       ctx.closePath();
       ctx.fill();
 
-      ctx.fillStyle = s.alerted ? '#ff3344' : '#66ffaa';
+      ctx.fillStyle = s.alerted ? '#ff3344' : (s.invT > 0 ? '#ffaa00' : '#66ffaa');
       ctx.beginPath();
       ctx.arc(rx, rz, 2.8, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    if (this.missile.active) {
+      // noise ring: how far sentries can hear the rocket right now
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.008);
+      ctx.save();
+      ctx.strokeStyle = `rgba(255, 170, 0, ${0.3 + pulse * 0.3})`;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.arc(toRX(this.missile.pos.x), toRZ(this.missile.pos.z), (this.noiseRadius / CELL_SIZE) * scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
 
     if (this.missile.active) {
@@ -5382,11 +5801,11 @@ class NikitaGame {
     document.getElementById('btn-next-sector').textContent = isFinal ? 'NEW CAMPAIGN (SECTOR 01)' : 'DEPLOY NEXT SECTOR';
     document.getElementById('clear-rank').textContent = rank;
     document.getElementById('res-missiles').textContent = `${used} FIRED`;
-    document.getElementById('res-rewards').textContent = `+${this.rewards.total}`;
+    document.getElementById('res-rewards').textContent = `+${this.rewards.total} / ${this.rewards.cap}`;
     const lg = this.rewards.log;
-    const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', barrel: 'BARRELS', grate: 'GRATES', bonus: 'BONUSES' };
+    const names = { target: 'TARGETS', sentry: 'SENTRIES', laser: 'LASERS', turret: 'TURRETS', grate: 'GRATES', bonus: 'BONUSES', cache: 'CACHES' };
     const detail = Object.keys(names).filter((k) => lg[k]).map((k) => `${names[k]} +${lg[k]}`).join(' · ');
-    document.getElementById('res-rewards-detail').textContent = (detail || 'NO REWARDS EARNED') + `  |  RACK: ${this.ammo} / ${MAX_ROCKETS} (CARRIES OVER)`;
+    document.getElementById('res-rewards-detail').textContent = (detail || 'NO REWARDS EARNED') + `  |  RACK: ${this.ammo} / ${MAX_ROCKETS} (UP TO +${CARRY_CAP} CARRIES OVER)`;
     document.getElementById('res-alerts').textContent = String(this.alertsTriggered);
     document.getElementById('res-sentries').textContent = `${this.sentriesNeutralized} / ${this.sentries.length}`;
     document.getElementById('res-time').textContent = `${this.missionTime.toFixed(1)}s`;
@@ -6208,8 +6627,8 @@ class NikitaGame {
     document.getElementById('pause-modal').style.display = 'none';
     document.getElementById('hud-layer').style.display = 'block';
     this.paused = false;
-    // Advancing from a cleared sector keeps any rockets above the standard salvo (cap MAX_ROCKETS).
-    this.ammo = carryOver ? Math.min(MAX_ROCKETS, Math.max(MAX_SALVO, this.ammo)) : MAX_SALVO;
+    // Advancing from a cleared sector keeps up to CARRY_CAP unspent rockets above the standard salvo.
+    this.ammo = carryOver ? MAX_SALVO + Math.min(CARRY_CAP, Math.max(0, this.ammo - MAX_SALVO)) : MAX_SALVO;
     this.radarOpen = true;
     document.getElementById('radar-container').style.display = 'block';
     document.getElementById('btn-hud-radar').classList.add('active');
