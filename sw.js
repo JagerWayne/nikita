@@ -1,7 +1,7 @@
 /* NIKITA // SHADOW OPS service worker: makes the game installable and playable offline.
    Bump VERSION (and APP_VERSION in index.html) on every release: clients re-check this file on each launch
    and swap to the new version automatically. Everything the game needs is served from this origin. */
-const VERSION = 'nikita-v1.0.1';
+const VERSION = 'nikita-v1.0.2';
 const CORE = [
   './',
   'index.html',
