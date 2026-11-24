@@ -19,7 +19,13 @@ The game is a PWA. Open the Pages link, then:
 
 It then launches full-screen from the home screen and works offline after the first load. Every launch checks for a new version and updates itself automatically.
 
-**Releasing an update:** bump `APP_VERSION` in `index.html` and `VERSION` in `sw.js` to the same value, then push to `main`.
+**Releasing an update:**
+1. Change the files.
+2. Add any new static file to `js/boot/files.js`.
+3. Bump `APP_VERSION` in `js/boot/version.js` (the only version number; it names the offline cache and the `sw.js?v=` URL).
+4. Push to `main`.
+
+Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
 ## Mobile controls
 

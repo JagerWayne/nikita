@@ -7,8 +7,11 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="theme-color" content="#050a08" />
-<link rel="manifest" href="manifest.webmanifest" />
-<link rel="apple-touch-icon" href="icon-180.png" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="icon" type="image/png" href="./icons/icon-192.png" />
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+<script src="./js/boot/version.js"></script>
+<script src="./js/boot/files.js"></script>
 <title>NIKITA // SHADOW OPS — 3D Tactical Guided-Missile Simulation</title>
 <style>
   :root {
@@ -6249,36 +6252,36 @@ window.__nikitaOps = new NikitaGame();
 /* ==========================================================================
    PWA: service worker (offline + installability) and the INSTALL APP button
    ========================================================================== */
-const APP_VERSION = '1.0.2';   // keep in sync with VERSION in sw.js when releasing
-document.getElementById('app-version').textContent = `v${APP_VERSION}`;
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  // Auto-update: index.html is always fetched network-first, and the worker is re-checked on every
-  // launch and whenever the installed app returns to the foreground. A new worker takes over at once;
-  // the page then reloads itself (only while sitting on the briefing screen, never mid-mission).
-  const hadController = Boolean(navigator.serviceWorker.controller);
-  let updatePending = false;
-  const applyUpdate = () => {
-    const g = window.__nikitaOps;
-    if (g && g.state !== 'BRIEFING') {
-      if (!updatePending) g.pushFeed('UPDATE INSTALLED — RESTART APP TO APPLY', 'cyan');
-      updatePending = true;
-      return;
+const NIKITA_VERSION = window.APP_VERSION || '?';   // set in js/boot/version.js
+document.getElementById('app-version').textContent = `v${NIKITA_VERSION}`;
+
+/* Offline copy + service worker. The version is in the worker's URL, so every release installs a fresh
+   worker and cache; the phone checks for a new sw.js on every launch (updateViaCache: 'none' + update()). */
+function refreshOfflineCache() {
+  const CACHE = 'nikita-' + NIKITA_VERSION;
+  try {
+    if (window.caches) {
+      // a new release: drop older caches and re-download the app's own files into the current one
+      caches.keys().then((keys) => Promise.all(keys.filter((k) => k.indexOf('nikita-') === 0 && k !== CACHE).map((k) => caches.delete(k)))).catch(() => {});
+      caches.open(CACHE).then((c) => {
+        (self.APP_FILES || []).filter((u) => u.indexOf('vendor/') !== 0).forEach((u) => {
+          fetch(u, { cache: 'reload' }).then((r) => { if (r.ok) c.put(u, r); }).catch(() => {});
+        });
+      }).catch(() => {});
     }
-    let guard = false;
-    try { guard = sessionStorage.getItem('nikita-sw-reload') === '1'; sessionStorage.setItem('nikita-sw-reload', '1'); } catch (_) {}
-    if (!guard) location.reload();
-  };
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) applyUpdate(); });
-  window.addEventListener('load', () => {
-    try { sessionStorage.removeItem('nikita-sw-reload'); } catch (_) {}
-    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
-      reg.update().catch(() => {});
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') reg.update().catch(() => {});
-      });
-    }).catch(() => {});
-  });
+  } catch (e) {}
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    navigator.serviceWorker.register('sw.js?v=' + encodeURIComponent(NIKITA_VERSION), { updateViaCache: 'none' })
+      .then((reg) => {
+        reg.update().catch(() => {});
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') reg.update().catch(() => {});
+        });
+      }).catch(() => {});
+  }
 }
+window.addEventListener('load', () => setTimeout(refreshOfflineCache, 1500));
+
 let deferredInstallPrompt = null;
 const installBtn = document.getElementById('btn-install');
 const installHelp = document.getElementById('install-help');
@@ -6329,7 +6332,7 @@ setTimeout(() => {
   box.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#050a08;color:#00ff88;font:13px/1.45 monospace;padding:18px;overflow:auto;';
   const errs = (window.__bootErrors || []).slice(0, 8).map((e) => '• ' + String(e).replace(/</g, '&lt;')).join('<br>') || '• (no script error reported)';
   const mode = ['fullscreen', 'standalone', 'browser'].find((m) => matchMedia('(display-mode: ' + m + ')').matches) || '?';
-  box.innerHTML = '<div style="font-size:16px;color:#ffaa00;margin-bottom:8px">[!] NIKITA FAILED TO START — v' + APP_VERSION + '</div>' +
+  box.innerHTML = '<div style="font-size:16px;color:#ffaa00;margin-bottom:8px">[!] NIKITA FAILED TO START — v' + NIKITA_VERSION + '</div>' +
     '<div>' + errs + '</div>' +
     '<div style="margin-top:10px;opacity:.75">mode: ' + mode + ' · sw: ' + (navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'none') + ' · online: ' + navigator.onLine + ' · webgl: ' + (() => { try { return !!document.createElement('canvas').getContext('webgl2'); } catch (_) { return false; } })() + '</div>' +
     '<div style="margin-top:6px;opacity:.75;word-break:break-all">' + navigator.userAgent + '</div>' +
