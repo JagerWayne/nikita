@@ -1007,6 +1007,7 @@
   user-select: none; -webkit-user-select: none;
 }
 body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
+#throttle-lever.disabled { opacity: 0.3; pointer-events: none; filter: grayscale(0.8); }
 .thr-label { font: bold 9px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-green); pointer-events: none; }
 .thr-max { color: var(--hud-cyan); }
 .thr-min { color: var(--hud-amber); }
@@ -4135,10 +4136,12 @@ class NikitaGame {
     m.throttle = 0;
     m.effThrottle = 0;
     m.baseSpeedMode = this.modeForThrottle(0);
+    m.activeSpeedMode = m.baseSpeedMode;
     this.resetTether(m.pos);
     this.updateSpeedBadgeUI();
     this.updateHUDText();
     document.getElementById('fire-btn').style.display = 'block';
+    document.getElementById('throttle-lever').classList.add('disabled');
     this.updateTouchControlsVisibility();
     if (first && this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
     this.pushFeed(first ? 'NIKITA ARMED — AIM WITH THE STICK, THEN PRESS FIRE' : `ROCKET READY (${this.ammo} LEFT) — AIM, THEN PRESS FIRE`, 'cyan');
@@ -4213,6 +4216,7 @@ class NikitaGame {
     }
     this.resetOverlays();
     document.getElementById('fire-btn').style.display = 'none';
+    document.getElementById('throttle-lever').classList.remove('disabled');
     if (this.ammo <= 0) {
       this.triggerMissionFailed(`All Nikita rockets expended before primary objectives were neutralized.`);
       return;
@@ -4965,6 +4969,12 @@ class NikitaGame {
       }
       if (k >= 1) {
         m.flipping = false;
+        // Re-label the attitude as the equivalent upright one so the controls stay exactly the same:
+        // (yaw, pitch) and (yaw + 180 deg, 180 deg - pitch) point the nose the same way. The body is
+        // still belly-up for a moment (roll) and rolls itself upright.
+        m.yaw = wrapPi(m.yaw + Math.PI);
+        m.pitch = wrapPi(Math.PI - m.pitch);
+        m.roll = Math.PI;
         m.burnT = BURN_TIME;
         this.vfx.spawnRing(m.pos, 3.0, 0.26, 0x33eeff, m.pitch, 0);
         this.vfx.spawnLightFlash(m.pos, 0x33eeff, 12, 0.24);
@@ -6128,6 +6138,7 @@ class NikitaGame {
 
   // Analog throttle: 0 = minimum speed, 1 = maximum. Mode (for FOV / fuel / boost drain) follows the lever.
   setThrottle(t) {
+    if (this.state === 'READY') return;      // speed is locked at minimum until the rocket is launched
     const m = this.missile;
     t = Math.max(0, Math.min(1, t));
     if (t > CRUISE_THROTTLE && m.boostDepleted && !this.cfg.infBoost) {
@@ -6441,6 +6452,7 @@ class NikitaGame {
     };
     lever.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
+      if (this.state === 'READY') return;
       this.audio.unlock();
       leverPid = e.pointerId;
       try { lever.setPointerCapture(e.pointerId); } catch (_) {}
