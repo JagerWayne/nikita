@@ -736,6 +736,19 @@
     justify-content: flex-end;
   }
 
+  .btn-row.center { justify-content: center; }
+  .title-card { max-width: 460px; text-align: center; }
+  .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .title-card .briefing-desc { margin: 6px 0 16px; }
+  .launch-big { width: min(100%, 340px); min-height: 66px; font-size: 20px; letter-spacing: 0.2em; background: rgba(0, 255, 136, 0.24); box-shadow: 0 0 22px rgba(0, 255, 136, 0.35); }
+  details.fold { margin: 14px 0 0; text-align: left; border: 1px solid rgba(0, 255, 136, 0.35); border-radius: 4px; background: rgba(0, 20, 12, 0.5); }
+  details.fold > summary { cursor: pointer; padding: 9px 12px; font-size: 12px; letter-spacing: 0.16em; color: var(--hud-amber); list-style: none; user-select: none; -webkit-user-select: none; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::before { content: '\25B6  '; font-size: 9px; }
+  details.fold[open] > summary::before { content: '\25BC  '; }
+  details.fold > .controls-grid, details.fold > .briefing-options { margin: 0; border: 0; border-top: 1px solid rgba(0, 255, 136, 0.2); border-radius: 0; }
+  .tac-btn.danger { border-color: var(--hud-red); color: #ff7a88; background: rgba(255, 51, 68, 0.12); }
+  .tac-btn.danger:hover, .tac-btn.danger:active { background: var(--hud-red); color: #fff; box-shadow: 0 0 18px rgba(255, 51, 68, 0.55); }
   .tac-btn {
     min-height: 46px;
     background: rgba(0, 255, 136, 0.16);
@@ -1258,44 +1271,56 @@ window.addEventListener('unhandledrejection', function (e) {
 
 <!-- Mission Briefing Modal -->
 <div id="briefing-modal" class="modal-backdrop">
-  <div class="modal-card">
+  <div class="modal-card title-card">
     <div class="modal-title">
       <span>NIKITA // SHADOW OPS</span>
       <span class="modal-subtitle">TACTICAL GUIDED-MISSILE SIM &middot; <span id="app-version">v1.0</span></span>
     </div>
-    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 8px;">
-      <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
-      <span class="ios-hint" id="install-help" style="display:none; margin:0; flex:1; min-width:200px;"></span>
-    </div>
     <p class="briefing-desc">Fly the Nikita warhead through 100 facility sectors and destroy every primary target.</p>
-    <div class="controls-grid">
-      <div><span class="ctrl-key">STICK / GYRO</span> : Fly</div>
-      <div><span class="ctrl-key">SPEED LEVER</span> : Throttle, min to max</div>
-      <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
-      <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q</div>
+
+    <div class="btn-row center">
+      <button class="tac-btn launch-big" id="btn-launch">INITIATE LAUNCH</button>
     </div>
-    <div class="briefing-options">
-      <label>
-        <input type="checkbox" id="brief-gyro-enable" />
-        Gyroscope Tilt Flight
-      </label>
-      <label>
-        <input type="checkbox" id="brief-invert-pitch" />
-        Invert Pitch Y-Axis
-      </label>
-      <label>
-        Facility Seed:
-        <input type="text" id="brief-seed" value="1998" maxlength="10" />
-        <button type="button" class="tac-btn" id="btn-daily-seed" style="padding:2px 8px; font-size:11px;">DAILY</button>
-      </label>
-      <label>
-        Start Sector (1–100):
-        <input type="number" id="brief-level" value="1" min="1" max="100" style="width:68px" />
-      </label>
+
+    <details class="fold">
+      <summary>CONTROLS</summary>
+      <div class="controls-grid">
+        <div><span class="ctrl-key">STICK / GYRO</span> : Fly, and aim on the pad</div>
+        <div><span class="ctrl-key">SPEED LEVER</span> : Throttle, min to max</div>
+        <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
+        <div><span class="ctrl-key">DECOY · FLIP</span> : Lure sentries, flip and burn</div>
+        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, X</div>
+      </div>
+    </details>
+
+    <details class="fold">
+      <summary>OPTIONS</summary>
+      <div class="briefing-options">
+        <label>
+          <input type="checkbox" id="brief-gyro-enable" />
+          Gyroscope Tilt Flight
+        </label>
+        <label>
+          <input type="checkbox" id="brief-invert-pitch" />
+          Invert Pitch Y-Axis
+        </label>
+        <label>
+          Facility Seed:
+          <input type="text" id="brief-seed" value="1998" maxlength="10" />
+          <button type="button" class="tac-btn" id="btn-daily-seed" style="padding:2px 8px; font-size:11px;">DAILY</button>
+        </label>
+        <label>
+          Start Sector (1–100):
+          <input type="number" id="brief-level" value="1" min="1" max="100" style="width:68px" />
+        </label>
+      </div>
+    </details>
+
+    <div class="btn-row center" style="margin-top:12px;">
+      <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
+      <button class="tac-btn danger" id="btn-exit" style="padding:6px 14px; font-size:12px;">EXIT</button>
     </div>
-    <div class="btn-row">
-      <button class="tac-btn" id="btn-launch">INITIATE LAUNCH</button>
-    </div>
+    <p class="ios-hint" id="install-help" style="display:none; margin:8px 0 0;"></p>
   </div>
 </div>
 
@@ -6252,10 +6277,35 @@ class NikitaGame {
     setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 3400);
   }
 
+  // Shut the game down completely: stop the loop, silence audio, release sensors/fullscreen/pointer, then close the
+  // window. Browsers only let a page close itself in some cases (installed app, script-opened tab); where
+  // it does not work, a "game closed" screen replaces the game.
+  exitGame() {
+    this.stopped = true;
+    this.paused = true;
+    try { if (this.audio && this.audio.ctx) this.audio.ctx.close(); } catch (_) {}
+    try { this.setGyroEnabled(false); } catch (_) {}
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
+    try { if (document.exitPointerLock) document.exitPointerLock(); } catch (_) {}
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+    try { this.renderer.dispose(); if (this.renderer.forceContextLoss) this.renderer.forceContextLoss(); } catch (_) {}
+    window.close();
+    setTimeout(() => {
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#050a08;color:#00ff88;font:15px/1.6 monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;';
+      box.innerHTML = '<div style="font-size:22px;letter-spacing:0.18em">GAME CLOSED</div>' +
+        '<div style="opacity:.75;max-width:420px">You can close this tab or swipe the app away. Nothing is running in the background.</div>' +
+        '<button id="nk-relaunch" style="padding:12px 22px;font:bold 14px monospace;letter-spacing:0.14em;background:#00ff88;color:#02120a;border:0;border-radius:6px">LAUNCH AGAIN</button>';
+      document.body.appendChild(box);
+      document.getElementById('nk-relaunch').onclick = () => location.reload();
+    }, 250);
+  }
+
   /* ------------------------------------------------------------------------
      MAIN 60 FPS FIXED-TIMESTEP RENDER LOOP
      ------------------------------------------------------------------------ */
   loop(now) {
+    if (this.stopped) return;
     requestAnimationFrame((t) => this.loop(t));
     const rawDt = Math.min(0.05, (now - this.lastTime) * 0.001);
     this.lastTime = now;
@@ -6763,6 +6813,8 @@ class NikitaGame {
     if (briefSeedEl) {
       briefSeedEl.addEventListener('input', () => { this.customSeedEntered = true; });
     }
+
+    document.getElementById('btn-exit').addEventListener('click', () => this.exitGame());
 
     document.getElementById('btn-launch').addEventListener('click', () => {
       this.audio.unlock();

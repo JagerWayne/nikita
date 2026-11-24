@@ -63,6 +63,8 @@ Installed phones pick up the new version on the next launch. If an install ever 
 
 The speed lever is locked at minimum while the rocket waits on the pad and works once it is launched.
 
+**Title screen.** INITIATE LAUNCH sits in the middle; CONTROLS and OPTIONS fold away (closed by default). EXIT shuts the game down completely: it stops the game loop, silences audio, releases fullscreen and sensors, and closes the window. Browsers only let a page close itself in an installed app or a script-opened tab; elsewhere a "Game closed" screen replaces the game so you can close the tab.
+
 ## Mobile controls
 
 | Control | Action |
