@@ -1533,6 +1533,7 @@ const _f2 = new THREE.Vector3();
 const _f3 = new THREE.Vector3();
 const _blast = new THREE.Vector3();
 const _aimR = new THREE.Vector3();
+const wrapPi = (a) => { a = (a + Math.PI) % (Math.PI * 2); if (a < 0) a += Math.PI * 2; return a - Math.PI; };
 const _aimU = new THREE.Vector3();
 const PROBE_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
@@ -4096,7 +4097,13 @@ class NikitaGame {
      LAUNCH / SALVO MANAGEMENT
      ------------------------------------------------------------------------ */
   // A fresh sector waits on the pad: the player sets the throttle, then taps FIRE.
-  enterReady() {
+  enterReady(first = true) {
+    if (!first) {
+      // between rockets: sector may be cleared, or the salvo spent
+      document.getElementById('killcam-banner').style.display = 'none';
+      if (this.targets.length > 0 && !this.targets.some((t) => t.active)) { this.triggerSectorClear(); return; }
+      if (this.ammo <= 0) { this.triggerMissionFailed('All Nikita rockets expended before primary objectives were neutralized.'); return; }
+    }
     const m = this.missile;
     m.active = false;
     m.pos.copy(this.spawnPos);
@@ -4112,8 +4119,8 @@ class NikitaGame {
     this.updateHUDText();
     document.getElementById('fire-btn').style.display = 'block';
     this.updateTouchControlsVisibility();
-    if (this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
-    this.pushFeed('NIKITA ARMED — SET SPEED, THEN PRESS FIRE', 'cyan');
+    if (first && this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
+    this.pushFeed(first ? 'NIKITA ARMED — SET SPEED, THEN PRESS FIRE' : `ROCKET READY (${this.ammo} LEFT) — PRESS FIRE`, 'cyan');
   }
 
   fireRocket() {
@@ -4415,7 +4422,7 @@ class NikitaGame {
     if (this.state === 'RESPAWNING') {
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) {
-        this.launchNextMissile();
+        this.enterReady(false);   // wait for the player to press FIRE
       }
     } else if (this.state === 'KILLCAM') {
       this.killCamTimer -= dt;
@@ -4425,7 +4432,7 @@ class NikitaGame {
         if (this.killCamFinal) {
           this.triggerSectorClear();
         } else {
-          this.launchNextMissile();
+          this.enterReady(false);   // wait for the player to press FIRE
         }
       }
     }
@@ -4805,7 +4812,7 @@ class NikitaGame {
       while (dYaw < -Math.PI) dYaw += Math.PI * 2;
       const targetPitch = Math.asin(Math.max(-0.92, Math.min(0.92, _v1.y)));
       const homeYaw = Math.max(-1.6, Math.min(1.6, dYaw * 4.2));
-      const homePitch = Math.max(-1.4, Math.min(1.4, (targetPitch - m.pitch) * 4.2));
+      const homePitch = Math.max(-1.4, Math.min(1.4, wrapPi(targetPitch - m.pitch) * 4.2));
       yawInput = homeYaw + yawInput * 0.25;
       pitchInput = homePitch + pitchInput * 0.25;
     }
@@ -4831,7 +4838,7 @@ class NikitaGame {
         while (dYaw < -Math.PI) dYaw += Math.PI * 2;
         yawInput = Math.max(-1, Math.min(1, dYaw * 2.5));
         const targetPitch = Math.asin(Math.max(-0.9, Math.min(0.9, _v1.y)));
-        pitchInput = Math.max(-1, Math.min(1, (targetPitch - m.pitch) * 2.5));
+        pitchInput = Math.max(-1, Math.min(1, wrapPi(targetPitch - m.pitch) * 2.5));
       }
     }
 
@@ -4850,9 +4857,9 @@ class NikitaGame {
     m.pitchRate += (targetPitchRate - m.pitchRate) * Math.min(1, dt * pitchResp);
 
     m.yaw += m.yawRate * dt + mouseYaw;
-    m.pitch = Math.max(-1.05, Math.min(1.05, m.pitch + m.pitchRate * dt + mousePitch));
+    m.pitch = wrapPi(m.pitch + m.pitchRate * dt + mousePitch);   // no pitch limit: loops are possible if there is room
 
-    if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked) {
+    if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked && Math.abs(m.pitch) < 1.2) {
       m.pitch += (0 - m.pitch) * Math.min(1, dt * 1.85);
     }
 
@@ -5430,7 +5437,11 @@ class NikitaGame {
       if (this.camMode === 'FPV') {
         this.missileGroup.visible = false;
         this.camera.position.copy(m.pos);
-        this.camera.rotation.set(m.pitch, m.yaw, m.roll * 0.55, 'YXZ');
+        // always upright: aim along the rocket's heading with world-up as the camera's up (no banking, never inverted)
+        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+        _v1.copy(_fwd).applyEuler(_e1);
+        this.camera.up.set(0, 1, 0);
+        this.camera.lookAt(m.pos.x + _v1.x, m.pos.y + _v1.y, m.pos.z + _v1.z);
       } else {
         this.missileGroup.visible = true;
         _e1.set(m.pitch, m.yaw, 0, 'YXZ');
@@ -5447,7 +5458,6 @@ class NikitaGame {
       const shake = this.cameraTrauma * this.cameraTrauma * 0.42;
       this.camera.position.x += (Math.random() - 0.5) * shake;
       this.camera.position.y += (Math.random() - 0.5) * shake;
-      this.camera.rotation.z += (Math.random() - 0.5) * shake * 0.25;
     }
   }
 
@@ -5496,10 +5506,9 @@ class NikitaGame {
 
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.rotate(-m.roll);
     ctx.strokeStyle = 'rgba(0, 255, 136, 0.36)';
     ctx.lineWidth = 1.2;
-    const pitchPx = m.pitch * 220;
+    const pitchPx = Math.asin(Math.sin(m.pitch)) * 220;   // elevation above the horizon (stays valid through loops)
     for (let deg = -30; deg <= 30; deg += 15) {
       const ly = pitchPx - (deg * Math.PI / 180) * 220;
       if (Math.abs(ly) > 130) continue;
