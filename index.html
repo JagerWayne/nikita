@@ -1459,6 +1459,12 @@ const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
 const HEAR_WALL_DAMP = 0.65;
+const LAUNCH_DROP_TIME = 0.65;         // seconds the rocket falls with cold thrusters after launch
+const LAUNCH_DROP_SPEED = 3.0;         // launch momentum before ignition
+const LAUNCH_GRAVITY = 9.0;
+const AIM_YAW_RATE = 1.1;              // rad/s of launch-angle adjustment at full stick
+const AIM_PITCH_RATE = 0.9;
+const AIM_PITCH_LIMIT = 1.2;           // about 69 degrees up or down
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
@@ -2468,6 +2474,7 @@ class NikitaGame {
     this.noiseRadius = HEAR_MIN;
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
+    this.launchAim = { yaw: 0, pitch: 0 };
     this.decoys = DECOYS_PER_SECTOR;
     this.decoyObjs = [];
     this.modifier = null;
@@ -2497,6 +2504,7 @@ class NikitaGame {
       roll: 0,
       yawRate: 0,
       pitchRate: 0,
+      drop: 0,
       throttle: CRUISE_THROTTLE,
       effThrottle: CRUISE_THROTTLE,
       baseSpeedMode: 2,
@@ -4107,7 +4115,8 @@ class NikitaGame {
     const m = this.missile;
     m.active = false;
     m.pos.copy(this.spawnPos);
-    m.yaw = 0; m.pitch = 0; m.roll = 0;
+    m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
+    this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
     this.resetOverlays();
     this.state = 'READY';
@@ -4120,7 +4129,37 @@ class NikitaGame {
     document.getElementById('fire-btn').style.display = 'block';
     this.updateTouchControlsVisibility();
     if (first && this.modifier) this.pushFeed(`SECTOR MODIFIER: ${this.modifier} — ${MODIFIER_INFO[this.modifier]}`, 'red');
-    this.pushFeed(first ? 'NIKITA ARMED — SET SPEED, THEN PRESS FIRE' : `ROCKET READY (${this.ammo} LEFT) — PRESS FIRE`, 'cyan');
+    this.pushFeed(first ? 'NIKITA ARMED — AIM WITH THE STICK, THEN PRESS FIRE' : `ROCKET READY (${this.ammo} LEFT) — AIM, THEN PRESS FIRE`, 'cyan');
+  }
+
+  // While waiting on the pad the stick / keys / mouse / gyro adjust the launch angle.
+  updateReadyAim(dt) {
+    const m = this.missile;
+    const a = this.launchAim;
+    let yawIn = -this.touchInput.joyX + (this.gyro && this.gyro.enabled ? this.gyro.yaw : 0);
+    let pitchIn = -this.touchInput.joyY + (this.gyro && this.gyro.enabled ? this.gyro.pitch : 0);
+    if (this.keys['KeyA'] || this.keys['ArrowLeft'])  yawIn += 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) yawIn -= 1;
+    if (this.keys['KeyW'] || this.keys['ArrowUp'])    pitchIn += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown'])  pitchIn -= 1;
+    yawIn = Math.max(-1, Math.min(1, yawIn));
+    pitchIn = Math.max(-1, Math.min(1, pitchIn));
+    if (this.cfg.invertPitch) pitchIn = -pitchIn;
+    let mouseYaw = 0, mousePitch = 0;
+    if (this.mouseYawDelta !== 0 || this.mousePitchDelta !== 0) {
+      const mScale = 0.0022 * this.cfg.mouseSens;
+      mouseYaw = -this.mouseYawDelta * mScale;
+      mousePitch = (this.cfg.invertPitch ? 1 : -1) * this.mousePitchDelta * mScale;
+      this.mouseYawDelta = 0;
+      this.mousePitchDelta = 0;
+    }
+    a.yaw = wrapPi(a.yaw + yawIn * AIM_YAW_RATE * dt + mouseYaw);
+    a.pitch = Math.max(-AIM_PITCH_LIMIT, Math.min(AIM_PITCH_LIMIT, a.pitch + pitchIn * AIM_PITCH_RATE * dt + mousePitch));
+    m.yaw = a.yaw;
+    m.pitch = a.pitch;
+    const yd = Math.round(a.yaw * 57.2958), pd = Math.round(a.pitch * 57.2958);
+    const small = this.fireSmall || (this.fireSmall = document.querySelector('#fire-btn small'));
+    if (small) this.cText(small, `AIM  YAW ${yd > 0 ? '+' : ''}${yd}°  PITCH ${pd > 0 ? '+' : ''}${pd}°  ·  STICK TO AIM`);
   }
 
   fireRocket() {
@@ -4147,8 +4186,8 @@ class NikitaGame {
     this.fired++;
     m.active = true;
     m.pos.copy(this.spawnPos);
-    m.yaw = 0;
-    m.pitch = 0;
+    m.yaw = this.launchAim.yaw;
+    m.pitch = this.launchAim.pitch;
     m.roll = 0;
     m.yawRate = 0;
     m.pitchRate = 0;
@@ -4162,8 +4201,11 @@ class NikitaGame {
     m.effThrottle = 0;
     m.baseSpeedMode = this.modeForThrottle(m.throttle);
     m.activeSpeedMode = m.baseSpeedMode;
-    m.currentSpeed = this.throttleSpeed(m.throttle);
-    m.vel.set(0, 0, -m.currentSpeed);
+    // launched with cold thrusters: coast along the aim and fall for a moment before ignition
+    m.currentSpeed = LAUNCH_DROP_SPEED;
+    m.drop = LAUNCH_DROP_TIME;
+    _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+    m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
     m.fuel = 100;
     m.boost = 100;
     m.boostDepleted = false;
@@ -4401,6 +4443,7 @@ class NikitaGame {
     this.updateFacilityObjects(effectiveDt);
     this.updatePickups(effectiveDt);
     this.updateDecoys(effectiveDt);
+    if (this.state === 'READY') this.updateReadyAim(effectiveDt);
 
     if (this.state === 'PLAYING' && this.missile.active) {
       this.updateMissile(effectiveDt);
@@ -4847,6 +4890,7 @@ class NikitaGame {
       pitchInput += (Math.random() - 0.5) * 0.32;
     }
 
+    if (m.drop > 0) { yawInput = 0; pitchInput = 0; mouseYaw = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
     const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost;
     const targetYawRate = yawInput * agility;
@@ -4870,16 +4914,31 @@ class NikitaGame {
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     _v1.copy(_fwd).applyEuler(_e1).normalize();
 
-    const leverSpeed = this.throttleSpeed(effT);
-    const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
-    m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
+    if (m.drop > 0) {
+      // thrusters cold: keep launch momentum and fall under gravity
+      m.drop -= dt;
+      m.vel.y -= LAUNCH_GRAVITY * dt;
+      if (m.pos.y < 0.8 && m.vel.y < 0) m.vel.y = 0;     // never drop into the floor of the launch bay
+      if (m.drop <= 0) {
+        // ignition
+        this.vfx.spawnRing(m.pos, 2.6, 0.24, 0xffaa44, m.pitch, 0);
+        this.vfx.spawnLightFlash(m.pos, 0xffaa44, 11, 0.22);
+        this.audio.playSpeedShift(2);
+        this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.3);
+        this.pushFeed('THRUSTERS ENGAGED', 'amber');
+      }
+    } else {
+      const leverSpeed = this.throttleSpeed(effT);
+      const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
+      m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
 
-    _v2.copy(_v1).multiplyScalar(m.currentSpeed);
-    const gravDrop = hasFuel ? 0.35 : 7.5;
-    _v2.y -= gravDrop * dt * (hasFuel ? 3.0 : 12.0);
+      _v2.copy(_v1).multiplyScalar(m.currentSpeed);
+      const gravDrop = hasFuel ? 0.35 : 7.5;
+      _v2.y -= gravDrop * dt * (hasFuel ? 3.0 : 12.0);
 
-    const inertia = profile.inertia;
-    m.vel.lerp(_v2, Math.min(1, dt * inertia));
+      const inertia = profile.inertia;
+      m.vel.lerp(_v2, Math.min(1, dt * inertia));
+    }
 
     // 3) 4-Substep Swept Collision Pass
     const subDt = dt / SUBSTEPS;
@@ -5062,13 +5121,14 @@ class NikitaGame {
 
     this.thrusterMat.color.setHex(profile.exhaustColor);
     const flicker = 0.8 + Math.random() * 0.45;
-    const plScaleXZ = hasFuel ? profile.plumeXZ : 0.01;
-    const plScaleY  = hasFuel ? profile.plumeY * flicker : 0.01;
+    const engineOn = hasFuel && m.drop <= 0;
+    const plScaleXZ = engineOn ? profile.plumeXZ : 0.01;
+    const plScaleY  = engineOn ? profile.plumeY * flicker : 0.01;
     this.thrusterCone.scale.set(plScaleXZ, plScaleY, plScaleXZ);
     this.thrusterCore.scale.set(plScaleXZ * 0.85, plScaleY * 0.9, plScaleXZ * 0.85);
 
     m.exhaustTimer -= dt;
-    if (hasFuel && m.exhaustTimer <= 0) {
+    if (engineOn && m.exhaustTimer <= 0) {
       m.exhaustTimer = profile.exhaustCadence;
       _v4.set(0, 0, 1.05).applyEuler(this.missileGroup.rotation).add(m.pos);
       _v5.copy(m.vel).multiplyScalar(-0.08);
@@ -5127,7 +5187,7 @@ class NikitaGame {
       }
     }
 
-    this.audio.updateEngine(true, m.activeSpeedMode, m.currentSpeed / 30, hasFuel);
+    this.audio.updateEngine(true, m.activeSpeedMode, m.currentSpeed / 30, engineOn);
 
     this.cStyle(this.el.speedLines, 'opacity', m.activeSpeedMode === 3 ? '0.85' : '0');
     if (m.activeSpeedMode === 3) {
@@ -5418,7 +5478,10 @@ class NikitaGame {
       this.camera.fov += (blendProfile(m.throttle, _profileCam).fov - this.camera.fov) * Math.min(1, dt * 7.5);
       this.camera.updateProjectionMatrix();
       this.camera.position.copy(this.spawnPos);
-      this.camera.rotation.set(0, 0, 0, 'YXZ');
+      _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+      _v1.copy(_fwd).applyEuler(_e1);
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(this.spawnPos.x + _v1.x, this.spawnPos.y + _v1.y, this.spawnPos.z + _v1.z);
       return;
     }
 
@@ -5469,7 +5532,7 @@ class NikitaGame {
     const w = window.innerWidth;
     const h = window.innerHeight;
     ctx.clearRect(0, 0, w, h);
-    if (this.state !== 'PLAYING' && this.state !== 'KILLCAM') return;
+    if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'READY') return;
 
     const m = this.missile;
     const cx = w * 0.5;
@@ -6394,7 +6457,7 @@ class NikitaGame {
     rightAimZone.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       this.audio.unlock();
-      if (this.state === 'PLAYING' && !this.paused && this.touchInput.lookId === null) {
+      if ((this.state === 'PLAYING' || this.state === 'READY') && !this.paused && this.touchInput.lookId === null) {
         this.touchInput.lookId = e.pointerId;
         this.touchInput.lookLastX = e.clientX;
         this.touchInput.lookLastY = e.clientY;
@@ -6402,7 +6465,7 @@ class NikitaGame {
       }
     });
     rightAimZone.addEventListener('pointermove', (e) => {
-      if (e.pointerId === this.touchInput.lookId && this.state === 'PLAYING' && !this.paused) {
+      if (e.pointerId === this.touchInput.lookId && (this.state === 'PLAYING' || this.state === 'READY') && !this.paused) {
         e.preventDefault();
         const dx = e.clientX - this.touchInput.lookLastX;
         const dy = e.clientY - this.touchInput.lookLastY;
@@ -6573,7 +6636,7 @@ class NikitaGame {
 
     this.canvas.addEventListener('click', () => {
       this.audio.unlock();
-      if (this.state === 'PLAYING' && !this.overrideOpen && !this.isTouchDevice && document.pointerLockElement !== this.canvas) {
+      if ((this.state === 'PLAYING' || this.state === 'READY') && !this.overrideOpen && !this.isTouchDevice && document.pointerLockElement !== this.canvas) {
         if (this.canvas.requestPointerLock) this.canvas.requestPointerLock();
       }
     });
@@ -6581,7 +6644,7 @@ class NikitaGame {
       this.pointerLocked = (document.pointerLockElement === this.canvas);
     });
     window.addEventListener('mousemove', (e) => {
-      if (this.pointerLocked && this.state === 'PLAYING') {
+      if (this.pointerLocked && (this.state === 'PLAYING' || this.state === 'READY')) {
         this.mouseYawDelta += e.movementX;
         this.mousePitchDelta += e.movementY;
       }

@@ -57,7 +57,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
-**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one.
+**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about two thirds of a second, then the engine ignites.
 
 ## Mobile controls
 
