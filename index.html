@@ -1578,6 +1578,8 @@ const RAMP_LEN = 6;
 const RIM_BASE = 1 << 26;              // edge ids at or above this: rims of floor openings (holes, atriums, lifts)
 const LIFT_BASE = 1 << 27;             // edge ids at or above this: lift shaft corner beams
 const LIFT_SPEED = 6.0;                // how fast a lift carries the rocket (units/s)                    // ramp length in cells (gentle: ~17 degrees)
+const SWITCH_CONE_MULT = 3;            // laser control boxes can be locked within 3x the seeker cone...
+const SWITCH_CONE_MAX = 55;            // ...up to 55 degrees off the nose
 const SHAFT_REVEAL_R = 10;             // shaft interiors are outlined only within this distance of the rocket
 const SHAFT_SEG_BASE = 1 << 24;        // edge ids at or above this are shaft outlines (cyan)
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
@@ -6712,13 +6714,14 @@ class NikitaGame {
     }
     for (let i = 0; i < this.lasers.length; i++) {
       const l = this.lasers[i];
-      if (l.thermalVis && l.lockRef.active) this._considerTarget('LASER BOX', l.lockRef, l.relayPos.x, l.relayPos.y, l.relayPos.z, 0, m);
+      if (l.thermalVis && l.lockRef.active) this._considerTarget('LASER BOX', l.lockRef, l.relayPos.x, l.relayPos.y, l.relayPos.z, 0, m, SWITCH_CONE_MULT);
     }
     // Returns a reused object (no per-call allocation); copy it if you need to keep it.
     return this._bestCand.ref ? this._bestCand : null;
   }
 
-  _considerTarget(type, ref, tx, ty, tz, aimY, m) {
+  // coneMult widens the acquisition cone (laser switches sit on side walls, rarely dead ahead)
+  _considerTarget(type, ref, tx, ty, tz, aimY, m, coneMult = 1) {
     _v2.set(tx - m.pos.x, ty - m.pos.y, tz - m.pos.z);
     const dist = _v2.length();
     const TP = this.lidarParams(true);
@@ -6726,7 +6729,8 @@ class NikitaGame {
     _v2.multiplyScalar(1 / dist);
     const dot = _v1.dot(_v2);
     // Strictly enforce 15-degree half-angle cone from rocket nose
-    if (dot < Math.cos(TP.seekerDeg * Math.PI / 180)) return;
+    const coneDeg = Math.min(SWITCH_CONE_MAX, TP.seekerDeg * coneMult);
+    if (dot < Math.cos(coneDeg * Math.PI / 180)) return;
     if (!this.los3(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz)) return;
     const score = dist * 0.4 + (1.0 - dot) * 260.0;
     if (score < this._bestScore) {

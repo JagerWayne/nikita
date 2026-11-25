@@ -142,7 +142,7 @@ The speed lever is locked at minimum while the rocket waits on the pad and works
 | --- | --- |
 | Left half (drag) | Floating flight stick (pitch and yaw) |
 | Right half (drag) | Fine aim |
-| LOCK | Lock the target highlighted in the 15 degree seeker cone |
+| LOCK | Lock the target highlighted in the 15 degree seeker cone. Laser switches (control boxes) lock within 3x the cone, up to 55 degrees off the nose, because they sit on the side walls. |
 | HOLD DET (hold 0.3 s) | Manual warhead detonation |
 | Speed lever (screen edge) | Analog throttle from minimum to maximum speed. Above cruise it drains the boost capacitor, which recharges below cruise |
 | FIRE | Launches the rocket at the start of a sector |
