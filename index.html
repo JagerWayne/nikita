@@ -1558,6 +1558,7 @@ const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels across the f
 const VOX_Y = Math.ceil(WALL_H / VOX);
 const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
 const LIDAR_KEY_PREFIX = 'L';
+const SHAFT_SEG_BASE = 1 << 24;        // edge ids at or above this are shaft outlines (cyan)
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
@@ -4389,6 +4390,7 @@ class NikitaGame {
     this.segA = new Float32Array(SEG_CAP * 3);
     this.segB = new Float32Array(SEG_CAP * 3);
     this.segBirth = new Float32Array(SEG_CAP);
+    this.segKind = new Float32Array(SEG_CAP);
     this.segSlot = new Map();
     this.segCount = 0;
     this.segDirtyMin = -1; this.segDirtyMax = -1;
@@ -4398,6 +4400,8 @@ class NikitaGame {
     this.segAAttr = new THREE.InstancedBufferAttribute(this.segA, 3).setUsage(THREE.DynamicDrawUsage);
     this.segBAttr = new THREE.InstancedBufferAttribute(this.segB, 3).setUsage(THREE.DynamicDrawUsage);
     this.segTAttr = new THREE.InstancedBufferAttribute(this.segBirth, 1).setUsage(THREE.DynamicDrawUsage);
+    this.segKAttr = new THREE.InstancedBufferAttribute(this.segKind, 1).setUsage(THREE.DynamicDrawUsage);
+    lg.setAttribute('aKind', this.segKAttr);
     lg.setAttribute('aA', this.segAAttr);
     lg.setAttribute('aB', this.segBAttr);
     lg.setAttribute('aBirth', this.segTAttr);
@@ -4409,7 +4413,8 @@ class NikitaGame {
       uniforms: this.segUniforms,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: `
-        attribute vec3 aA; attribute vec3 aB; attribute float aBirth;
+        attribute vec3 aA; attribute vec3 aB; attribute float aBirth; attribute float aKind;
+        varying float vK;
         uniform float uTime, uGlow, uRange, uWidth, uPulse; uniform vec2 uRes; uniform vec3 uOrigin;
         varying float vB; varying float vEdge;
         void main() {
@@ -4434,12 +4439,14 @@ class NikitaGame {
           float wave = exp(-abs(mid - uPulse) * 0.9) * (1.0 - smoothstep(uRange, uRange * 1.3, uPulse));
           vB = (0.3 + 0.7 * near) * (0.55 + 0.45 * breath) + fresh * 0.9 + wave * 1.1;
           vEdge = position.y;
+          vK = aKind;
         }`,
       fragmentShader: `
-        varying float vB; varying float vEdge;
+        varying float vB; varying float vEdge; varying float vK;
         void main() {
           float core = 1.0 - abs(vEdge);
-          gl_FragColor = vec4(vec3(0.12, 1.0, 0.42) * vB * (0.35 + 0.65 * core), 1.0);
+          vec3 col = mix(vec3(0.12, 1.0, 0.42), vec3(0.3, 0.95, 1.0) * 1.35, vK);
+          gl_FragColor = vec4(col * vB * (0.35 + 0.65 * core), 1.0);
         }`
     });
     this.edgeLines = new THREE.Mesh(lg, lmat);
@@ -4490,7 +4497,7 @@ class NikitaGame {
     if (this.lidarDirtyFrom < 0) return;
     const from = this.lidarDirtyFrom, n = this.lidarDirtyN;
     const pa = this.lidarPosAttr, ia = this.lidarInfoAttr;
-    pa.clearUpdateRanges(); ia.clearUpdateRanges();
+    // ranges accumulate until three.js uploads them (it clears them itself)
     if (n >= LIDAR_CAP) { pa.addUpdateRange(0, LIDAR_CAP * 3); ia.addUpdateRange(0, LIDAR_CAP * 2); }
     else if (from + n <= LIDAR_CAP) { pa.addUpdateRange(from * 3, n * 3); ia.addUpdateRange(from * 2, n * 2); }
     else {
@@ -4554,7 +4561,7 @@ class NikitaGame {
       }
     }
     if (changed) {
-      this.lidarPosAttr.clearUpdateRanges();
+
       this.lidarPosAttr.addUpdateRange(0, LIDAR_CAP * 3);
       this.lidarPosAttr.needsUpdate = true;
     }
@@ -4592,6 +4599,7 @@ class NikitaGame {
           if (tEnter > range) return null;
           this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
           this._hitSeg = -1;
+          this._hitShaft = gz * G + gx;
           this._hitCls = 3;
           return this._hit;
         }
@@ -4602,6 +4610,7 @@ class NikitaGame {
           if (tb > range) return null;
           this._hit.set(ox + dx * tb, oy + dy * tb, oz + dz * tb);
           this._hitSeg = -1;
+          this._hitShaft = gz * G + gx;
           this._hitCls = 3;
           return this._hit;
         }
@@ -4658,6 +4667,14 @@ class NikitaGame {
 
   // An edge is real only on a full wall whose face looks into open floor (never inside or on a shaft).
   validSeg(seg) {
+    if (seg >= SHAFT_SEG_BASE) {
+      const c = Math.floor((seg - SHAFT_SEG_BASE) / 32), k = (seg - SHAFT_SEG_BASE) % 32;
+      if (c < 0 || c >= GRID_SIZE * GRID_SIZE || !isShaft(this.grid[c])) return false;
+      if (k < 4) return true;
+      const f = (k - 4) >> 2, gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE);
+      const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
+      return !this.cellSolid(nx, nz);
+    }
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
     if (!this.cellFullWall(gx, gz) || gx <= 0 || gz <= 0 || gx >= GRID_SIZE - 1 || gz >= GRID_SIZE - 1) return false;
@@ -4684,6 +4701,7 @@ class NikitaGame {
     if (seg < 0 || this.revealedSeg.has(seg) || !this.validSeg(seg)) return;
     this.revealedSeg.add(seg);
     if (this.segCount >= this.SEG_CAP) return;
+    if (seg >= SHAFT_SEG_BASE) { this.addShaftSeg(seg, birth); return; }
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
     const x0 = (gx - GRID_SIZE * 0.5) * CELL_SIZE, z0 = (gz - GRID_SIZE * 0.5) * CELL_SIZE, off = 0.04;
@@ -4694,7 +4712,63 @@ class NikitaGame {
     if (k < 2) { const y = k === 0 ? 0.04 : WALL_H - 0.04; pt(0, y, A); pt(CELL_SIZE, y, B); }
     else { const along = k === 2 ? 0 : CELL_SIZE; pt(along, 0, A); pt(along, WALL_H, B); }
     const i = this.segCount++;
-    this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth;
+    this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth; this.segKind[i] = 0;
+    this.segSlot.set(seg, i);
+    if (this.segDirtyMin < 0 || i < this.segDirtyMin) this.segDirtyMin = i;
+    if (i > this.segDirtyMax) this.segDirtyMax = i;
+  }
+
+  // Shaft outline: 4 lines along the tunnel's inside corners (k 0-3) and a rectangle around each opening (k 4+).
+  revealShaftCell(c0, birth) {
+    // outline the whole connected shaft (same opening height) as soon as any part of it is scanned
+    if (this.revealedSeg.has(SHAFT_SEG_BASE + c0 * 32)) return;
+    const v0 = this.grid[c0], stack = [c0], seen = new Set([c0]);
+    while (stack.length) {
+      const c = stack.pop();
+      this.revealShaftCellOnly(c, birth);
+      const x = c % GRID_SIZE, z = Math.floor(c / GRID_SIZE);
+      for (const [dx, dz] of PROBE_DIRS) {
+        const n = (z + dz) * GRID_SIZE + (x + dx);
+        if (x + dx < 0 || z + dz < 0 || x + dx >= GRID_SIZE || z + dz >= GRID_SIZE || seen.has(n) || this.grid[n] !== v0) continue;
+        seen.add(n); stack.push(n);
+      }
+    }
+  }
+
+  revealShaftCellOnly(c, birth) {
+    const gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE);
+    for (let k = 0; k < 4; k++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + k, birth);
+    for (let f = 0; f < 4; f++) {
+      const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
+      if (this.cellSolid(nx, nz)) continue;
+      for (let j = 0; j < 4; j++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + 4 + f * 4 + j, birth);
+    }
+  }
+
+  addShaftSeg(seg, birth) {
+    const c = Math.floor((seg - SHAFT_SEG_BASE) / 32), k = (seg - SHAFT_SEG_BASE) % 32;
+    const gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE), v = this.grid[c];
+    const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3, hi = lo + WALL_H / 3, e = 0.04, C = CELL_SIZE;
+    const x0 = (gx - GRID_SIZE * 0.5) * C, z0 = (gz - GRID_SIZE * 0.5) * C;
+    const yl = lo + e, yh = hi - e;
+    // the tunnel runs along x when its x-neighbours are not solid rock
+    const alongX = !this.cellFullWall(gx - 1, gz) || !this.cellFullWall(gx + 1, gz);
+    let A, B;
+    if (k < 4) {
+      const y = (k & 1) ? yh : yl, side = k < 2 ? e : C - e;
+      if (alongX) { A = [x0, y, z0 + side]; B = [x0 + C, y, z0 + side]; }
+      else { A = [x0 + side, y, z0]; B = [x0 + side, y, z0 + C]; }
+    } else {
+      const f = (k - 4) >> 2, j = (k - 4) & 3;
+      const onX = f < 2;                                     // mouth plane perpendicular to x
+      const plane = onX ? (f === 0 ? x0 + C + e : x0 - e) : (f === 2 ? z0 + C + e : z0 - e);
+      const pt = (w, y) => onX ? [plane, y, z0 + w] : [x0 + w, y, plane];
+      if (j === 0) { A = pt(e, yl); B = pt(C - e, yl); }
+      else if (j === 1) { A = pt(e, yh); B = pt(C - e, yh); }
+      else { const w = j === 2 ? e : C - e; A = pt(w, yl); B = pt(w, yh); }
+    }
+    const i = this.segCount++;
+    this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth; this.segKind[i] = 1;
     this.segSlot.set(seg, i);
     if (this.segDirtyMin < 0 || i < this.segDirtyMin) this.segDirtyMin = i;
     if (i > this.segDirtyMax) this.segDirtyMax = i;
@@ -4703,8 +4777,8 @@ class NikitaGame {
   flushSegs() {
     if (this.segDirtyMin < 0) return;
     const a = this.segDirtyMin, n = this.segDirtyMax - a + 1;
-    for (const [attr, w] of [[this.segAAttr, 3], [this.segBAttr, 3], [this.segTAttr, 1]]) {
-      attr.clearUpdateRanges();
+    for (const [attr, w] of [[this.segAAttr, 3], [this.segBAttr, 3], [this.segTAttr, 1], [this.segKAttr, 1]]) {
+
       attr.addUpdateRange(a * w, n * w);
       attr.needsUpdate = true;
     }
@@ -4772,7 +4846,7 @@ class NikitaGame {
         }
         const cp = Math.cos(pit);
         const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
-        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now); if (c === 4) this.revealSeg(this._hitSeg, now); }
+        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now); if (c === 4) this.revealSeg(this._hitSeg, now); else if (c === 3) this.revealShaftCell(this._hitShaft, now); }
       }
       if (P.deep >= 2) this.deepScanReveal(o, P);
     }
