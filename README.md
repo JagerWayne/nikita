@@ -30,6 +30,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 ## Landing (v2.9)
 
 - **Touch down.** With the lever near minimum (rocket at 9 m/s or slower), ease onto a flat floor with the nose no more than about 26 degrees down and you land: the rocket settles and its speed falls to 0. Ramps still let you ride up them instead.
+- **Landing indicator (v2.9.1).** When you are slow enough to land and within 6 m of a flat floor, a box under the flight panel shows ▼ LAND OK with your height. It turns to a blinking red ▼ TOO STEEP — LEVEL OFF if you are sinking too fast or diving, and shows ▣ LANDED · THROTTLE UP TO LIFT OFF once you are down.
 - **On the ground.** The engine idles and keeps burning fuel (half the cruise burn; the EFF meter reads IDLE). You can turn on the spot and tilt the nose up to aim, and the gun still fires, so a landed rocket works as a quiet sniper post. An empty tank still self-destructs.
 - **Lift off.** Raise the lever past the bottom notch and the rocket lifts off nose-up.
 - **Crashing.** Dropping onto the floor (sinking faster than 4 m/s), diving steeply into it, or hitting it with the engine out detonates the warhead. A fast, shallow skim still scrapes the hull (-22%) and bounces off as before.

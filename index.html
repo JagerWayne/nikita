@@ -235,6 +235,16 @@
     letter-spacing: 0.14em;
   }
 
+  #hud-land {
+    position: absolute; left: 50%; top: 63%; transform: translateX(-50%);
+    display: none; pointer-events: none; z-index: 6;
+    padding: 3px 12px; border: 1.5px solid currentColor; border-radius: 3px;
+    background: rgba(2, 12, 8, 0.72); font: bold 12px Consolas, monospace; letter-spacing: 0.14em; white-space: nowrap;
+  }
+  #hud-land.ok { color: #00ff88; }
+  #hud-land.warn { color: #ff3344; animation: landBlink 0.5s steps(2) infinite; }
+  #hud-land.down { color: #00e5ff; }
+  @keyframes landBlink { 50% { opacity: 0.35; } }
   #killcam-banner {
     display: none;
     background: rgba(255, 170, 0, 0.88);
@@ -1164,6 +1174,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="hud-top-center">
     <div id="alert-banner">! ALERT — HOSTILE TRACKING !</div>
     <div id="ecm-banner">⚡ ECM JAMMING FIELD — SIGNAL INTERFERENCE</div>
+    <div id="hud-land"></div>
     <div id="killcam-banner">TARGET NEUTRALIZED // ORBITAL KILL-CAM 0.25x</div>
   </div>
 
@@ -8089,6 +8100,7 @@ class NikitaGame {
 
     const E = this.el;
     this.cText(E.speedReadout, `${m.vel.length().toFixed(1)} u/s`);
+    this.updateLandIndicator(m);
     this.fuelBurnAvg = (this.fuelBurnAvg || 2.4) + ((m.fuelBurn || 0) - (this.fuelBurnAvg || 2.4)) * 0.05;
     const fuelSecs = this.fuelBurnAvg > 0.05 ? Math.min(999, Math.round(m.fuel / this.fuelBurnAvg)) : 999;
     this.cText(E.valFuel, `${Math.round(m.fuel)}% ${fuelSecs < 999 ? fuelSecs + 's' : ''}`);
@@ -9261,6 +9273,30 @@ class NikitaGame {
 
   /* ---- cached DOM writes (skip identical values; avoids layout churn on phones) ---- */
   cText(el, v) { if (el._t !== v) { el._t = v; el.textContent = v; } }
+
+  // Landing indicator: shown when the rocket is slow enough to land and close to a flat floor.
+  updateLandIndicator(m) {
+    const el = this._landEl || (this._landEl = document.getElementById('hud-land'));
+    if (!el) return;
+    let txt = '', cls = '';
+    if (m.active && this.state === 'PLAYING') {
+      if (m.landed) { txt = '▣ LANDED · THROTTLE UP TO LIFT OFF'; cls = 'down'; }
+      else if (m.drop <= 0 && !m.flipping && m.fuel > 0 && m.currentSpeed <= LAND_SPEED && m.effThrottle <= LAND_TAKEOFF) {
+        const c = this.cellAt(m.pos.x, m.pos.z);
+        if (c >= 0) {
+          const gy = this.groundAt(this.floorOfY(m.pos.y), c, m.pos.x, m.pos.z);
+          const alt = m.pos.y - MISSILE_RADIUS - gy;
+          if (!this._gRamp && alt < 6) {
+            if (m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH) { txt = `▼ TOO STEEP — LEVEL OFF  ${alt.toFixed(1)}m`; cls = 'warn'; }
+            else { txt = `▼ LAND OK  ${alt.toFixed(1)}m`; cls = 'ok'; }
+          }
+        }
+      }
+    }
+    this.cText(el, txt);
+    if (el._cls !== cls) { el._cls = cls; el.className = cls; }
+    this.cStyle(el, 'display', txt ? 'block' : 'none');
+  }
   cStyle(el, prop, v) { const k = '_s_' + prop; if (el[k] !== v) { el[k] = v; el.style[prop] = v; } }
 
   /* ---- preferences: left-handed, button size/opacity, low-spec ---- */
