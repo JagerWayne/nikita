@@ -1073,7 +1073,6 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
 #tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
 #tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
-#tbtn-flip    { width: 58px; height: 58px; right: 92px;  bottom: 126px; font-size: 9px; border-color: rgba(255, 170, 0, 0.85); color: var(--hud-amber); }
 #tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
 #tbtn-gun     { width: 66px; height: 66px; right: 158px; bottom: 6px;   font-size: 10px; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
 #tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
@@ -1095,7 +1094,6 @@ body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
 body.lefty #tbtn-decoy { left: 92px; }
 body.lefty #tbtn-gun { left: 158px; }
-body.lefty #tbtn-flip { left: 92px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
@@ -1249,7 +1247,6 @@ window.addEventListener('unhandledrejection', function (e) {
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
-    <button class="touch-act-btn" id="tbtn-flip">FLIP &amp;<br/>BURN</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
 </div>
@@ -1335,7 +1332,9 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">STICK / GYRO</span> : Fly, and aim on the pad</div>
         <div><span class="ctrl-key">SPEED LEVER</span> : Throttle, min to max</div>
         <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
-        <div><span class="ctrl-key">DECOY · FLIP</span> : Lure sentries, flip and burn</div>
+        <div><span class="ctrl-key">DECOY</span> : Lure sentries with a noise decoy</div>
+        <div><span class="ctrl-key">GUN</span> : Hold to fire the rocket gun</div>
+        <div><span class="ctrl-key">LAND</span> : Slow down and ease onto a flat floor; throttle up to lift off</div>
         <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, X</div>
       </div>
     </details>
@@ -1599,6 +1598,10 @@ const LAND_SPEED = 9.0;                // (minimum lever speed 7.5 + 1.5) at or 
 const LAND_SINK = 4.0;                 // falling faster than this onto the floor detonates
 const LAND_PITCH = 0.45;               // nose more than ~26 degrees down onto the floor detonates
 const LAND_TAKEOFF = 0.14;             // raise the lever past this to lift off again
+const TAKEOFF_SPOOL = 0.45;            // seconds the engine spools up on the ground before the rocket rises
+const TAKEOFF_RISE = 0.85;             // seconds to climb off the floor and pitch up
+const TAKEOFF_HEIGHT = 1.7;            // hover height reached before pulling away
+const LAND_LEAN = 0.34;                // a landed rocket settles leaning onto one fin (~7 deg camera tilt)
 // ---- ROCKET GUN ----
 const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
 const GUN_CAP_MAX = 200;               // fully upgraded (20 steps of 7.5)
@@ -6332,7 +6335,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false;
+    m.landed = false; m.takeoffT = -1;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6353,7 +6356,7 @@ class NikitaGame {
   }
 
   updateFlipButton() {
-    const b = document.getElementById('tbtn-flip');
+    const b = document.getElementById('tbtn-flip');   // the flip & burn button was removed; kept as a no-op
     if (!b) return;
     const used = this.missile.flipUsed;
     b.innerHTML = used ? 'FLIP<br/>USED' : 'FLIP &amp;<br/>BURN';
@@ -6450,7 +6453,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false;
+    m.landed = false; m.takeoffT = -1;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -7231,18 +7234,54 @@ class NikitaGame {
     } else if (m.flipping) {
       m.vel.multiplyScalar(Math.max(0, 1 - 0.35 * dt));      // tumbling with cold engine: coast with slight drag
     } else if (m.landed) {
-      // on the ground: engine idles (still burning fuel), the rocket can turn on the spot and tilt its nose up to aim
-      if (effT > LAND_TAKEOFF && hasFuel) {
-        m.landed = false;
-        m.pitch = Math.max(m.pitch, 0.22);
-        m.currentSpeed = SPEED_MIN * 0.7;
-        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
-        m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(m.currentSpeed);
-        this.audio.playSpeedShift(2);
-        this.pushFeed('LIFT-OFF', 'cyan');
+      // on the ground: engine idles (still burning fuel); turn on the spot, tilt the nose up to aim
+      m.landT = (m.landT || 0) + dt;
+      m.vel.set(0, 0, 0);
+      const baseY = (m.landY || 0) + MISSILE_RADIUS + 0.01;
+      if (m.takeoffT >= 0) {
+        // take-off: spool up (shaking), rise off the floor while levelling the fin, pitch up and pull away
+        m.takeoffT += dt;
+        const T = m.takeoffT;
+        if (T < TAKEOFF_SPOOL) {
+          if (effT <= LAND_TAKEOFF || !hasFuel) { m.takeoffT = -1; this.pushFeed('LIFT-OFF ABORTED', 'amber'); }
+          const sp = T / TAKEOFF_SPOOL;
+          this.cameraTrauma = Math.max(this.cameraTrauma, 0.1 + 0.18 * sp);
+          m.pos.y = baseY + 0.03 * sp * Math.sin(this.gameClock * 70);
+          m.roll += (m.landRoll * (1 - sp * 0.5) - m.roll) * Math.min(1, dt * 10);
+          m.currentSpeed = 0;
+        } else {
+          const u = Math.min(1, (T - TAKEOFF_SPOOL) / TAKEOFF_RISE), e = u * u * (3 - 2 * u);
+          m.pos.y = baseY + TAKEOFF_HEIGHT * e;
+          m.roll += (0 - m.roll) * Math.min(1, dt * 8);
+          m.pitch += (Math.max(0.2, Math.min(0.5, m.pitch)) - m.pitch) * Math.min(1, dt * 5);
+          this.cameraTrauma = Math.max(this.cameraTrauma, 0.2 * (1 - u));
+          // start moving forward in the second half of the rise
+          m.currentSpeed = SPEED_MIN * 0.75 * Math.max(0, (u - 0.45) / 0.55);
+          if (m.currentSpeed > 0) {
+            const nx = m.pos.x - Math.sin(m.yaw) * m.currentSpeed * dt, nz = m.pos.z - Math.cos(m.yaw) * m.currentSpeed * dt;
+            if (!this.isGridSolid(nx, nz, m.pos.y)) { m.pos.x = nx; m.pos.z = nz; }
+          }
+          if (u >= 1) {
+            m.landed = false; m.takeoffT = -1;
+            m.currentSpeed = SPEED_MIN * 0.75;
+            _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+            m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(m.currentSpeed);
+            this.audio.playSpeedShift(2);
+            this.pushFeed('AIRBORNE', 'cyan');
+          }
+        }
+      } else if (effT > LAND_TAKEOFF && hasFuel) {
+        m.takeoffT = 0;
+        this.audio.playSpeedShift(1);
+        this.vibrate(20);
+        this.pushFeed('ENGINE SPOOL-UP — LIFTING OFF', 'cyan');
       } else {
+        // settle: a couple of small hops, a nose dip, then lean over onto one fin
+        const k = m.landT, imp = m.landImpact || 0.5;
+        m.pos.y = baseY + 0.45 * Math.max(0.6, imp) * Math.exp(-k * 6) * Math.abs(Math.sin(k * 13));
+        m.roll = m.landRoll * (1 - Math.exp(-k * 3.5)) + 0.16 * imp * Math.exp(-k * 4.5) * Math.sin(k * 17);
+        m.wobP = (m.wobP || 0) - 0.16 * Math.max(0.6, imp) * Math.exp(-k * 5) * Math.abs(Math.sin(k * 9)) + 0.0025 * Math.sin(this.gameClock * 31);
         m.currentSpeed += (0 - m.currentSpeed) * Math.min(1, dt * 5.0);
-        m.vel.set(0, 0, 0);
         m.pitch = Math.max(-0.02, Math.min(0.7, m.pitch));
       }
     } else {
@@ -7413,12 +7452,17 @@ class NikitaGame {
               const falling = m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH || !hasFuel;
               if (slow && !falling && m.drop <= 0 && !m.flipping) {
                 // touchdown: settle on the floor
+                m.landImpact = Math.min(1, Math.max(0.35, -m.vel.y / LAND_SINK + m.currentSpeed / LAND_SPEED * 0.5));
                 m.pos.set(_v3.x, gY + MISSILE_RADIUS + 0.01, _v3.z);
                 m.vel.set(0, 0, 0);
                 m.pitch = Math.max(0, m.pitch);
                 m.pitchRate = 0;
                 m.landed = true;
+                m.landY = gY; m.landT = 0; m.takeoffT = -1;
+                m.landRoll = (Math.random() < 0.5 ? -1 : 1) * LAND_LEAN;
+                this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.22 * m.landImpact);
                 this.audio.playScrape();
+                this.vibrate(25);
                 this.pushFeed('TOUCHDOWN — LANDED (RAISE THROTTLE TO LIFT OFF)', 'cyan');
                 break;
               }
@@ -8534,7 +8578,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate', 'tbtn-gun'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -8960,17 +9004,7 @@ class NikitaGame {
       btnLock.addEventListener('pointercancel', clearLockPress);
     }
 
-    const btnFlip = document.getElementById('tbtn-flip');
-    btnFlip.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.audio.unlock();
-      btnFlip.classList.add('pressed');
-      this.startFlip();
-    });
-    const clearFlipPress = () => btnFlip.classList.remove('pressed');
-    btnFlip.addEventListener('pointerup', clearFlipPress);
-    btnFlip.addEventListener('pointercancel', clearFlipPress);
+    // (flip & burn removed in v2.10)
 
     const btnGun = document.getElementById('tbtn-gun');
     if (btnGun) {
@@ -9070,7 +9104,6 @@ class NikitaGame {
       if (e.code === 'Equal' || e.code === 'BracketRight') stepSpeed(1);
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
-      if (e.code === 'KeyX' && this.state === 'PLAYING') this.startFlip();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
       }
@@ -9280,7 +9313,8 @@ class NikitaGame {
     if (!el) return;
     let txt = '', cls = '';
     if (m.active && this.state === 'PLAYING') {
-      if (m.landed) { txt = '▣ LANDED · THROTTLE UP TO LIFT OFF'; cls = 'down'; }
+      if (m.landed && m.takeoffT >= 0) { txt = '▲ LIFTING OFF'; cls = 'down'; }
+      else if (m.landed) { txt = '▣ LANDED · THROTTLE UP TO LIFT OFF'; cls = 'down'; }
       else if (m.drop <= 0 && !m.flipping && m.fuel > 0 && m.currentSpeed <= LAND_SPEED && m.effThrottle <= LAND_TAKEOFF) {
         const c = this.cellAt(m.pos.x, m.pos.z);
         if (c >= 0) {

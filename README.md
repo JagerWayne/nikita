@@ -27,12 +27,13 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
-## Landing (v2.9)
+## Landing (v2.9–2.10)
 
 - **Touch down.** With the lever near minimum (rocket at 9 m/s or slower), ease onto a flat floor with the nose no more than about 26 degrees down and you land: the rocket settles and its speed falls to 0. Ramps still let you ride up them instead.
 - **Landing indicator (v2.9.1).** When you are slow enough to land and within 6 m of a flat floor, a box under the flight panel shows ▼ LAND OK with your height. It turns to a blinking red ▼ TOO STEEP — LEVEL OFF if you are sinking too fast or diving, and shows ▣ LANDED · THROTTLE UP TO LIFT OFF once you are down.
 - **On the ground.** The engine idles and keeps burning fuel (half the cruise burn; the EFF meter reads IDLE). You can turn on the spot and tilt the nose up to aim, and the gun still fires, so a landed rocket works as a quiet sniper post. An empty tank still self-destructs.
-- **Lift off.** Raise the lever past the bottom notch and the rocket lifts off nose-up.
+- **Touchdown (v2.10).** The rocket hops once or twice, dips its nose and then leans over onto one fin (the view tilts about 7 degrees). A harder touchdown shakes the view more.
+- **Take-off (v2.10).** Raise the lever past the bottom notch: the engine spools up for half a second (the view shakes, the fin levels), the rocket rises about 1.7 m off the floor while pitching its nose up, then pulls away and is airborne after about 1.4 s. Drop the lever during the spool-up to abort. The HUD shows ▲ LIFTING OFF.
 - **Crashing.** Dropping onto the floor (sinking faster than 4 m/s), diving steeply into it, or hitting it with the engine out detonates the warhead. A fast, shallow skim still scrapes the hull (-22%) and bounces off as before.
 
 ## Rocket gun (v2.8)
@@ -64,7 +65,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **Points.** Primary target 150, CIWS turret 60, sentry 40, laser control box 35, cracked wall 25, vent grate 10, fuel barrel 5, power-up 20. Clear-all bonuses: targets 150, turrets 100, sentries 80, lasers 80, barrels and grates 20. Direct hit 50, 3-kill blast 40, 5-kill blast 120, no-alert sector 150, rank 0/40/80/160, medals 60 each. Kill points are multiplied by speed at impact (x0.75 slow, x2 at full speed, up to x3 with max-speed upgrades).
 - **Credits.** Every point is a credit, but replaying a sector only pays for beating your previous best there.
 - **Upgrade costs** grow about 28% per level (15% per max-speed step): rocket upgrades 200 to 1,840 per level, lidar and thermal 160 to 1,480, the 3-level perks 600 / 1,200 / 2,400, max speed 150 to 2,130. Buying everything costs about 98,000 credits.
-- **Fuel.** Burn follows speed like drag: base x (0.5 + 0.5 x (speed / cruise speed)^2), plus up to 30% more while turning hard, so cruise gives the most distance per tank; full speed burns about 1.8x, minimum speed about 0.7x. Nothing burns in the launch drop or while flipping (the flip's attitude jets cost 3%). The FUEL readout shows seconds left at the current burn (amber when low, red under 8 s), and the EFFICIENCY meter shows distance per fuel compared with the best possible: ECO (90%+, green), OK (70%+, amber), WASTE (red), or COAST when the engine is not burning. About 42 s straight at cruise before upgrades. FUEL LOW warns at 20%; an empty tank cuts the engine and the warhead self-destructs 2.5 s later.
+- **Fuel.** Burn follows speed like drag: base x (0.5 + 0.5 x (speed / cruise speed)^2), plus up to 30% more while turning hard, so cruise gives the most distance per tank; full speed burns about 1.8x, minimum speed about 0.7x. Nothing burns in the launch drop. The FUEL readout shows seconds left at the current burn (amber when low, red under 8 s), and the EFFICIENCY meter shows distance per fuel compared with the best possible: ECO (90%+, green), OK (70%+, amber), WASTE (red), or COAST when the engine is not burning. About 42 s straight at cruise before upgrades. FUEL LOW warns at 20%; an empty tank cuts the engine and the warhead self-destructs 2.5 s later.
 
 ## Lidar view (v2.0)
 
@@ -127,7 +128,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 **Daily seed.** The DAILY button on the briefing screen fills in today's shared facility seed.
 
-**Shafts.** Slots with cyan rails cut through some walls. A shaft's opening is only a third of the wall height: the bottom, middle or top third (cyan squares on the radar). The rocket must be at the right height to fit; at the wrong height it hits the wall. A power-up floats inside every shaft. Most shafts go all the way through; some are dead ends: grab the power-up, then flip and burn back out or detonate at the end.
+**Shafts.** Slots with cyan rails cut through some walls. A shaft's opening is only a third of the wall height: the bottom, middle or top third (cyan squares on the radar). The rocket must be at the right height to fit; at the wrong height it hits the wall. A power-up floats inside every shaft. Most shafts go all the way through; some are dead ends: grab the power-up, then detonate at the end (there is no room to turn).
 
 **Points.** Everything destroyable scores: primary targets 150, CIWS turrets 60, sentries 40, lasers 35, fuel barrels 10, vent grates 10, cracked walls 40, plus clear-all, direct-hit, combo, stealth, rank and medal bonuses. Kill points are multiplied by your speed at impact: x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed. Every 250 points pays a package of 5 rockets (see Balance). Collecting a power-up is worth 30 points. The score carries from sector to sector and restarts with a new campaign; the HUD shows `score / next package`.
 
@@ -144,8 +145,6 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
 **Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks; the rocket itself wobbles a little with speed and steering (more in the launch drop and with the engine out) and banks gently into turns (about 10 degrees at most), so the view shows both. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about a third of a second, then the engine ignites.
-
-**Flip and burn.** The FLIP & BURN button (key `X`) fires two small attitude jets that backflip the rocket 180 degrees with the engine cut, then the engine burns hard to reverse course. Once per rocket. After the flip the controls stay exactly as before (stick left still turns left, stick up still looks up).
 
 The speed lever is locked at minimum while the rocket waits on the pad and works once it is launched.
 
@@ -171,3 +170,5 @@ Desktop: click to capture the mouse, `WASD` or arrows steer, `L` lock, `Shift`/`
 - Preferences (left-handed layout, button size/opacity, low-spec mode) are stored in `localStorage`.
 - Low-spec mode drops the CRT, blend-mode and blur overlays and renders at 1x resolution. The game suggests it if the frame rate stays low.
 - Requires a browser with import-map support (iOS/Safari 16.4+, Chrome/Edge 89+, Firefox 108+).
+
+**Removed in v2.10:** the Flip & Burn button (key X).
