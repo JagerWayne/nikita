@@ -1583,6 +1583,11 @@ const RAMP_LEN = 6;
 const RIM_BASE = 1 << 26;              // edge ids at or above this: rims of floor openings (holes, atriums, lifts)
 const LIFT_BASE = 1 << 27;             // edge ids at or above this: lift shaft corner beams
 const LIFT_SPEED = 6.0;                // how fast a lift carries the rocket (units/s)                    // ramp length in cells (gentle: ~17 degrees)
+// ---- LANDING ----
+const LAND_SPEED = 9.0;                // (minimum lever speed 7.5 + 1.5) at or below this speed a gentle touch on flat floor lands the rocket
+const LAND_SINK = 4.0;                 // falling faster than this onto the floor detonates
+const LAND_PITCH = 0.45;               // nose more than ~26 degrees down onto the floor detonates
+const LAND_TAKEOFF = 0.14;             // raise the lever past this to lift off again
 // ---- ROCKET GUN ----
 const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
 const GUN_CAP_MAX = 200;               // fully upgraded (20 steps of 7.5)
@@ -6316,6 +6321,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
+    m.landed = false;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6433,6 +6439,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
+    m.landed = false;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -6985,7 +6992,7 @@ class NikitaGame {
       const turn = Math.min(1, (Math.abs(m.yawRate) + Math.abs(m.pitchRate)) / 2.5);
       const burning = m.drop <= 0 && !m.flipping && m.fuel > 0;
       // efficiency: distance per fuel relative to the best possible (straight flight at cruise) = 1.0
-      m.eff = burning ? vr / (0.5 + 0.5 * vr * vr + 0.3 * turn) : -1;
+      m.eff = burning ? (m.landed ? -2 : vr / (0.5 + 0.5 * vr * vr + 0.3 * turn)) : -1;
       m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() / (1 + 0.15 * (this.nFloors - 1)) : 0;
       if (this.nFloors > 1) {
         // first visit to each upper floor in a sector pays a small scouting bonus
@@ -7212,6 +7219,21 @@ class NikitaGame {
       }
     } else if (m.flipping) {
       m.vel.multiplyScalar(Math.max(0, 1 - 0.35 * dt));      // tumbling with cold engine: coast with slight drag
+    } else if (m.landed) {
+      // on the ground: engine idles (still burning fuel), the rocket can turn on the spot and tilt its nose up to aim
+      if (effT > LAND_TAKEOFF && hasFuel) {
+        m.landed = false;
+        m.pitch = Math.max(m.pitch, 0.22);
+        m.currentSpeed = SPEED_MIN * 0.7;
+        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+        m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(m.currentSpeed);
+        this.audio.playSpeedShift(2);
+        this.pushFeed('LIFT-OFF', 'cyan');
+      } else {
+        m.currentSpeed += (0 - m.currentSpeed) * Math.min(1, dt * 5.0);
+        m.vel.set(0, 0, 0);
+        m.pitch = Math.max(-0.02, Math.min(0.7, m.pitch));
+      }
     } else {
       const leverSpeed = this.throttleSpeed(effT);
       const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
@@ -7229,7 +7251,7 @@ class NikitaGame {
     // 3) 4-Substep Swept Collision Pass
     const subDt = dt / SUBSTEPS;
     for (let step = 0; step < SUBSTEPS; step++) {
-      if (!m.active) break;
+      if (!m.active || m.landed) break;
       _v3.copy(m.pos).addScaledVector(m.vel, subDt);
       if (this.lifts.length) {
         const lc = this.cellAt(_v3.x, _v3.z);
@@ -7374,7 +7396,27 @@ class NikitaGame {
           if (_v3.y < gY + MISSILE_RADIUS) {
             _v3.y = gY + MISSILE_RADIUS; hitSurface = true;
             if (gR) { const sl = WALL_H / gR.len; hitNormalX = -gR.dx * sl; hitNormalZ = -gR.dz * sl; hitNormalY = 1; hitRamp = gR; }
-            else hitNormalY = 1;
+            else {
+              hitNormalY = 1;
+              const slow = m.currentSpeed <= LAND_SPEED && effT <= LAND_TAKEOFF;
+              const falling = m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH || !hasFuel;
+              if (slow && !falling && m.drop <= 0 && !m.flipping) {
+                // touchdown: settle on the floor
+                m.pos.set(_v3.x, gY + MISSILE_RADIUS + 0.01, _v3.z);
+                m.vel.set(0, 0, 0);
+                m.pitch = Math.max(0, m.pitch);
+                m.pitchRate = 0;
+                m.landed = true;
+                this.audio.playScrape();
+                this.pushFeed('TOUCHDOWN — LANDED (RAISE THROTTLE TO LIFT OFF)', 'cyan');
+                break;
+              }
+              if (falling && m.drop <= 0) {
+                m.pos.copy(_v3);
+                this.detonateMissile(_v3, 'CRASHED INTO THE FLOOR');
+                return;
+              }
+            }
           } else if (_v3.y > cY - MISSILE_RADIUS) { hitNormalY = -1; _v3.y = cY - MISSILE_RADIUS; hitSurface = true; }
         }
         if (hitRamp) {
@@ -8056,7 +8098,7 @@ class NikitaGame {
     if (this.effAvg === undefined) this.effAvg = 1;
     if (!coasting) this.effAvg += (m.eff - this.effAvg) * 0.08;
     const effPct = Math.round(Math.max(0, Math.min(1, this.effAvg)) * 100);
-    this.cText(E.valEff, coasting ? 'COAST' : `${effPct >= 90 ? 'ECO' : (effPct >= 70 ? 'OK' : 'WASTE')} ${effPct}%`);
+    this.cText(E.valEff, m.eff === -2 ? 'IDLE' : coasting ? 'COAST' : `${effPct >= 90 ? 'ECO' : (effPct >= 70 ? 'OK' : 'WASTE')} ${effPct}%`);
     this.cStyle(E.fillEff, 'width', `${coasting ? 0 : effPct}%`);
     this.cStyle(E.fillEff, 'background', effPct >= 90 ? '#00ff88' : (effPct >= 70 ? '#ffaa00' : '#ff3344'));
     if (m.boostDepleted) {
