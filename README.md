@@ -33,6 +33,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 - **Map memory.** Each sector remembers its dots. Retrying or replaying a sector starts with everything you scanned before; the last few sectors are also saved on the device and survive closing the app. A shattered cracked wall erases its old dots.
 - **Thermal.** Sentries, targets, turrets, barrels, turbines, bulkheads, grates and laser emitters are drawn as heat (white-hot core to dark-red edge); laser beams are white-hot lines with a red-orange glow, and a disabled grid cools down. They only appear within thermal range and with a clear line of sight. Power-ups appear the same way.
+- **Two scans.** The lidar maps walls (edges appear as breathing green lines where walls meet floors, ceilings and corners; surfaces as dots). The thermal scan finds enemies; the badge shows both ranges, and the radar draws the lidar range (green) and thermal range (red) around the rocket. You can only lock onto what thermal currently sees, and `[ ]` brackets mark visible sentries, CIWS turrets and laser control boxes (which can be locked too).
 - **Radar.** The minimap shows only what you have scanned, plus target markers; enemies appear on it only while you can see them. The badge at the top right shows how much of the sector you have scanned.
 - **Performance.** Up to 100,000 dots per sector. If frames get slow the scanner lowers its ray count automatically (AUTO-THROTTLED); low-spec mode halves it. The Blackout modifier now cuts lidar range by 40%, and ECM fields scramble the scanner.
 

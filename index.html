@@ -1003,8 +1003,9 @@
 
 @media (max-width: 700px) { #hud-bottom-right { width: 156px; } }
 
+#cam-mode-badge { white-space: pre-line; text-align: right; line-height: 1.35; }
 #hud-power {
-  position: absolute; right: var(--safe-r); top: calc(var(--safe-t) + 92px); text-align: right;
+  position: absolute; right: var(--safe-r); top: calc(var(--safe-t) + 112px); text-align: right;
   font: bold 11px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-cyan);
   text-shadow: 0 0 6px rgba(0, 229, 255, 0.7); pointer-events: none; z-index: 5;
 }
@@ -1024,7 +1025,7 @@
 /* Analog throttle lever: side of the screen, bottom = minimum speed, top = maximum */
 #throttle-lever {
   position: absolute; right: var(--safe-r); bottom: var(--safe-b);
-  width: 54px; height: min(52vh, 210px);
+  width: 78px; height: min(54vh, 220px);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   pointer-events: auto; touch-action: none; z-index: 4; opacity: var(--btn-opacity);
   user-select: none; -webkit-user-select: none;
@@ -1035,7 +1036,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 .thr-max { color: var(--hud-cyan); }
 .thr-min { color: var(--hud-amber); }
 #thr-track {
-  position: relative; flex: 1; width: 30px; border-radius: 15px;
+  position: relative; flex: 1; width: 50px; border-radius: 16px;
   background: rgba(2, 14, 10, 0.84); border: 1px solid rgba(0, 255, 136, 0.55);
   touch-action: none; overflow: hidden;
 }
@@ -1045,14 +1046,14 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
   opacity: 0.55; pointer-events: none;
 }
 #thr-thumb {
-  position: absolute; left: 1px; right: 1px; height: 16px; bottom: calc(38% - 8px);
+  position: absolute; left: 2px; right: 2px; height: 18px; bottom: calc(38% - 9px);
   background: #e8fff4; border-radius: 8px; box-shadow: 0 0 8px var(--hud-green); pointer-events: none;
 }
 #thr-readout { font: bold 10px var(--font-mono); color: #fff; pointer-events: none; white-space: nowrap; }
 
 /* Right-thumb action arc (container ignores touches so gaps still aim) */
 #touch-actions {
-  position: absolute; right: calc(var(--safe-r) + 68px); bottom: var(--safe-b);
+  position: absolute; right: calc(var(--safe-r) + 92px); bottom: var(--safe-b);
   width: 150px; height: 180px; display: block; grid-template-columns: none; grid-template-rows: none;
   pointer-events: none; opacity: var(--btn-opacity);
   transform: scale(var(--btn-scale)); transform-origin: bottom right;
@@ -1075,7 +1076,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 /* Left-handed mirror */
 body.lefty #left-flight-zone { left: 50%; }
 body.lefty #right-aim-zone { right: auto; left: 0; }
-body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 68px); transform-origin: bottom left; }
+body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 92px); transform-origin: bottom left; }
 body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
@@ -2407,10 +2408,6 @@ class VFXSystem {
       }
 
       if (t.life <= 0 || hitWall || hitMissile) {
-        if (hitWall) {
-          _v2.copy(t.vel).normalize().negate();
-          this.spawnScrapeSparks(t.pos, _v2, 5);
-        }
         t.active = false;
         _dummy.position.set(0, -500, 0);
         _dummy.scale.set(0.0001, 0.0001, 0.0001);
@@ -3786,6 +3783,8 @@ class NikitaGame {
       emitters,
       beams
     });
+    const L = this.lasers[this.lasers.length - 1];
+    L.lockRef = { pos: L.relayPos, get active() { return L.relayActive && !L.disabled; } };
   }
 
   /* ------------------------------------------------------------------------
@@ -4033,8 +4032,6 @@ class NikitaGame {
     this.radarDirty = true;
     this.awardPoints(POINTS_BONUS.wall, 'WALL BREACH', true);
     _v5.copy(bw.pos); _v5.y = 1.8;
-    this.vfx.spawnExplosion(_v5, 6.5, 1.0);
-    this.vfx.spawnScrapeSparks(_v5, _up, 34);
     if (bw.kind === 'secret') {
       this.secretsFound++;
       this.pushFeed('SECRET CHAMBER BREACHED', 'cyan');
@@ -4373,6 +4370,68 @@ class NikitaGame {
           gl_FragColor = vec4(vCol, 1.0);
         }`
     });
+    // Edge lines: one instanced screen-space ribbon per revealed edge, breathing green
+    const SEG_CAP = 40000;
+    this.SEG_CAP = SEG_CAP;
+    this.segA = new Float32Array(SEG_CAP * 3);
+    this.segB = new Float32Array(SEG_CAP * 3);
+    this.segBirth = new Float32Array(SEG_CAP);
+    this.segSlot = new Map();
+    this.segCount = 0;
+    this.segDirtyMin = -1; this.segDirtyMax = -1;
+    const lg = new THREE.InstancedBufferGeometry();
+    lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0]), 3));
+    lg.setIndex([0, 1, 2, 2, 1, 3]);
+    this.segAAttr = new THREE.InstancedBufferAttribute(this.segA, 3).setUsage(THREE.DynamicDrawUsage);
+    this.segBAttr = new THREE.InstancedBufferAttribute(this.segB, 3).setUsage(THREE.DynamicDrawUsage);
+    this.segTAttr = new THREE.InstancedBufferAttribute(this.segBirth, 1).setUsage(THREE.DynamicDrawUsage);
+    lg.setAttribute('aA', this.segAAttr);
+    lg.setAttribute('aB', this.segBAttr);
+    lg.setAttribute('aBirth', this.segTAttr);
+    lg.instanceCount = 0;
+    this.segGeo = lg;
+    this.segUniforms = { uTime: this.lidarUniforms.uTime, uOrigin: this.lidarUniforms.uOrigin, uRange: this.lidarUniforms.uRange, uGlow: this.lidarUniforms.uGlow,
+                         uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 } };
+    const lmat = new THREE.ShaderMaterial({
+      uniforms: this.segUniforms,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: `
+        attribute vec3 aA; attribute vec3 aB; attribute float aBirth;
+        uniform float uTime, uGlow, uRange, uWidth; uniform vec2 uRes; uniform vec3 uOrigin;
+        varying float vB; varying float vEdge;
+        void main() {
+          vec4 va = modelViewMatrix * vec4(aA, 1.0);
+          vec4 vb = modelViewMatrix * vec4(aB, 1.0);
+          float nz = -0.2;
+          if (va.z > nz && vb.z > nz) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vB = 0.0; vEdge = 0.0; return; }
+          if (va.z > nz) va = mix(va, vb, (va.z - nz) / (va.z - vb.z));
+          if (vb.z > nz) vb = mix(vb, va, (vb.z - nz) / (vb.z - va.z));
+          vec4 ca = projectionMatrix * va, cb = projectionMatrix * vb;
+          vec2 sa = ca.xy / ca.w, sb = cb.xy / cb.w;
+          vec2 d = (sb - sa) * uRes;
+          vec2 dir = length(d) > 1e-4 ? normalize(d) : vec2(1.0, 0.0);
+          vec2 nrm = vec2(-dir.y, dir.x);
+          vec4 c = mix(ca, cb, position.x);
+          c.xy += nrm * position.y * uWidth / uRes * c.w;
+          gl_Position = c;
+          float fresh = exp(-max(uTime - aBirth, 0.0) / uGlow);
+          float mid = length(mix(aA, aB, position.x) - uOrigin);
+          float near = 1.0 - smoothstep(uRange * 0.4, uRange * 1.8, mid);
+          float breath = 0.5 + 0.5 * sin(uTime * 2.3);
+          vB = (0.3 + 0.7 * near) * (0.55 + 0.45 * breath) + fresh * 0.9;
+          vEdge = position.y;
+        }`,
+      fragmentShader: `
+        varying float vB; varying float vEdge;
+        void main() {
+          float core = 1.0 - abs(vEdge);
+          gl_FragColor = vec4(vec3(0.12, 1.0, 0.42) * vB * (0.35 + 0.65 * core), 1.0);
+        }`
+    });
+    this.edgeLines = new THREE.Mesh(lg, lmat);
+    this.edgeLines.frustumCulled = false;
+    this.scene.add(this.edgeLines);
+
     this.lidarPoints = new THREE.Points(geo, mat);
     this.lidarPoints.frustumCulled = false;
     this.lidarGeo = geo;
@@ -4433,6 +4492,10 @@ class NikitaGame {
 
   clearDots() {
     this.revealedSeg.clear();
+    this.segSlot.clear();
+    this.segCount = 0;
+    this.segGeo.instanceCount = 0;
+    this.segDirtyMin = -1; this.segDirtyMax = -1;
     this.vox.fill(0);
     this.slotVox.fill(-1);
     this.seenCells.fill(0);
@@ -4465,7 +4528,17 @@ class NikitaGame {
       }
     }
     const cell = gz * GRID_SIZE + gx;
-    for (const sg of [...this.revealedSeg]) if ((sg >> 4) === cell) this.revealedSeg.delete(sg);
+    for (const sg of [...this.revealedSeg]) {
+      if ((sg >> 4) !== cell) continue;
+      this.revealedSeg.delete(sg);
+      const i = this.segSlot.get(sg);
+      if (i !== undefined) {
+        this.segSlot.delete(sg);
+        this.segB[i * 3] = this.segA[i * 3]; this.segB[i * 3 + 1] = this.segA[i * 3 + 1]; this.segB[i * 3 + 2] = this.segA[i * 3 + 2];
+        if (this.segDirtyMin < 0 || i < this.segDirtyMin) this.segDirtyMin = i;
+        if (i > this.segDirtyMax) this.segDirtyMax = i;
+      }
+    }
     if (changed) {
       this.lidarPosAttr.clearUpdateRanges();
       this.lidarPosAttr.addUpdateRange(0, LIDAR_CAP * 3);
@@ -4578,19 +4651,33 @@ class NikitaGame {
   revealSeg(seg, birth) {
     if (this.revealedSeg.has(seg)) return;
     this.revealedSeg.add(seg);
+    if (this.segCount >= this.SEG_CAP) return;
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
-    const x0 = (gx - GRID_SIZE * 0.5) * CELL_SIZE, z0 = (gz - GRID_SIZE * 0.5) * CELL_SIZE, off = 0.05;
-    // point on the face: plane coordinate + along coordinate
+    const x0 = (gx - GRID_SIZE * 0.5) * CELL_SIZE, z0 = (gz - GRID_SIZE * 0.5) * CELL_SIZE, off = 0.04;
     const px = face === 0 ? x0 + CELL_SIZE + off : (face === 1 ? x0 - off : 0);
     const pz = face === 2 ? z0 + CELL_SIZE + off : (face === 3 ? z0 - off : 0);
-    const put = (along, y) => {
-      if (face < 2) this.addEdgeDot(px, y, z0 + along, cell, birth);
-      else this.addEdgeDot(x0 + along, y, pz, cell, birth);
-    };
-    const N = 12;
-    if (k < 2) { const y = k === 0 ? 0.05 : WALL_H - 0.05; for (let i = 0; i <= N; i++) put((i / N) * CELL_SIZE, y); }
-    else { const along = k === 2 ? 0.02 : CELL_SIZE - 0.02; const M = Math.round(WALL_H / (CELL_SIZE / N)); for (let i = 0; i <= M; i++) put(along, (i / M) * WALL_H); }
+    const pt = (along, y, out) => { if (face < 2) { out[0] = px; out[1] = y; out[2] = z0 + along; } else { out[0] = x0 + along; out[1] = y; out[2] = pz; } };
+    const A = [0, 0, 0], B = [0, 0, 0];
+    if (k < 2) { const y = k === 0 ? 0.04 : WALL_H - 0.04; pt(0, y, A); pt(CELL_SIZE, y, B); }
+    else { const along = k === 2 ? 0 : CELL_SIZE; pt(along, 0, A); pt(along, WALL_H, B); }
+    const i = this.segCount++;
+    this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth;
+    this.segSlot.set(seg, i);
+    if (this.segDirtyMin < 0 || i < this.segDirtyMin) this.segDirtyMin = i;
+    if (i > this.segDirtyMax) this.segDirtyMax = i;
+  }
+
+  flushSegs() {
+    if (this.segDirtyMin < 0) return;
+    const a = this.segDirtyMin, n = this.segDirtyMax - a + 1;
+    for (const [attr, w] of [[this.segAAttr, 3], [this.segBAttr, 3], [this.segTAttr, 1]]) {
+      attr.clearUpdateRanges();
+      attr.addUpdateRange(a * w, n * w);
+      attr.needsUpdate = true;
+    }
+    this.segGeo.instanceCount = this.segCount;
+    this.segDirtyMin = -1; this.segDirtyMax = -1;
   }
 
   addEdgeDot(x, y, z, cell, birth) {
@@ -4651,11 +4738,14 @@ class NikitaGame {
         }
         const cp = Math.cos(pit);
         const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
-        if (h) { this.addDot(h.x, h.y, h.z, this._hitCls, now); if (this._hitCls === 4) this.revealSeg(this._hitSeg, now); }
+        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now); if (c === 4) this.revealSeg(this._hitSeg, now); }
       }
       if (P.deep >= 2) this.deepScanReveal(o, P);
     }
     this.flushDots();
+    this.flushSegs();
+    this.renderer.getDrawingBufferSize(this.segUniforms.uRes.value);
+    this.segUniforms.uWidth.value = 2.2 * Math.min(window.devicePixelRatio || 1, 2);
 
     // performance guard: drop the ray count if frames get slow, recover when fast again
     if (this.frameMs > 24) { this.lidarSlowT += dt; this.lidarFastT = 0; } else if (this.frameMs < 15) { this.lidarFastT += dt; this.lidarSlowT = 0; }
@@ -4666,7 +4756,7 @@ class NikitaGame {
     if (this.lidarThermalT <= 0) { this.lidarThermalT = 0.05; this.updateThermal(o, P); }
     if (this.radarSoftDirty && (this._radarRebuildT = (this._radarRebuildT || 0) - dt) <= 0) { this._radarRebuildT = 0.25; this.radarSoftDirty = false; this.radarDirty = true; }
     const badge = document.getElementById('cam-mode-badge');
-    if (badge) this.cText(badge, `LIDAR · SCAN ${Math.min(100, Math.round((this.seenOpen / this.totalOpen) * 100))}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
+    if (badge) this.cText(badge, `LIDAR ${Math.round(P.range)}m · THERMAL ${Math.round(P.thermal)}m\nSCAN ${Math.min(100, Math.round((this.seenOpen / this.totalOpen) * 100))}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
   }
 
   // Deep scan 2-3: outline secret chambers (and shafts at 3) that lie within scan range, plus reveal their power-ups.
@@ -4753,7 +4843,16 @@ class NikitaGame {
       if (pk.active && !v && d < P.range && ((P.deep >= 2 && !pk.owner.shaft) || (P.deep >= 3 && pk.owner.shaft))) v = true;
       this.setThermalVis(pk.mesh, v);
     }
-    for (const s of this.sentries) s.thermalVis = (s.active || s.dying) && see(s.pos.x, 1.4, s.pos.z);
+    let newContact = false;
+    for (const s of this.sentries) {
+      const v = (s.active || s.dying) && see(s.pos.x, 1.4, s.pos.z);
+      if (v && !s.thermalVis && s.active) newContact = true;
+      s.thermalVis = v;
+    }
+    if (newContact && this.state === 'PLAYING' && this.lidarTime - (this._contactT || -9) > 2.5) {
+      this._contactT = this.lidarTime;
+      this.pushFeed('THERMAL CONTACT', 'red');
+    }
     for (const b of this.barrels) b.thermalVis = b.active && see(b.pos.x, b.pos.y, b.pos.z);
     this.syncBarrelInstances();
   }
@@ -4780,6 +4879,7 @@ class NikitaGame {
       this.addDot(ix * VOX + VOX * 0.5 - VOX_HALF + jx, Math.max(0.02, Math.min(WALL_H - 0.02, iy * VOX + VOX * 0.5 + jy)), iz * VOX + VOX * 0.5 - VOX_HALF + jz, rec.cls[i] || 1, -1000);
     }
     if (rec.seg) for (const sg of rec.seg) this.revealSeg(sg, -1000);
+    this.flushSegs();
     this.flushDots();
   }
 
@@ -5029,8 +5129,6 @@ class NikitaGame {
       laser.beams[i].coreMesh.visible = false;
       laser.beams[i].glowMesh.visible = false;
     }
-    this.vfx.spawnScrapeSparks(laser.relayPos, _up, 18);
-    this.vfx.spawnLightFlash(laser.relayPos, 0xffaa33, 6, 0.14);
     this.audio.playLaserDown();
     if (notify) this.pushFeed('LASER RELAY DESTROYED — GRID OFFLINE', 'cyan');
     this.rewardKill('laser', this.lasers, (x) => x.disabled);
@@ -5259,8 +5357,6 @@ class NikitaGame {
     m.wallProximity = 0;
     this.missileGroup.visible = false;    // nose camera only
     this.resetTether(m.pos);
-    this.vfx.spawnRing(m.pos, 2.8, 0.26, 0x00ffaa, 0, 0);
-    this.vfx.spawnLightFlash(m.pos, 0xffaa44, 9, 0.16);
     this.state = 'PLAYING';
     this.updateSpeedBadgeUI();
     this.updateHUDText();
@@ -5405,7 +5501,6 @@ class NikitaGame {
         g.active = false;
         g.mesh.visible = false;
         this.rewardKill('grate', this.grates, (x) => !x.active);
-        this.vfx.spawnScrapeSparks(g.pos, _up, 18);
         this.pushFeed('VENTILATION GRATE BREACHED', 'cyan');
       }
     }
@@ -5549,21 +5644,6 @@ class NikitaGame {
       if (t.floorRing) {
         const s = 1.0 + Math.sin(now * 4.5 + t.id) * 0.08;
         t.floorRing.scale.set(s, s, 1);
-      }
-    }
-
-    // Periodic Coolant Steam Vents
-    for (let i = 0; i < this.steamVents.length; i++) {
-      const sv = this.steamVents[i];
-      sv.timer -= dt;
-      if (sv.timer <= 0) {
-        sv.timer = 2.6 + (i % 3) * 0.7;
-        if (this.missile.active && sv.pos.distanceToSquared(this.missile.pos) < 55 * 55) {
-          for (let k = 0; k < 4; k++) {
-            _v1.set((Math.random() - 0.5) * 1.4, -2.8 - Math.random() * 2.2, (Math.random() - 0.5) * 1.4);
-            this.vfx.spawnParticle(sv.pos, _v1, 0.25, 1.35, 0.85, 0xcff8ff, 0x6699aa, 0x102024, -0.4);
-          }
-        }
       }
     }
 
@@ -5713,15 +5793,19 @@ class NikitaGame {
 
     for (let i = 0; i < this.targets.length; i++) {
       const t = this.targets[i];
-      if (t.active) this._considerTarget('TARGET', t, t.pos.x, t.pos.y, t.pos.z, 0, m);
+      if (t.active && t.mesh.userData._tv) this._considerTarget('TARGET', t, t.pos.x, t.pos.y, t.pos.z, 0, m);
     }
     for (let i = 0; i < this.sentries.length; i++) {
       const s = this.sentries[i];
-      if (s.active) this._considerTarget('SENTRY', s, s.pos.x, s.pos.y + 1.25, s.pos.z, 1.25, m);
+      if (s.active && s.thermalVis) this._considerTarget('SENTRY', s, s.pos.x, s.pos.y + 1.25, s.pos.z, 1.25, m);
     }
     for (let i = 0; i < this.turrets.length; i++) {
       const tu = this.turrets[i];
-      if (tu.active) this._considerTarget('CIWS', tu, tu.pos.x, tu.pos.y, tu.pos.z, 0, m);
+      if (tu.active && tu.mesh.userData._tv) this._considerTarget('CIWS', tu, tu.pos.x, tu.pos.y, tu.pos.z, 0, m);
+    }
+    for (let i = 0; i < this.lasers.length; i++) {
+      const l = this.lasers[i];
+      if (l.thermalVis && l.lockRef.active) this._considerTarget('LASER BOX', l.lockRef, l.relayPos.x, l.relayPos.y, l.relayPos.z, 0, m);
     }
     // Returns a reused object (no per-call allocation); copy it if you need to keep it.
     return this._bestCand.ref ? this._bestCand : null;
@@ -5788,10 +5872,6 @@ class NikitaGame {
       m.activeSpeedMode = desiredMode;
       this.audio.playSpeedShift(desiredMode);
       this.updateSpeedBadgeUI();
-      if (desiredMode === 3) {
-        this.vfx.spawnRing(m.pos, 3.2, 0.24, 0x33eeff, 0, 0);
-        this.vfx.spawnLightFlash(m.pos, 0x33eeff, 8, 0.14);
-      }
     }
 
     const profile = blendProfile(effT, _profile);
@@ -5967,18 +6047,6 @@ class NikitaGame {
       m.pitch = wrapPi(m.flipStart + Math.PI * e);
       m.pitchRate = 0;
       m.yawRate *= 0.85;
-      // the two attitude jets: nose jet pushes the nose up (exhaust points up), tail jet the opposite
-      if (k < 0.75) {
-        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
-        _v4.copy(_fwd).applyEuler(_e1);                 // rocket forward
-        _v5.set(0, 1, 0).applyEuler(_e1);               // rocket up
-        _v6.copy(m.pos).addScaledVector(_v4, 0.95);
-        _v7.copy(_v5).multiplyScalar(7).add(m.vel);
-        this.vfx.spawnSpark(_v6, _v7, 0.2, 0x9fe8ff, 0.6, 0);
-        _v6.copy(m.pos).addScaledVector(_v4, -0.95);
-        _v7.copy(_v5).multiplyScalar(-7).add(m.vel);
-        this.vfx.spawnSpark(_v6, _v7, 0.2, 0x9fe8ff, 0.6, 0);
-      }
       if (k >= 1) {
         m.flipping = false;
         // Re-label the attitude as the equivalent upright one so the controls stay exactly the same:
@@ -5988,8 +6056,6 @@ class NikitaGame {
         m.pitch = wrapPi(Math.PI - m.pitch);
         m.roll = Math.PI;
         m.burnT = BURN_TIME;
-        this.vfx.spawnRing(m.pos, 3.0, 0.26, 0x33eeff, m.pitch, 0);
-        this.vfx.spawnLightFlash(m.pos, 0x33eeff, 12, 0.24);
         this.audio.playSpeedShift(3);
         this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.35);
         this.pushFeed('BURN — REVERSING COURSE', 'cyan');
@@ -6010,8 +6076,6 @@ class NikitaGame {
       if (m.pos.y < 0.8 && m.vel.y < 0) m.vel.y = 0;     // never drop into the floor of the launch bay
       if (m.drop <= 0) {
         // ignition
-        this.vfx.spawnRing(m.pos, 2.6, 0.24, 0xffaa44, m.pitch, 0);
-        this.vfx.spawnLightFlash(m.pos, 0xffaa44, 11, 0.22);
         this.audio.playSpeedShift(2);
         this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.3);
         this.pushFeed('THRUSTERS ENGAGED', 'amber');
@@ -6080,7 +6144,6 @@ class NikitaGame {
             this.blastMult = this.hitMultNow();
             this.rewardKill('grate', this.grates, (x) => !x.active);
             this.flushRewards();
-            this.vfx.spawnScrapeSparks(_v3, _v1, 16);
             this.audio.playScrape();
             m.hull -= 24 * this.hullDmgMult();
             this.pushFeed('GRATE SHATTERED (-24% HULL)', 'cyan');
@@ -6188,7 +6251,6 @@ class NikitaGame {
             m.pitch = Math.max(-1.0, Math.min(1.0, Math.atan2(m.vel.y, Math.max(0.01, flatLen))));
             m.hull = Math.max(0, m.hull - 22 * this.hullDmgMult());
             this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.28);
-            this.vfx.spawnScrapeSparks(_v3, _v4, 14);
             this.audio.playScrape();
             this.pushFeed(`GLANCING DEFLECTION (-22% HULL)`, 'amber');
           } else {
@@ -6206,61 +6268,8 @@ class NikitaGame {
     this.missileGroup.rotation.set(m.pitch, m.yaw, m.roll, 'YXZ');
     this.headlamp.position.copy(m.pos);
 
-    if (this.canardH) this.canardH.rotation.x = Math.max(-0.45, Math.min(0.45, m.pitchRate * 0.25));
-    if (this.canardV) this.canardV.rotation.y = Math.max(-0.45, Math.min(0.45, -m.yawRate * 0.25));
-    if (this.beaconMat) {
-      const blink = Math.sin(performance.now() * (this.homingLocked ? 0.025 : 0.008)) > 0;
-      this.beaconMat.color.setHex(this.homingLocked ? (blink ? 0xff2244 : 0x00e5ff) : (blink ? 0x00ffaa : 0x083322));
-    }
-
-    this.thrusterMat.color.setHex(profile.exhaustColor);
-    const flicker = 0.8 + Math.random() * 0.45;
     const engineOn = hasFuel && m.drop <= 0 && !m.flipping;
-    const plScaleXZ = engineOn ? profile.plumeXZ : 0.01;
-    const plScaleY  = engineOn ? profile.plumeY * flicker : 0.01;
-    this.thrusterCone.scale.set(plScaleXZ, plScaleY, plScaleXZ);
-    this.thrusterCore.scale.set(plScaleXZ * 0.85, plScaleY * 0.9, plScaleXZ * 0.85);
 
-    m.exhaustTimer -= dt;
-    if (engineOn && m.exhaustTimer <= 0) {
-      m.exhaustTimer = profile.exhaustCadence;
-      _v4.set(0, 0, 1.05).applyEuler(this.missileGroup.rotation).add(m.pos);
-      _v5.copy(m.vel).multiplyScalar(-0.08);
-      this.vfx.spawnParticle(
-        _v4, _v5, profile.exhaustScale, profile.exhaustScale * 2.6,
-        0.38, profile.exhaustColor, 0x555555, 0x1a1e1c, 0.45
-      );
-      if (m.activeSpeedMode >= 2 && Math.random() < (m.activeSpeedMode === 3 ? 0.75 : 0.35)) {
-        _v6.copy(m.vel).multiplyScalar(-0.35);
-        _v6.x += (Math.random() - 0.5) * 3.5;
-        _v6.y += (Math.random() - 0.5) * 3.5;
-        _v6.z += (Math.random() - 0.5) * 3.5;
-        this.vfx.spawnSpark(_v4, _v6, 0.18 + Math.random() * 0.14, m.activeSpeedMode === 3 ? 0x66f5ff : 0xffaa44, 0.42, 4.0);
-      }
-    }
-
-    // Mach Vapor Shock-Cones during Overdrive & Wingtip Vortices
-    m.vortexTimer -= dt;
-    if (hasFuel && (m.activeSpeedMode === 3 || Math.abs(m.roll) > 0.14) && m.vortexTimer <= 0) {
-      m.vortexTimer = m.activeSpeedMode === 3 ? 0.022 : 0.038;
-      const tipColor = m.activeSpeedMode === 3 ? 0x88f4ff : 0xcceee4;
-      _v5.copy(m.vel).multiplyScalar(-0.04);
-      _v4.set(-0.55, 0, 0.56).applyEuler(this.missileGroup.rotation).add(m.pos);
-      this.vfx.spawnParticle(_v4, _v5, 0.07, 0.24, 0.26, tipColor, 0x558888, 0x101a18, 0.1);
-      _v4.set(0.55, 0, 0.56).applyEuler(this.missileGroup.rotation).add(m.pos);
-      this.vfx.spawnParticle(_v4, _v5, 0.07, 0.24, 0.26, tipColor, 0x558888, 0x101a18, 0.1);
-      if (m.activeSpeedMode === 3 && Math.random() < 0.35) {
-        this.vfx.spawnRing(m.pos, 1.45, 0.16, 0x33eeff, m.pitch, m.roll);
-      }
-    }
-
-    this.updateAmbientMotes(m.pos, dt);
-
-    m.tetherTimer -= dt;
-    if (m.tetherTimer <= 0) {
-      m.tetherTimer = 0.035;
-      this.pushTetherPoint(m.pos);
-    }
 
     let minWallDist = 8.0;
     const probeDirs = PROBE_DIRS;
@@ -6777,8 +6786,10 @@ class NikitaGame {
         ctx.restore();
       };
 
-      for (let i = 0; i < this.sentries.length; i++) renderLOSBracket(this.sentries[i], 'SENTRY', 1.25);
-      for (let i = 0; i < this.turrets.length; i++)  renderLOSBracket(this.turrets[i], 'CIWS', 0);
+      // [ ] brackets only on what thermal currently sees
+      for (let i = 0; i < this.sentries.length; i++) if (this.sentries[i].thermalVis) renderLOSBracket(this.sentries[i], 'SENTRY', 1.25);
+      for (let i = 0; i < this.turrets.length; i++) if (this.turrets[i].mesh.userData._tv) renderLOSBracket(this.turrets[i], 'CIWS', 0);
+      for (let i = 0; i < this.lasers.length; i++) { const l = this.lasers[i]; if (l.thermalVis && l.lockRef.active) renderLOSBracket(l.lockRef, 'LASER BOX', 0); }
 
       // "?" = heard something / suspicious, "!" = alerted (shown through walls: you know when you are loud)
       for (let i = 0; i < this.sentries.length; i++) {
@@ -7051,6 +7062,14 @@ class NikitaGame {
       ctx.beginPath();
       ctx.arc(toRX(this.missile.pos.x), toRZ(this.missile.pos.z), (this.noiseRadius / CELL_SIZE) * scale, 0, Math.PI * 2);
       ctx.stroke();
+      // scan ranges: lidar (green) and thermal (red-orange)
+      const LP = this.lidarParams();
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(0, 255, 136, 0.28)';
+      ctx.beginPath(); ctx.arc(toRX(this.missile.pos.x), toRZ(this.missile.pos.z), (LP.range / CELL_SIZE) * scale, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 80, 30, 0.6)';
+      ctx.beginPath(); ctx.arc(toRX(this.missile.pos.x), toRZ(this.missile.pos.z), (LP.thermal / CELL_SIZE) * scale, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
