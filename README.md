@@ -27,6 +27,13 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Rocket gun (v2.8)
+
+- **Fire.** Hold GUN (bottom middle; E on a keyboard) to fire 9 rounds a second along the rocket's nose. Rounds fly about 70 units and stop at walls, floors and ceilings.
+- **Damage.** Sentries take 3 hits, CIWS turrets 6, vent grates 2 and laser switches 2 (which turns the grid off). One round sets off a fuel barrel. Primary targets are armoured and need the warhead. Kills pay the normal points, multiplied by the rocket's speed when you shoot.
+- **Noise.** Gunfire is loud: sentries hear it from at least 16 units. A sentry you hit but don't kill turns on you.
+- **Ammo.** You start each sector with a full magazine of 50 rounds; the GUN MAGAZINE upgrade (rocket tab) raises it to 200 in 20 steps of 7.5, costing 120 to 1,710 credits per step. Ammo carries over between rockets in a sector. Yellow ammo crates (+30 rounds) lie in rooms on every floor: 5 to 12 per sector, plus 2 for each extra floor. The HUD shows ROUNDS next to ROCKETS.
+
 ## Multi-floor sectors (v2.4–2.7)
 
 - **Floors.** From sector 16 (tier 4) the facility has 2 floors, and from sector 31 (tier 7) it has 3. Each floor is a full room-and-corridor level stacked on the one below. You always launch on the ground floor.

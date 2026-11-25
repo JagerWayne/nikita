@@ -1065,6 +1065,8 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
 #tbtn-flip    { width: 58px; height: 58px; right: 92px;  bottom: 126px; font-size: 9px; border-color: rgba(255, 170, 0, 0.85); color: var(--hud-amber); }
 #tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
+#tbtn-gun     { width: 66px; height: 66px; right: 158px; bottom: 6px;   font-size: 10px; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
+#tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1082,6 +1084,7 @@ body.lefty #touch-actions .touch-act-btn { right: auto; }
 body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
 body.lefty #tbtn-decoy { left: 92px; }
+body.lefty #tbtn-gun { left: 158px; }
 body.lefty #tbtn-flip { left: 92px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
@@ -1148,7 +1151,8 @@ window.addEventListener('unhandledrejection', function (e) {
     <div class="hud-box">
       <div class="stat-row"><span class="stat-label">SEC</span><span class="stat-val" id="hud-sector">01 / 100</span></div>
       <div class="stat-row minor"><span class="stat-label">DIFFICULTY</span><span class="stat-val amber" id="hud-tier">TIER 01 / 20</span></div>
-      <div class="stat-row"><span class="stat-label">AMMO</span><span class="stat-val amber" id="hud-ammo">50 / 100</span></div>
+      <div class="stat-row"><span class="stat-label">ROCKETS</span><span class="stat-val amber" id="hud-ammo">50 / 100</span></div>
+      <div class="stat-row"><span class="stat-label">ROUNDS</span><span class="stat-val amber" id="hud-gun">50 / 50</span></div>
       <div class="stat-row"><span class="stat-label">TGT</span><span class="stat-val" id="hud-targets">1 / 1</span></div>
       <div class="stat-row"><span class="stat-label">SENT</span><span class="stat-val" id="hud-sentries">5 / 5</span></div>
       <div class="stat-row"><span class="stat-label">PTS</span><span class="stat-val amber" id="hud-pts">0</span></div>
@@ -1233,6 +1237,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
+    <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
     <button class="touch-act-btn" id="tbtn-flip">FLIP &amp;<br/>BURN</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
   </div>
@@ -1578,6 +1583,17 @@ const RAMP_LEN = 6;
 const RIM_BASE = 1 << 26;              // edge ids at or above this: rims of floor openings (holes, atriums, lifts)
 const LIFT_BASE = 1 << 27;             // edge ids at or above this: lift shaft corner beams
 const LIFT_SPEED = 6.0;                // how fast a lift carries the rocket (units/s)                    // ramp length in cells (gentle: ~17 degrees)
+// ---- ROCKET GUN ----
+const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
+const GUN_CAP_MAX = 200;               // fully upgraded (20 steps of 7.5)
+const GUN_STEPS = 20;
+const GUN_RATE = 9;                    // rounds per second while held
+const GUN_SPEED = 120;                 // bullet speed (plus the rocket's own speed)
+const GUN_LIFE = 0.55;                 // seconds before a bullet fades (~70 units)
+const GUN_POOL = 48;
+const GUN_PICKUP = 30;                 // rounds in an ammo crate
+const GUN_NOISE = 16;                  // gunfire is heard at least this far
+const GUN_HITS = { sentry: 3, turret: 6, grate: 2, box: 2 };   // bullets needed; barrels go up in one
 const SWITCH_CONE_MULT = 3;            // laser control boxes can be locked within 3x the seeker cone...
 const SWITCH_CONE_MAX = 55;            // ...up to 55 degrees off the nose
 const SHAFT_REVEAL_R = 10;             // shaft interiors are outlined only within this distance of the rocket
@@ -2623,9 +2639,10 @@ class NikitaGame {
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
-    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0, tpen: 0, ttrack: 0, tmark: 0 };
+    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0, tpen: 0, ttrack: 0, tmark: 0, gun: 0 };
     this.upgTab = 'rocket';
     this.initLidar();
+    this.initGun();
     this.credits = 0;
     this.sectorBest = {};
     this.loadProgress();
@@ -2634,6 +2651,11 @@ class NikitaGame {
     this.nextPackage = POINTS_PER_PACKAGE;
     this.ptsPending = [];
     this.blastMult = 1;
+    this.gunAmmo = GUN_CAP_MIN;
+    this.gunHeld = false;
+    this.gunCool = 0;
+    this.gunNoiseT = 0;
+    this._gunMsgT = 0;
     this.decoys = DECOYS_PER_SECTOR;
     this.decoyObjs = [];
     this.modifier = null;
@@ -3559,6 +3581,24 @@ class NikitaGame {
       let bgz = rm.z + 1 + Math.floor(rng() * Math.max(1, rm.h - 2));
       if (!isWalkable(this.floors[bf][bgz * GRID_SIZE + bgx])) { bgx = rm.cx; bgz = rm.cz; }
       this.barrels.push({ active: true, pos: new THREE.Vector3(gridToWorldX(bgx), bf * WALL_H + 0.85, gridToWorldZ(bgz)) });
+    }
+
+    // gun: a full magazine each sector, and ammo crates spread over every floor
+    this.gunAmmo = this.gunCap();
+    {
+      const ar = mulberry32((numericSeed ^ 0xA3301CE5) >>> 0);
+      const crates = Math.min(12, 5 + Math.floor(tier / 3)) + 2 * (this.nFloors - 1);
+      for (let i = 0; i < crates; i++) {
+        const cf = i % this.nFloors;
+        const cRooms = cf === 0 ? this.rooms.slice(1) : this.liveRooms(cf);
+        for (let k = 0; k < 20; k++) {
+          const rm = cRooms[Math.floor(ar() * cRooms.length)];
+          const gx = rm.x + 1 + Math.floor(ar() * Math.max(1, rm.w - 2)), gz = rm.z + 1 + Math.floor(ar() * Math.max(1, rm.h - 2));
+          if ((gx === rm.cx && gz === rm.cz) || !isWalkable(this.floors[cf][gz * GRID_SIZE + gx]) || this.liftCells.has(gz * GRID_SIZE + gx)) continue;
+          this.spawnPickup(gridToWorldX(gx), gridToWorldZ(gz), 'AMMO', { active: false, crate: true }, cf * WALL_H + 1.6);
+          break;
+        }
+      }
     }
 
     if (this.level >= 2) {
@@ -4617,7 +4657,7 @@ class NikitaGame {
   }
 
   spawnPickup(x, z, type, owner, y = 1.7, radius = 2.3) {
-    const COLORS = { ROCKETS: 0xffaa00, BOOST: 0x00e5ff, REPAIR: 0x44ff88, STEALTH: 0xaa66ff, OVERCHARGE: 0xff3344 };
+    const COLORS = { AMMO: 0xffdd55, ROCKETS: 0xffaa00, BOOST: 0x00e5ff, REPAIR: 0x44ff88, STEALTH: 0xaa66ff, OVERCHARGE: 0xff3344 };
     const col = COLORS[type] || 0xffffff;
     const grp = new THREE.Group();
     grp.position.set(x, y, z);
@@ -4662,6 +4702,12 @@ class NikitaGame {
     this.vfx.spawnRing(pk.pos, 3.2, 0.3, 0xffffff, 0, 0);
     this.popAmmoHUD();
     switch (pk.type) {
+      case 'AMMO': {
+        const cap = this.gunCap(), add = Math.max(0, Math.min(GUN_PICKUP, cap - this.gunAmmo));
+        this.gunAmmo += add;
+        this.pushFeed(add > 0 ? `AMMO CRATE: +${add} ROUNDS` : `AMMO CRATE — MAGAZINE FULL (${cap})`, 'amber');
+        break;
+      }
       case 'ROCKETS': {
         const add = Math.max(0, Math.min(CACHE_ROCKETS, MAX_ROCKETS - this.ammo));
         this.ammo += add;
@@ -5837,6 +5883,7 @@ class NikitaGame {
   maxSpeed() { return Math.min(SPEED_MAX, SPEED_START_CAP + SPEED_STEP * this.upg.speed); }
   fullSpeedMult() { return this.maxSpeed() / 10; }                       // 20 -> x2 ... 30 -> x3 points at full speed
   fuelBurnMult() { return 1 / (1 + 0.15 * this.upg.fuel); }
+  gunCap() { return GUN_CAP_MIN + Math.round(((GUN_CAP_MAX - GUN_CAP_MIN) / GUN_STEPS) * (this.upg.gun || 0)); }
   boostDrainMult() { return 1 / (1 + 0.2 * this.upg.boost); }
   boostRechargeMult() { return 1 + 0.15 * this.upg.boost; }
   hullDmgMult() { return 1 / (1 + 0.12 * this.upg.hull); }
@@ -5848,12 +5895,13 @@ class NikitaGame {
     const l = this.upg[key];
     const r10 = (v) => Math.round(v / 10) * 10;
     if (key === 'speed') return r10(150 * Math.pow(1.15, l));
+    if (key === 'gun') return r10(120 * Math.pow(1.15, l));
     if (key === 'ldeep' || key === 'tpen') return [600, 1200, 2400][l] || 2400;
     if (key[0] === 'l' || key[0] === 't') return r10(160 * Math.pow(1.28, l));
     return r10(200 * Math.pow(1.28, l));
   }
 
-  upgradeMax(key) { return key === 'speed' ? 20 : ((key === 'ldeep' || key === 'tpen') ? 3 : UPG_MAX_LEVEL); }
+  upgradeMax(key) { return (key === 'speed' || key === 'gun') ? 20 : ((key === 'ldeep' || key === 'tpen') ? 3 : UPG_MAX_LEVEL); }
 
   buyUpgrade(key) {
     const max = this.upgradeMax(key);
@@ -5890,7 +5938,8 @@ class NikitaGame {
       { key: 'fuel', name: 'FUEL', desc: () => `FUEL BURN -${pct(1 - this.fuelBurnMult())}` },
       { key: 'boost', name: 'BOOST', desc: () => `DRAIN -${pct(1 - this.boostDrainMult())}  ·  RECHARGE +${pct(this.boostRechargeMult() - 1)}` },
       { key: 'hull', name: 'HULL', desc: () => `DAMAGE TAKEN -${pct(1 - this.hullDmgMult())}` },
-      { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` }
+      { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` },
+      { key: 'gun', name: 'GUN MAGAZINE', desc: () => `${this.gunCap()} ROUNDS` + ((this.upg.gun || 0) < GUN_STEPS ? `   (next ${GUN_CAP_MIN + Math.round(((GUN_CAP_MAX - GUN_CAP_MIN) / GUN_STEPS) * ((this.upg.gun || 0) + 1))})` : '') }
     ];
     const defs = this.upgTab === 'lidar' ? lidarDefs : (this.upgTab === 'thermal' ? thermalDefs : rocketDefs);
     for (const t of ['rocket', 'lidar', 'thermal']) document.getElementById(`upg-tab-${t}`).classList.toggle('on', this.upgTab === t);
@@ -6003,6 +6052,145 @@ class NikitaGame {
   }
 
   // Called once per kill / shutdown. `isDone()` tells whether the whole category is now cleared.
+
+  /* ------------------------------------------------------------------------
+     ROCKET GUN: hold GUN to fire along the nose. Bullets wear down sentries,
+     turrets, grates and laser switches, and set off fuel barrels. Primary
+     targets are armoured: they need the warhead.
+     ------------------------------------------------------------------------ */
+  initGun() {
+    this.bullets = [];
+    for (let i = 0; i < GUN_POOL; i++) this.bullets.push({ active: false, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0 });
+    const geo = new THREE.BoxGeometry(0.16, 0.16, 2.2);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.bulletMesh = new THREE.InstancedMesh(geo, mat, GUN_POOL);
+    this.bulletMesh.frustumCulled = false;
+    this.bulletMesh.count = 0;
+    this.scene.add(this.bulletMesh);
+  }
+
+  fireGunRound() {
+    const m = this.missile;
+    _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+    _v1.copy(_fwd).applyEuler(_e1).normalize();
+    _v1.x += (Math.random() - 0.5) * 0.024; _v1.y += (Math.random() - 0.5) * 0.024; _v1.z += (Math.random() - 0.5) * 0.024;
+    _v1.normalize();
+    let b = this.bullets.find((x) => !x.active);
+    if (!b) b = this.bullets[0];
+    b.active = true;
+    b.life = GUN_LIFE;
+    b.pos.copy(m.pos).addScaledVector(_v1, 1.1);
+    b.vel.copy(_v1).multiplyScalar(GUN_SPEED + (m.currentSpeed || 0));
+    this.gunAmmo--;
+    this.gunNoiseT = 0.35;
+    if ((this.gunAmmo & 1) === 0) this.audio.playGunshot();
+    const el = document.getElementById('hud-gun');
+    if (el) el.textContent = `${this.gunAmmo} / ${this.gunCap()}`;
+  }
+
+  updateGun(dt) {
+    const m = this.missile;
+    this.gunCool -= dt;
+    this.gunNoiseT = Math.max(0, this.gunNoiseT - dt);
+    this._gunMsgT = Math.max(0, this._gunMsgT - dt);
+    const held = this.gunHeld || this.keys.KeyE;
+    if (held && this.state === 'PLAYING' && m.active && m.drop <= 0 && !this.paused) {
+      if (this.gunAmmo <= 0) {
+        if (this._gunMsgT <= 0) { this.pushFeed('GUN EMPTY — FIND AMMO CRATES', 'amber'); this._gunMsgT = 2.5; }
+      } else {
+        while (this.gunCool <= 0 && this.gunAmmo > 0) { this.fireGunRound(); this.gunCool += 1 / GUN_RATE; }
+      }
+    }
+    if (this.gunCool < 0) this.gunCool = 0;
+    let n = 0;
+    for (const b of this.bullets) {
+      if (!b.active) continue;
+      b.life -= dt;
+      for (let k = 0; k < 4 && b.active; k++) {
+        b.pos.addScaledVector(b.vel, dt / 4);
+        if (this.pointBlocked(b.pos.x, b.pos.y, b.pos.z, 0)) { b.active = false; break; }
+        if (this.gunHitAt(b.pos)) b.active = false;
+      }
+      if (b.life <= 0) b.active = false;
+      if (!b.active) continue;
+      _v2.copy(b.pos).add(b.vel);
+      _dummy.position.copy(b.pos);
+      _dummy.scale.set(1, 1, 1);
+      _dummy.lookAt(_v2);
+      _dummy.updateMatrix();
+      this.bulletMesh.setMatrixAt(n++, _dummy.matrix);
+    }
+    this.bulletMesh.count = n;
+    if (n) this.bulletMesh.instanceMatrix.needsUpdate = true;
+    const btn = document.getElementById('tbtn-gun');
+    if (btn) btn.style.opacity = this.gunAmmo > 0 ? '' : '0.4';
+  }
+
+  // Returns true if the bullet struck something (and is used up).
+  gunHitAt(p) {
+    const hitFx = (col) => this.vfx.spawnRing(p, 1.1, 0.12, col, 0, 0);
+    const kill = () => { this.blastMult = this.hitMultNow(); };
+    for (const s of this.sentries) {
+      if (!s.active) continue;
+      if (Math.hypot(p.x - s.pos.x, p.z - s.pos.z) < 0.75 && p.y > s.pos.y && p.y < s.pos.y + 2.3) {
+        s.gunHp = (s.gunHp === undefined ? GUN_HITS.sentry : s.gunHp) - 1;
+        hitFx(0xff6655);
+        if (s.gunHp <= 0) { kill(); this.neutralizeSentry(s, p); this._blastHostiles = 0; this.flushRewards(); }
+        else { s.detectMeter = 1; s.invX = this.missile.pos.x; s.invY = this.missile.pos.y; s.invZ = this.missile.pos.z; s.invT = 4; }
+        return true;
+      }
+    }
+    for (const tu of this.turrets) {
+      if (!tu.active || p.distanceTo(tu.pos) > 1.0) continue;
+      tu.gunHp = (tu.gunHp === undefined ? GUN_HITS.turret : tu.gunHp) - 1;
+      hitFx(0xff6655);
+      if (tu.gunHp <= 0) {
+        kill(); tu.active = false; tu.mesh.visible = false; if (tu.stem) tu.stem.visible = false;
+        this.vfx.spawnExplosion(tu.pos, 3.5, 0.6);
+        this.pushFeed('CIWS TURRET SHOT DOWN', 'cyan');
+        this.rewardKill('turret', this.turrets, (x) => !x.active, true);
+        this._blastHostiles = 0; this.flushRewards(); this.updateHUDText();
+      }
+      return true;
+    }
+    for (const b of this.barrels) {
+      if (!b.active || p.distanceTo(b.pos) > 0.95) continue;
+      kill(); b.active = false;
+      this.rewardKill('barrel', this.barrels, (x) => !x.active);
+      this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.05, radius: 9.2, power: 1.4, label: 'FUEL BARREL SHOT', mult: this.blastMult });
+      this.flushRewards(); this.syncBarrelInstances();
+      return true;
+    }
+    for (const g of this.grates) {
+      if (!g.active) continue;
+      if (Math.abs(p.x - g.pos.x) < g.halfX + 0.1 && Math.abs(p.y - g.pos.y) < g.halfY + 0.1 && Math.abs(p.z - g.pos.z) < g.halfZ + 0.1) {
+        g.gunHp = (g.gunHp === undefined ? GUN_HITS.grate : g.gunHp) - 1;
+        hitFx(0xffcc66);
+        if (g.gunHp <= 0) {
+          kill(); g.active = false; g.mesh.visible = false;
+          this.rewardKill('grate', this.grates, (x) => !x.active);
+          this.pushFeed('VENTILATION GRATE SHOT OUT', 'cyan');
+          this.flushRewards();
+        }
+        return true;
+      }
+    }
+    for (const l of this.lasers) {
+      if (l.disabled || !l.relayActive || p.distanceTo(l.relayPos) > 0.8) continue;
+      l.gunHp = (l.gunHp === undefined ? GUN_HITS.box : l.gunHp) - 1;
+      hitFx(0xffcc66);
+      if (l.gunHp <= 0) { kill(); this.disableLaserGrid(l, true); this.flushRewards(); }
+      return true;
+    }
+    for (const t of this.targets) {
+      if (!t.active || p.distanceTo(t.pos) > t.radius) continue;
+      hitFx(0xffaa00);
+      if (this._gunMsgT <= 0) { this.pushFeed('PRIMARY TARGET ARMOURED — USE THE WARHEAD', 'amber'); this._gunMsgT = 2.5; }
+      return true;
+    }
+    return false;
+  }
+
   rewardKill(key, list, isDone, isLiveHostile = false) {
     const def = REWARDS[key];
     this.awardRockets(def.each, def.label, key);
@@ -6499,6 +6687,7 @@ class NikitaGame {
 
     this.updateFacilityObjects(effectiveDt);
     this.updatePickups(effectiveDt);
+    if (this.bullets) this.updateGun(effectiveDt);
     this.updateDecoys(effectiveDt);
     if (this.state === 'READY') this.updateReadyAim(effectiveDt);
 
@@ -7293,6 +7482,7 @@ class NikitaGame {
     let noiseR = HEAR_MIN + HEAR_RANGE * Math.pow(m.effThrottle, 1.5);
     if (this.power.stealth > 0) noiseR *= 0.3;
     if (this.modifier === 'KEEN EARS') noiseR *= 1.5;
+    if (this.gunNoiseT > 0) noiseR = Math.max(noiseR, GUN_NOISE * (this.modifier === 'KEEN EARS' ? 1.5 : 1));
     this.noiseRadius = noiseR;
     const stealthDetect = this.power.stealth > 0 ? 0.5 : 1;
     const raiseAlert = (sn) => {
@@ -8290,10 +8480,11 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate', 'tbtn-gun'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
+    this.gunHeld = false;
   }
 
   updateTouchControlsVisibility() {
@@ -8321,6 +8512,8 @@ class NikitaGame {
     document.getElementById('hud-sector').textContent = `${String(this.level).padStart(2, '0')} / ${MAX_LEVELS}`;
     document.getElementById('hud-tier').textContent = `TIER ${String(this.difficultyTier).padStart(2, '0')} / ${MAX_TIERS}`;
     document.getElementById('hud-ammo').textContent = `${this.ammo} / ${MAX_ROCKETS}`;
+    const gEl = document.getElementById('hud-gun');
+    if (gEl) gEl.textContent = `${this.gunAmmo} / ${this.gunCap()}`;
     const ptsEl = document.getElementById('hud-pts');
     if (ptsEl) ptsEl.textContent = `${this.score} / ${this.nextPackage}`;
     const dBtn = document.getElementById('tbtn-decoy');
@@ -8725,6 +8918,16 @@ class NikitaGame {
     btnFlip.addEventListener('pointerup', clearFlipPress);
     btnFlip.addEventListener('pointercancel', clearFlipPress);
 
+    const btnGun = document.getElementById('tbtn-gun');
+    if (btnGun) {
+      btnGun.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        try { btnGun.setPointerCapture(e.pointerId); } catch (_) {}
+        this.gunHeld = true; btnGun.classList.add('pressed');
+      });
+      const gunUp = () => { this.gunHeld = false; btnGun.classList.remove('pressed'); };
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => btnGun.addEventListener(ev, gunUp));
+    }
     const btnDecoy = document.getElementById('tbtn-decoy');
     btnDecoy.addEventListener('pointerdown', (e) => {
       e.preventDefault();
