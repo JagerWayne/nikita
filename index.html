@@ -1302,10 +1302,10 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">CIWS TURRETS</span> : 60 · ceiling guns that shoot the rocket</div>
         <div><span class="ctrl-key">SENTRIES</span> : 40 · guards that see, hear and shoot</div>
         <div><span class="ctrl-key">LASER CONTROL BOXES</span> : 35 · hit one to switch its laser grid off</div>
-        <div><span class="ctrl-key">CRACKED WALLS</span> : 40 · open shortcuts and secret rooms</div>
-        <div><span class="ctrl-key">FUEL BARRELS</span> : 10 · explode and chain-react</div>
-        <div><span class="ctrl-key">VENT GRATES</span> : 10 · power-ups 30 · clear-all, combo &amp; medal bonuses</div>
-        <div class="score-tip">SPEED PAYS: kill points are multiplied by your speed at impact. x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed (up to x3 with max-speed upgrades). Every 100 points = 10 rockets, and points are credits for upgrades.</div>
+        <div><span class="ctrl-key">CRACKED WALLS</span> : 25 · open shortcuts and secret rooms</div>
+        <div><span class="ctrl-key">FUEL BARRELS</span> : 5 · explode and chain-react</div>
+        <div><span class="ctrl-key">VENT GRATES</span> : 10 · power-ups 20 · clear-all, combo &amp; medal bonuses</div>
+        <div class="score-tip">SPEED PAYS: kill points are multiplied by your speed at impact. x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed (up to x3 with max-speed upgrades). Every 250 points = 5 rockets, and points are credits for upgrades (a replayed sector only pays for beating your best). Watch your fuel: an empty tank ends the flight.</div>
       </div>
     </details>
 
@@ -1515,27 +1515,23 @@ const WALL_H = 7.2;
 const FIXED_DT = 1 / 60;
 const SUBSTEPS = 4;
 const MISSILE_RADIUS = 0.42;
-const MAX_SALVO = 50;          // rockets issued at the start of a fresh sector
+const MAX_SALVO = 40;          // rockets issued at the start of a fresh sector
 const MAX_ROCKETS = 100;       // hard cap on rockets the player can hold (rewards stop here)
 // Rocket rewards (balanced: rockets stay scarce). each = per kill / shutdown, all = bonus for wiping a category.
+// Per-kill rocket payouts are retired (balance v2.3): rockets come from point packages, supply caches and medals.
 const REWARDS = {
-  target: { each: 2, all: 5, label: 'PRIMARY TARGET',  allLabel: 'ALL PRIMARY TARGETS DESTROYED' },
-  sentry: { each: 1, all: 3, label: 'SENTRY',          allLabel: 'ALL SENTRIES NEUTRALIZED' },
-  laser:  { each: 1, all: 3, label: 'LASER GRID OFF',  allLabel: 'ALL LASER GRIDS OFFLINE' },
-  turret: { each: 2, all: 3, label: 'CIWS TURRET',     allLabel: 'ALL CIWS TURRETS DESTROYED' },
+  target: { each: 0, all: 0, label: 'PRIMARY TARGET',  allLabel: 'ALL PRIMARY TARGETS DESTROYED' },
+  sentry: { each: 0, all: 0, label: 'SENTRY',          allLabel: 'ALL SENTRIES NEUTRALIZED' },
+  laser:  { each: 0, all: 0, label: 'LASER GRID OFF',  allLabel: 'ALL LASER GRIDS OFFLINE' },
+  turret: { each: 0, all: 0, label: 'CIWS TURRET',     allLabel: 'ALL CIWS TURRETS DESTROYED' },
   barrel: { each: 0, all: 0, label: 'FUEL BARREL',     allLabel: 'ALL FUEL BARRELS DETONATED' },
-  grate:  { each: 0, all: 1, label: 'VENT GRATE',      allLabel: 'ALL VENT GRATES BREACHED' }
+  grate:  { each: 0, all: 0, label: 'VENT GRATE',      allLabel: 'ALL VENT GRATES BREACHED' }
 };
-const REWARD_BONUS = {
-  directHit: 1,                       // primary target destroyed by a direct hit
-  combo3: 1, combo5: 3,               // 3+ / 5+ hostiles (targets, sentries, turrets) in one blast
-  stealth: 3,                         // sector cleared with zero alerts
-  rank: { PANTHER: 0, DOBERMAN: 1, HOUND: 2, FOXHOUND: 4 }
-};
+const REWARD_BONUS = { directHit: 0, combo3: 0, combo5: 0, stealth: 0, rank: { PANTHER: 0, DOBERMAN: 0, HOUND: 0, FOXHOUND: 0 } };
 const REWARD_CAP_BASE = 12;            // rewards per sector are capped at BASE + PER_TIER * tier
 const REWARD_CAP_PER_TIER = 2;
-const CARRY_CAP = 25;                  // unspent rockets above the standard salvo that carry into the next sector
-const CACHE_ROCKETS = 8;               // supply cache found in a secret chamber (outside the sector cap)
+const CARRY_CAP = 20;                  // unspent rockets above the standard salvo that carry into the next sector
+const CACHE_ROCKETS = 5;               // supply cache found in a secret chamber (outside the sector cap)
 // Hearing: sentries hear the rocket within a radius that grows with throttle
 const HEAR_MIN = 6;                    // radius at minimum speed
 const HEAR_RANGE = 40;                 // added at full throttle (curve: throttle^1.5)
@@ -1551,19 +1547,19 @@ const AIM_PITCH_LIMIT = 1.2;           // about 69 degrees up or down
 // Points. Kills score base points times a speed multiplier (slow impact x0.75 ... full speed x2).
 // Every 100 points pays out a package of 10 rockets.
 const POINTS = {
-  target: { each: 150, all: 200 },
-  sentry: { each: 40,  all: 100 },
-  laser:  { each: 35,  all: 100 },
-  turret: { each: 60,  all: 120 },
-  barrel: { each: 10,  all: 50 },
-  grate:  { each: 10,  all: 40 }
+  target: { each: 150, all: 150 },
+  sentry: { each: 40,  all: 80 },
+  laser:  { each: 35,  all: 80 },
+  turret: { each: 60,  all: 100 },
+  barrel: { each: 5,   all: 20 },
+  grate:  { each: 10,  all: 20 }
 };
-const POINTS_BONUS = { directHit: 50, combo3: 50, combo5: 150, stealth: 200, wall: 40, pickup: 30, medal: 75,
-                       rank: { PANTHER: 0, DOBERMAN: 50, HOUND: 100, FOXHOUND: 200 } };
+const POINTS_BONUS = { directHit: 50, combo3: 40, combo5: 120, stealth: 150, wall: 25, pickup: 20, medal: 60,
+                       rank: { PANTHER: 0, DOBERMAN: 40, HOUND: 80, FOXHOUND: 160 } };
 const MULT_SLOW = 0.75;
 const MULT_FAST = 2.0;
-const POINTS_PER_PACKAGE = 100;
-const PACKAGE_ROCKETS = 10;
+const POINTS_PER_PACKAGE = 250;
+const PACKAGE_ROCKETS = 5;
 // ---- LIDAR VIEW ----
 const LIDAR_CAP = 100000;              // max dots kept / drawn per sector
 const VOX = 0.8;                       // memory resolution: one dot per 0.8-unit cube of surface
@@ -2600,6 +2596,7 @@ class NikitaGame {
     this.upgTab = 'rocket';
     this.initLidar();
     this.credits = 0;
+    this.sectorBest = {};
     this.loadProgress();
     this.score = 0;
     this.sectorStartScore = 0;
@@ -2647,6 +2644,8 @@ class NikitaGame {
       activeSpeedMode: 2,
       currentSpeed: 16.0,
       fuel: 100,
+      fuelOut: -1,
+      fuelWarned: false,
       boost: 100,
       boostDepleted: false,
       hull: 100,
@@ -5064,13 +5063,14 @@ class NikitaGame {
       const d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
       if (d && typeof d === 'object') {
         this.credits = Math.max(0, Math.floor(d.credits || 0));
+        if (d.best && typeof d.best === 'object') this.sectorBest = d.best;
         for (const k of Object.keys(this.upg)) this.upg[k] = Math.max(0, Math.min(this.upgradeMax(k), Math.floor((d.upg && d.upg[k]) || 0)));
       }
     } catch (_) {}
   }
 
   saveProgress() {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify({ credits: this.credits, upg: this.upg })); } catch (_) {}
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify({ credits: this.credits, upg: this.upg, best: this.sectorBest })); } catch (_) {}
   }
 
   maxSpeed() { return Math.min(SPEED_MAX, SPEED_START_CAP + SPEED_STEP * this.upg.speed); }
@@ -5082,12 +5082,14 @@ class NikitaGame {
   blastRadiusBase() { return 8.2 * (1 + 0.06 * this.upg.force); }
   blastPowerBase() { return 1.25 * (1 + 0.04 * this.upg.force); }
 
+  // Costs grow ~28% per level (15% per max-speed step): early levels are quick, the last ones are a goal.
   upgradeCost(key) {
     const l = this.upg[key];
-    if (key === 'speed') return 150 + 50 * l;
-    if (key === 'ldeep' || key === 'tpen') return 400 + 300 * l;
-    if (key[0] === 'l' || key[0] === 't') return 100 + 70 * l;
-    return 120 + 90 * l;
+    const r10 = (v) => Math.round(v / 10) * 10;
+    if (key === 'speed') return r10(150 * Math.pow(1.15, l));
+    if (key === 'ldeep' || key === 'tpen') return [600, 1200, 2400][l] || 2400;
+    if (key[0] === 'l' || key[0] === 't') return r10(160 * Math.pow(1.28, l));
+    return r10(200 * Math.pow(1.28, l));
   }
 
   upgradeMax(key) { return key === 'speed' ? 20 : ((key === 'ldeep' || key === 'tpen') ? 3 : UPG_MAX_LEVEL); }
@@ -5209,7 +5211,13 @@ class NikitaGame {
     for (const e of this.ptsPending) { total += e.pts; parts.push(e.count > 1 ? `${e.count}× ${e.label}` : e.label); }
     this.ptsPending = [];
     this.score += total;
-    this.credits += total;      // every point earned is also a credit to spend on upgrades
+    // credits: every point earned is a credit, but a replayed sector only pays for beating its previous best
+    const ck = this.lidarKey || 'none';
+    const gainedNow = this.score - this.sectorStartScore;
+    const best = this.sectorBest[ck] || 0;
+    if (gainedNow > best) { this.credits += gainedNow - best; this.sectorBest[ck] = gainedNow; }
+    const keys = Object.keys(this.sectorBest);
+    if (keys.length > 300) delete this.sectorBest[keys[0]];
     this.saveProgress();
     this.pushFeed(`+${total} PTS — ${parts.join(' · ')}`, 'amber');
     while (this.score >= this.nextPackage) {
@@ -5479,6 +5487,8 @@ class NikitaGame {
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
     m.fuel = 100;
+    m.fuelOut = -1;
+    m.fuelWarned = false;
     m.boost = 100;
     m.boostDepleted = false;
     m.hull = 100;
@@ -6008,11 +6018,19 @@ class NikitaGame {
     const profile = blendProfile(effT, _profile);
 
     if (!this.cfg.infFuel) {
-      m.fuel = Math.max(0, m.fuel - dt * 2.8 * profile.fuelRate * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult());
+      m.fuel = Math.max(0, m.fuel - dt * 2.4 * profile.fuelRate * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult());
     } else {
       m.fuel = 100;
     }
     const hasFuel = m.fuel > 0;
+    if (!this.cfg.infFuel) {
+      if (m.fuel < 20 && !m.fuelWarned) { m.fuelWarned = true; this.pushFeed('FUEL LOW', 'amber'); }
+      if (!hasFuel) {
+        if (m.fuelOut < 0) { m.fuelOut = 0; this.pushFeed('FUEL EXHAUSTED — ENGINE OUT', 'red'); }
+        m.fuelOut += dt;
+        if (m.fuelOut > 2.5) { this.detonateMissile(m.pos.clone(), 'FUEL EXHAUSTED — WARHEAD SELF-DESTRUCT'); return; }
+      }
+    }
 
     // Boost capacitor drains in proportion to how far the lever is above cruise (full lever = 24%/s)
     let boostLoad = Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));

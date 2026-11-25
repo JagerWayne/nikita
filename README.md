@@ -27,6 +27,14 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Balance (v2.3)
+
+- **Rockets.** 40 per sector; the rack holds 100 and up to 20 unspent rockets carry into the next sector. Rockets are earned only from points (5 rockets per 250 points), supply caches (+5) and medals (+1 each); the old per-kill rocket payouts are gone.
+- **Points.** Primary target 150, CIWS turret 60, sentry 40, laser control box 35, cracked wall 25, vent grate 10, fuel barrel 5, power-up 20. Clear-all bonuses: targets 150, turrets 100, sentries 80, lasers 80, barrels and grates 20. Direct hit 50, 3-kill blast 40, 5-kill blast 120, no-alert sector 150, rank 0/40/80/160, medals 60 each. Kill points are multiplied by speed at impact (x0.75 slow, x2 at full speed, up to x3 with max-speed upgrades).
+- **Credits.** Every point is a credit, but replaying a sector only pays for beating your previous best there.
+- **Upgrade costs** grow about 28% per level (15% per max-speed step): rocket upgrades 200 to 1,840 per level, lidar and thermal 160 to 1,480, the 3-level perks 600 / 1,200 / 2,400, max speed 150 to 2,130. Buying everything costs about 98,000 credits.
+- **Fuel.** About 42 s at cruise before upgrades. FUEL LOW warns at 20%; an empty tank cuts the engine and the warhead self-destructs 2.5 s later.
+
 ## Lidar view (v2.0)
 
 The facility is seen only through the rocket's lidar. The screen is near-black green; a spinning scanner (rows of beams all around plus a dense forward focus cone) paints every surface it hits as green dots. Fresh dots flash, then settle into a dim memory; nearby dots are brighter and a sweep line circles the rocket. Cracked walls scan amber and shaft openings cyan; once any part of a shaft is scanned the whole shaft is outlined with cyan lines (its opening and the tunnel's inside corners). The view is always the nose camera (the third-person view is gone); the short orbit kill-cam after a target is destroyed stays.
@@ -90,7 +98,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 **Shafts.** Slots with cyan rails cut through some walls. A shaft's opening is only a third of the wall height: the bottom, middle or top third (cyan squares on the radar). The rocket must be at the right height to fit; at the wrong height it hits the wall. A power-up floats inside every shaft. Most shafts go all the way through; some are dead ends: grab the power-up, then flip and burn back out or detonate at the end.
 
-**Points.** Everything destroyable scores: primary targets 150, CIWS turrets 60, sentries 40, lasers 35, fuel barrels 10, vent grates 10, cracked walls 40, plus clear-all, direct-hit, combo, stealth, rank and medal bonuses. Kill points are multiplied by your speed at impact: x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed. Every 100 points pays a package of 10 rockets (outside the sector reward cap). Collecting a power-up is worth 30 points. The score carries from sector to sector and restarts with a new campaign; the HUD shows `score / next package`.
+**Points.** Everything destroyable scores: primary targets 150, CIWS turrets 60, sentries 40, lasers 35, fuel barrels 10, vent grates 10, cracked walls 40, plus clear-all, direct-hit, combo, stealth, rank and medal bonuses. Kill points are multiplied by your speed at impact: x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed. Every 250 points pays a package of 5 rockets (see Balance). Collecting a power-up is worth 30 points. The score carries from sector to sector and restarts with a new campaign; the HUD shows `score / next package`.
 
 **Upgrades.** Every point you earn is also a credit. Spend credits on five rocket upgrades (saved on the device) from the title screen, the sector-clear screen, the mission-failed screen, or after EXIT TO MENU in the burger menu (it asks twice so a stray tap cannot throw away a sector).
 
