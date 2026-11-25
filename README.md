@@ -46,7 +46,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 | Tracking | 15 degree seeker, 68-unit lock range | 25 degrees, 108 units (level 10) | 100 + 70 x level |
 | Heat mark | off | contacts stay marked 5 s after leaving sight (level 10) | 100 + 70 x level |
 
-**Delete saved data.** Title screen, OPTIONS: DELETE SAVED DATA (tap twice) erases credits, upgrades, preferences and every saved lidar map on this device.
+**Delete saved data.** Title screen: DELETE SAVE (tap twice) erases credits, upgrades, preferences and every saved lidar map on this device.
 
 **Scanner look.** A lidar wavefront pulses outward from the rocket every 1.6 s, lighting dots and edges as it passes, and a sweep line circles the rocket. Thermal objects carry camera scanlines and a scan band sweeping down the screen.
 
@@ -110,7 +110,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 The speed lever is locked at minimum while the rocket waits on the pad and works once it is launched.
 
-**Title screen.** INITIATE LAUNCH sits in the middle; CONTROLS and OPTIONS fold away (closed by default). EXIT shuts the game down completely: it stops the game loop, silences audio, releases fullscreen and sensors, and closes the window. Browsers only let a page close itself in an installed app or a script-opened tab; elsewhere a "Game closed" screen replaces the game so you can close the tab.
+**Title screen.** INITIATE LAUNCH sits in the middle; TARGETS & POINTS (what to attack, what each is worth, and why speed pays), CONTROLS and OPTIONS fold away (closed by default). The MENU button works at any time during a sector, including while the rocket waits on the pad. EXIT shuts the game down completely: it stops the game loop, silences audio, releases fullscreen and sensors, and closes the window. Browsers only let a page close itself in an installed app or a script-opened tab; elsewhere a "Game closed" screen replaces the game so you can close the tab.
 
 ## Mobile controls
 

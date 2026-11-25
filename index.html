@@ -737,6 +737,7 @@
   }
 
   .btn-row.center { justify-content: center; }
+  .score-list .score-tip { margin-top: 6px; color: var(--hud-amber); line-height: 1.45; }
   .upg-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid rgba(0, 255, 136, 0.3); border-radius: 4px; background: rgba(0, 20, 12, 0.5); }
   .upg-name { font-size: 13px; letter-spacing: 0.14em; color: var(--hud-green); }
   .upg-name span { color: var(--hud-amber); margin-left: 8px; font-size: 11px; }
@@ -1295,6 +1296,20 @@ window.addEventListener('unhandledrejection', function (e) {
     </div>
 
     <details class="fold">
+      <summary>TARGETS &amp; POINTS</summary>
+      <div class="controls-grid score-list">
+        <div><span class="ctrl-key">PRIMARY TARGETS</span> : 150 · destroy them all to clear the sector</div>
+        <div><span class="ctrl-key">CIWS TURRETS</span> : 60 · ceiling guns that shoot the rocket</div>
+        <div><span class="ctrl-key">SENTRIES</span> : 40 · guards that see, hear and shoot</div>
+        <div><span class="ctrl-key">LASER CONTROL BOXES</span> : 35 · hit one to switch its laser grid off</div>
+        <div><span class="ctrl-key">CRACKED WALLS</span> : 40 · open shortcuts and secret rooms</div>
+        <div><span class="ctrl-key">FUEL BARRELS</span> : 10 · explode and chain-react</div>
+        <div><span class="ctrl-key">VENT GRATES</span> : 10 · power-ups 30 · clear-all, combo &amp; medal bonuses</div>
+        <div class="score-tip">SPEED PAYS: kill points are multiplied by your speed at impact. x0.75 at minimum speed, about x1.2 at cruise, x2 at full speed (up to x3 with max-speed upgrades). Every 100 points = 10 rockets, and points are credits for upgrades.</div>
+      </div>
+    </details>
+
+    <details class="fold">
       <summary>CONTROLS</summary>
       <div class="controls-grid">
         <div><span class="ctrl-key">STICK / GYRO</span> : Fly, and aim on the pad</div>
@@ -1326,14 +1341,12 @@ window.addEventListener('unhandledrejection', function (e) {
           <input type="number" id="brief-level" value="1" min="1" max="100" style="width:68px" />
         </label>
       </div>
-      <div class="btn-row center" style="padding:10px;">
-        <button type="button" class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVED DATA</button>
-      </div>
     </details>
 
     <div class="btn-row center" style="margin-top:12px;">
       <button class="tac-btn amber" id="btn-upgrades" style="padding:6px 14px; font-size:12px;">UPGRADES</button>
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
+      <button class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVE</button>
       <button class="tac-btn danger" id="btn-exit" style="padding:6px 14px; font-size:12px;">EXIT</button>
     </div>
     <p class="ios-hint" id="install-help" style="display:none; margin:8px 0 0;"></p>
@@ -7327,7 +7340,7 @@ class NikitaGame {
   }
 
   setPaused(flag) {
-    if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'RESPAWNING') {
+    if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'RESPAWNING' && this.state !== 'READY') {
       this.paused = false;
       document.getElementById('pause-modal').style.display = 'none';
       return;
@@ -7335,6 +7348,7 @@ class NikitaGame {
     this.paused = Boolean(flag);
     this.resetAllInputs();
     document.getElementById('pause-modal').style.display = this.paused ? 'flex' : 'none';
+    if (this.state === 'READY') document.getElementById('fire-btn').style.display = this.paused ? 'none' : 'block';
     if (this.paused) this.refreshMenuLabels();
     if (this.paused && document.pointerLockElement) {
       try { document.exitPointerLock(); } catch (_) {}
@@ -7513,12 +7527,12 @@ class NikitaGame {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this.resetAllInputs();
-        if (this.state === 'PLAYING' || this.state === 'KILLCAM') this.setPaused(true);
+        if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
       }
     });
     window.addEventListener('blur', () => {
       this.resetAllInputs();
-      if (this.state === 'PLAYING' || this.state === 'KILLCAM') this.setPaused(true);
+      if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
     });
 
     const unlockOnce = () => {
@@ -7956,8 +7970,8 @@ class NikitaGame {
     delBtn.addEventListener('click', () => {
       if (delArmed && performance.now() - delArmed < 4000) { delBtn.textContent = 'DELETING...'; this.deleteSavedData(); return; }
       delArmed = performance.now();
-      delBtn.textContent = 'TAP AGAIN: ERASE CREDITS, UPGRADES + MAPS';
-      setTimeout(() => { if (performance.now() - delArmed >= 3900) { delArmed = 0; delBtn.textContent = 'DELETE SAVED DATA'; } }, 4100);
+      delBtn.textContent = 'TAP AGAIN TO ERASE ALL';
+      setTimeout(() => { if (performance.now() - delArmed >= 3900) { delArmed = 0; delBtn.textContent = 'DELETE SAVE'; } }, 4100);
     });
     document.getElementById('btn-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
