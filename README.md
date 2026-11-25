@@ -27,10 +27,14 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
-## Multi-floor sectors (v2.4)
+## Multi-floor sectors (v2.4–2.5)
 
 - **Floors.** From sector 16 (tier 4) the facility has 2 floors, and from sector 31 (tier 7) it has 3. Each floor is a full room-and-corridor level stacked on the one below. You always launch on the ground floor.
 - **Ramps.** Two gentle ramps (about 17°, six cells long) join each pair of floors. Each runs in its own one-cell tube: the mouth is in a room on the lower floor, and a short straight run-out at the top opens into the floor above. Touching a ramp at a shallow angle lets the rocket ride up it with no hull damage; flying into it head-on still counts as an impact.
+- **Atriums (v2.5).** Each upper floor has one hall-sized opening over a room below, making a double-height space. You can dive through it, climb up out of it, or shoot down into it.
+- **Drop holes (v2.5).** Two or three 1- or 2-cell holes per upper floor drop to the floor below. Sentries never walk into them.
+- **Lift (v2.5).** Every multi-floor sector has one 2x2 lift shaft open through all floors (⇕ on the radar, cyan corner beams in the lidar view). Inside it the rocket drifts at a quarter speed while the lift carries it: nose up goes up a floor, nose down goes down a floor, and nose level stops at the current floor. Each upper floor has a landing beside the shaft, so turn toward it before you leave.
+- **Openings on the map.** The edge of every hole, atrium and lift is drawn as a green rim line. Line of sight, heat and sound pass through openings, so sentries below can spot a rocket overhead. On the radar, openings are cyan outlines.
 - **What is up there.** Primary targets, sentries and fuel barrels are spread across all floors. Lasers, turbines, grates, turrets, ECM zones, bulkheads, shafts and cracked walls stay on the ground floor for now.
 - **Sensing across floors.** Lidar, thermal, lock-on, blasts, sentry sight, hearing and hostile fire are all 3D. Floors and ceilings block line of sight except where a ramp opens the slab. Sound passing through a slab is muffled like half a wall.
 - **Lidar and memory.** Floors, walls, ceilings and ramps are mapped per floor. Ramps are outlined (side seams up the slope, foot, top and the lintel over the mouth), and the map memory keeps all floors. Maps saved by older versions are not reused.
