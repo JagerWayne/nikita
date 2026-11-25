@@ -1568,9 +1568,13 @@ const PACKAGE_ROCKETS = 5;
 const LIDAR_CAP = 100000;              // max dots kept / drawn per sector
 const VOX = 0.8;                       // memory resolution: one dot per 0.8-unit cube of surface
 const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels across the facility (x and z)
-const VOX_Y = Math.ceil(WALL_H / VOX);
+const MAX_FLOORS = 3;                  // multi-floor sectors: 2 floors from tier 4, 3 from tier 7
+const VOX_Y = Math.ceil(WALL_H * MAX_FLOORS / VOX);
 const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
-const LIDAR_KEY_PREFIX = 'L';
+const LIDAR_KEY_PREFIX = 'M';          // 'M' = multi-floor map format (older single-floor maps are ignored)
+const FLOOR_SEG = 1 << 16;             // edge ids: floor f adds f * FLOOR_SEG
+const FEAT_BASE = 1 << 25;             // edge ids at or above this are ramp outlines (8 per ramp)
+const RAMP_LEN = 6;                    // ramp length in cells (gentle: ~17 degrees)
 const SHAFT_SEG_BASE = 1 << 24;        // edge ids at or above this are shaft outlines (cyan)
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
@@ -1598,6 +1602,9 @@ const CELL_RUNWAY = 2;
 const CELL_CRACKED = 3;   // destroyable wall: solid until a blast shatters it
 const CELL_SHAFT_LOW = 4;   // 4 / 5 / 6 = a shaft through the wall whose opening is the bottom / middle / top third
 const CELL_SHAFT_HIGH = 6;
+const CELL_RAMP = 7;      // a sloped ramp on the lower floor, rising one floor over RAMP_LEN cells
+const CELL_VOID = 8;      // no floor slab: the space above a ramp on the floor above
+const isWalkable = (v) => v === CELL_FLOOR || v === CELL_RUNWAY;
 const isShaft = (v) => v >= CELL_SHAFT_LOW && v <= CELL_SHAFT_HIGH;
 const isWallLike = (v) => v === CELL_WALL || v === CELL_CRACKED || isShaft(v);
 
@@ -2419,7 +2426,7 @@ class VFXSystem {
       t.life -= dt;
       t.pos.addScaledVector(t.vel, dt);
 
-      const hitWall = t.pos.y < 0.1 || t.pos.y > WALL_H - 0.1 || checkGridSolid(t.pos.x, t.pos.z);
+      const hitWall = t.pos.y < 0.1 || checkGridSolid(t.pos.x, t.pos.z, t.pos.y);
       let hitMissile = false;
       if (missileActive && !godMode && t.pos.distanceToSquared(missilePos) < 0.95 * 0.95) {
         hitMissile = true;
@@ -2585,6 +2592,14 @@ class NikitaGame {
     if (briefSeedEl) briefSeedEl.value = this.seedStr;
     this.customSeedEntered = false;
     this.grid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+    this.floors = [this.grid];
+    this.nFloors = 1;
+    this.floorRooms = [[]];
+    this.ramps = [];
+    this.rampAt = new Map();
+    this.rampProtect = new Set();
+    this._ef = 0;
+    this._hitRamp = -1;
     this.rooms = [];
     this.spawnPos = new THREE.Vector3();
 
@@ -2739,7 +2754,7 @@ class NikitaGame {
     this.prefs = { lowSpec: false, lefty: false, btnScale: 1, btnOpacity: 0.92 };
     this._bestCand = { type: '', ref: null, aimY: 0 };
     this._bestScore = Infinity;
-    this._isSolidFn = (x, z) => this.isGridSolid(x, z);
+    this._isSolidFn = (x, z, y) => (y === undefined ? this.isGridSolid(x, z) : this.pointBlocked(x, y, z, 0.1));
     this._tracerHitFn = (hitPos) => {
       if (this.missile.active) this.detonateMissile(hitPos, 'SHOT DOWN BY HOSTILE FIRE!');
     };
@@ -3323,6 +3338,7 @@ class NikitaGame {
 
     this.placeBreakables(numericSeed, tier);
     this.placeShafts(numericSeed, tier);
+    this.buildFloors(numericSeed, tier);
 
     let wallCount = 0, floorCount = 0, runwayCount = 0;
     for (let z = 0; z < GRID_SIZE; z++) {
@@ -3470,6 +3486,12 @@ class NikitaGame {
       const rm = candidateRooms[i % candidateRooms.length] || hubRoom;
       const ox = (i >= candidateRooms.length ? (rng() - 0.5) * 6 : 0);
       const oz = (i >= candidateRooms.length ? (rng() - 0.5) * 6 : 0);
+      const tf = i % this.nFloors;
+      if (tf > 0) {
+        const up = this.pickFloorCell(tf, rng, i);
+        this.spawnPrimaryTarget(gridToWorldX(up[0]), gridToWorldZ(up[1]), targetNames[i % targetNames.length], i, tf * WALL_H);
+        continue;
+      }
       const tx = gridToWorldX(rm.cx) + ox;
       const tz = gridToWorldZ(rm.cz) + oz;
       this.spawnPrimaryTarget(tx, tz, targetNames[i % targetNames.length], i);
@@ -3478,12 +3500,15 @@ class NikitaGame {
     const sentryCount = Math.min(this.maxSentries, Math.round((3 + tier * 2) * (this.modifier === 'HEAVY SECURITY' ? 1.5 : 1)));
     const patrolRooms = this.rooms.slice(1);
     for (let i = 0; i < sentryCount; i++) {
-      const rm = patrolRooms[i % patrolRooms.length];
+      const sf = i % this.nFloors;
+      const fRooms = sf === 0 ? patrolRooms : this.liveRooms(sf);
+      const rm = fRooms[Math.floor(i / this.nFloors) % fRooms.length];
+      const sy = sf * WALL_H;
       const wps = [
-        new THREE.Vector3(gridToWorldX(rm.x + 1), 0, gridToWorldZ(rm.z + 1)),
-        new THREE.Vector3(gridToWorldX(rm.x + rm.w - 2), 0, gridToWorldZ(rm.z + 1)),
-        new THREE.Vector3(gridToWorldX(rm.x + rm.w - 2), 0, gridToWorldZ(rm.z + rm.h - 2)),
-        new THREE.Vector3(gridToWorldX(rm.x + 1), 0, gridToWorldZ(rm.z + rm.h - 2))
+        new THREE.Vector3(gridToWorldX(rm.x + 1), sy, gridToWorldZ(rm.z + 1)),
+        new THREE.Vector3(gridToWorldX(rm.x + rm.w - 2), sy, gridToWorldZ(rm.z + 1)),
+        new THREE.Vector3(gridToWorldX(rm.x + rm.w - 2), sy, gridToWorldZ(rm.z + rm.h - 2)),
+        new THREE.Vector3(gridToWorldX(rm.x + 1), sy, gridToWorldZ(rm.z + rm.h - 2))
       ];
       const startIdx = Math.floor(rng() * wps.length);
       this.sentries.push({
@@ -3496,6 +3521,7 @@ class NikitaGame {
         angVel: new THREE.Vector3(),
         yaw: rng() * Math.PI * 2,
         waypoints: wps,
+        floor: sf,
         wpIndex: (startIdx + 1) % wps.length,
         detectMeter: 0,
         alerted: false,
@@ -3516,10 +3542,13 @@ class NikitaGame {
 
     const barrelCount = Math.min(this.maxBarrels, 8 + tier * 2);
     for (let i = 0; i < barrelCount; i++) {
-      const rm = patrolRooms[Math.floor(rng() * patrolRooms.length)];
-      const bx = gridToWorldX(rm.x + 1 + Math.floor(rng() * Math.max(1, rm.w - 2)));
-      const bz = gridToWorldZ(rm.z + 1 + Math.floor(rng() * Math.max(1, rm.h - 2)));
-      this.barrels.push({ active: true, pos: new THREE.Vector3(bx, 0.85, bz) });
+      const bf = i % this.nFloors;
+      const bRooms = bf === 0 ? patrolRooms : this.liveRooms(bf);
+      const rm = bRooms[Math.floor(rng() * bRooms.length)];
+      let bgx = rm.x + 1 + Math.floor(rng() * Math.max(1, rm.w - 2));
+      let bgz = rm.z + 1 + Math.floor(rng() * Math.max(1, rm.h - 2));
+      if (!isWalkable(this.floors[bf][bgz * GRID_SIZE + bgx])) { bgx = rm.cx; bgz = rm.cz; }
+      this.barrels.push({ active: true, pos: new THREE.Vector3(gridToWorldX(bgx), bf * WALL_H + 0.85, gridToWorldZ(bgz)) });
     }
 
     if (this.level >= 2) {
@@ -3538,9 +3567,9 @@ class NikitaGame {
 
         const gz = Math.max(rm.z + 1, Math.min(rm.z + rm.h - 2, rm.cz + (i >= patrolRooms.length ? (rng() < 0.5 ? -1 : 1) : 0)));
         let gxLeft = rm.cx;
-        while (gxLeft > 1 && !isWallLike(this.grid[gz * GRID_SIZE + (gxLeft - 1)])) gxLeft--;
+        while (gxLeft > 1 && isWalkable(this.grid[gz * GRID_SIZE + (gxLeft - 1)])) gxLeft--;
         let gxRight = rm.cx;
-        while (gxRight < GRID_SIZE - 2 && !isWallLike(this.grid[gz * GRID_SIZE + (gxRight + 1)])) gxRight++;
+        while (gxRight < GRID_SIZE - 2 && isWalkable(this.grid[gz * GRID_SIZE + (gxRight + 1)])) gxRight++;
 
         const xMin = gridToWorldX(gxLeft) - CELL_SIZE * 0.48;
         const xMax = gridToWorldX(gxRight) + CELL_SIZE * 0.48;
@@ -3610,17 +3639,19 @@ class NikitaGame {
     this.syncBarrelInstances();
     this.applyLidarLook();
     let open = 0;
-    for (let c = 0; c < GRID_SIZE * GRID_SIZE; c++) if (!isWallLike(this.grid[c]) && !this.secretHidden.has(c)) open++;
+    const GG = GRID_SIZE * GRID_SIZE;
+    for (let i = 0; i < GG * this.nFloors; i++) if (this.cellCountsOpen(i)) open++;
     this.totalOpen = Math.max(1, open);
     this.lidarBegin(`${LIDAR_KEY_PREFIX}${this.level}:${this.seedStr}`);
     this.seenOpen = 0;
-    for (let c = 0; c < GRID_SIZE * GRID_SIZE; c++) if (this.seenCells[c] && !isWallLike(this.grid[c]) && !this.secretHidden.has(c)) this.seenOpen++;
+    for (let i = 0; i < GG * this.nFloors; i++) if (this.seenCells[i] && this.cellCountsOpen(i)) this.seenOpen++;
+    if (this.nFloors > 1) this.pushFeed(`MULTI-LEVEL SECTOR: ${this.nFloors} FLOORS — RAMPS LEAD UP`, 'cyan');
     this.updateHUDText();
   }
 
-  spawnPrimaryTarget(x, z, name, idx) {
+  spawnPrimaryTarget(x, z, name, idx, yBase = 0) {
     const grp = new THREE.Group();
-    grp.position.set(x, 0, z);
+    grp.position.set(x, yBase, z);
     const base = new THREE.Mesh(
       new THREE.BoxGeometry(2.6, 3.2, 2.6),
       new THREE.MeshStandardMaterial({ color: 0x22333b, metalness: 0.7, roughness: 0.3 })
@@ -3675,7 +3706,7 @@ class NikitaGame {
     this.levelGroup.add(grp);
     this.targets.push({
       id: idx + 1, name, active: true,
-      pos: new THREE.Vector3(x, 2.5, z),
+      pos: new THREE.Vector3(x, yBase + 2.5, z),
       radius: 2.1, mesh: grp, core, ring, floorRing
     });
   }
@@ -3815,6 +3846,268 @@ class NikitaGame {
   /* ------------------------------------------------------------------------
      DESTROYABLE WALLS: SHORTCUTS + SECRET CHAMBERS WITH POWER-UPS
      ------------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------------
+     MULTI-FLOOR SECTORS: upper floors, ramps, and 3D solidity helpers.
+     Floor f spans y = f*WALL_H .. (f+1)*WALL_H. Slabs between floors are open only above a ramp (CELL_VOID).
+     ------------------------------------------------------------------------ */
+  buildFloors(numericSeed, tier) {
+    const G = GRID_SIZE;
+    this.nFloors = tier >= 7 ? 3 : (tier >= 4 ? 2 : 1);
+    this.floors = [this.grid];
+    this.floorRooms = [this.rooms];
+    this.ramps = [];
+    this.rampAt = new Map();
+    this.rampProtect = new Set();
+    for (let f = 1; f < this.nFloors; f++) {
+      const g = new Uint8Array(G * G).fill(CELL_WALL);
+      this.floors.push(g);
+      this.floorRooms.push(this.genUpperFloor(g, mulberry32((numericSeed ^ Math.imul(0x3D7A11B5, f)) >>> 0), tier));
+    }
+    for (let f = 0; f + 1 < this.nFloors; f++) {
+      const rr = mulberry32((numericSeed ^ Math.imul(0x51ED27, f + 1)) >>> 0);
+      for (let k = 0; k < 2; k++) this.placeRamp(f, rr);
+    }
+    for (let f = 0; f < this.nFloors; f++) this.repairFloor(f);
+  }
+
+  genUpperFloor(g, rng, tier) {
+    const G = GRID_SIZE, rooms = [];
+    const carve = (x0, z0, w, h) => {
+      for (let z = z0; z < z0 + h; z++) for (let x = x0; x < x0 + w; x++) if (x > 1 && x < G - 2 && z > 1 && z < G - 2) g[z * G + x] = CELL_FLOOR;
+    };
+    const want = Math.min(14, 6 + Math.floor(tier * 0.35) + Math.floor(rng() * 3));
+    for (let a = 0; a < 260 && rooms.length < want; a++) {
+      const w = 5 + Math.floor(rng() * 6), h = 5 + Math.floor(rng() * 6);
+      const x = 3 + Math.floor(rng() * (G - w - 6)), z = 3 + Math.floor(rng() * (G - h - 6));
+      if (rooms.some((r) => x < r.x + r.w + 2 && x + w + 2 > r.x && z < r.z + r.h + 2 && z + h + 2 > r.z)) continue;
+      const rm = { x, z, w, h, cx: Math.floor(x + w * 0.5), cz: Math.floor(z + h * 0.5) };
+      rooms.push(rm);
+      carve(x, z, w, h);
+    }
+    const corridor = (x1, z1, x2, z2, width) => {
+      const lo = -Math.floor((width - 1) / 2), hi = Math.floor(width / 2);
+      for (let x = x1; x !== x2; x += (x2 >= x1 ? 1 : -1)) for (let o = lo; o <= hi; o++) carve(x, z1 + o, 1, 1);
+      for (let z = z1; z !== z2 + (z2 >= z1 ? 1 : -1); z += (z2 >= z1 ? 1 : -1)) for (let o = lo; o <= hi; o++) carve(x2 + o, z, 1, 1);
+    };
+    for (let i = 1; i < rooms.length; i++) {
+      let best = rooms[0], bd = 1e9;
+      for (let j = 0; j < i; j++) { const d = Math.hypot(rooms[i].cx - rooms[j].cx, rooms[i].cz - rooms[j].cz); if (d < bd) { bd = d; best = rooms[j]; } }
+      corridor(rooms[i].cx, rooms[i].cz, best.cx, best.cz, tier >= 12 ? 2 : 3);
+      if (i > 2 && rng() < 0.3) { const alt = rooms[Math.floor(rng() * i)]; corridor(rooms[i].cx, rooms[i].cz, alt.cx, alt.cz, 2); }
+    }
+    return rooms;
+  }
+
+  // A ramp: entrance cell (floor f) -> RAMP_LEN ramp cells -> exit cell on floor f+1. It runs in its own 1-cell tube.
+  placeRamp(f, rng) {
+    const G = GRID_SIZE, GG = G * G, lo = this.floors[f], up = this.floors[f + 1];
+    const at = (g, x, z) => (x < 0 || z < 0 || x >= G || z >= G) ? -1 : g[z * G + x];
+    const prot = (fl, x, z) => this.rampProtect.has(fl * GG + z * G + x);
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let best = null, bestS = 1e9;
+    for (let tries = 0; tries < 2500; tries++) {
+      const ex = 3 + Math.floor(rng() * (G - 6)), ez = 3 + Math.floor(rng() * (G - 6));
+      if (lo[ez * G + ex] !== CELL_FLOOR || prot(f, ex, ez)) continue;
+      if (f === 0 && (ez > 44 || this.secretHidden.has(ez * G + ex))) continue;
+      const [dx, dz] = dirs[Math.floor(rng() * 4)];
+      const px = -dz, pz = dx;
+      let score = 0, ok = true;
+      for (let i = 0; i <= RAMP_LEN + 3 && ok; i++) {
+        const cx = ex + dx * i, cz = ez + dz * i;
+        if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) { ok = false; break; }
+        if (i > RAMP_LEN + 1) {   // a straight run-out on the upper floor past the exit
+          const u = at(up, cx, cz);
+          if (prot(f + 1, cx, cz) || u === CELL_VOID || u === CELL_RAMP) ok = false;
+          continue;
+        }
+        const tube = i >= 1 && i <= RAMP_LEN;
+        const cells = tube ? [[cx, cz], [cx + px, cz + pz], [cx - px, cz - pz]] : [[cx, cz]];
+        for (const [x, z] of cells) {
+          if (i >= 1) {   // lower floor: the tube should be cut into rock
+            const v = at(lo, x, z);
+            if (prot(f, x, z) || (f === 0 && this.secretHidden.has(z * G + x)) || (v !== CELL_WALL && v !== CELL_FLOOR)) { ok = false; break; }
+            if (v === CELL_FLOOR) score += 3;
+          }
+          const u = at(up, x, z);  // upper floor: void + walls over the tube, wall over the entrance, open exit
+          if (prot(f + 1, x, z) || u === CELL_VOID || u === CELL_RAMP) { ok = false; break; }
+          if (i <= RAMP_LEN && u !== CELL_WALL) score += 1;
+        }
+      }
+      if (!ok) continue;
+      for (const r of this.ramps) if (r.f === f && Math.hypot(r.ex - ex, r.ez - ez) < 16) score += 8;
+      if (score < bestS) { bestS = score; best = { ex, ez, dx, dz, px, pz }; if (score === 0) break; }
+    }
+    if (!best) return;
+    const { ex, ez, dx, dz, px, pz } = best, id = this.ramps.length;
+    const P = (fl, x, z) => this.rampProtect.add(fl * GG + z * G + x);
+    for (let i = 1; i <= RAMP_LEN; i++) {
+      const cx = ex + dx * i, cz = ez + dz * i;
+      lo[cz * G + cx] = CELL_RAMP; up[cz * G + cx] = CELL_VOID;
+      this.rampAt.set(f * GG + cz * G + cx, id);
+      P(f, cx, cz); P(f + 1, cx, cz);
+      for (const sd of [1, -1]) {
+        const sx = cx + px * sd, sz = cz + pz * sd;
+        lo[sz * G + sx] = CELL_WALL; up[sz * G + sx] = CELL_WALL;
+        P(f, sx, sz); P(f + 1, sx, sz);
+      }
+    }
+    const nx = ex + dx * (RAMP_LEN + 1), nz = ez + dz * (RAMP_LEN + 1);
+    lo[nz * G + nx] = CELL_WALL; P(f, nx, nz);
+    up[ez * G + ex] = CELL_WALL; P(f + 1, ex, ez); P(f, ex, ez);
+    up[nz * G + nx] = CELL_FLOOR; P(f + 1, nx, nz);
+    for (let i = 1; i <= 2; i++) { const rx = nx + dx * i, rz = nz + dz * i; up[rz * G + rx] = CELL_FLOOR; P(f + 1, rx, rz); }
+    this.ramps.push({ id, f, ex, ez, dx, dz, px, pz, nx, nz,
+      sx: gridToWorldX(ex) + dx * CELL_SIZE * 0.5, sz: gridToWorldZ(ez) + dz * CELL_SIZE * 0.5, len: RAMP_LEN * CELL_SIZE });
+  }
+
+  // Make sure every room and ramp mouth on a floor can be reached; carve 1-cell connectors where a ramp cut a path.
+  repairFloor(f) {
+    const G = GRID_SIZE, GG = G * G, g = this.floors[f];
+    const pass = (v) => isWalkable(v) || (f === 0 && (v === CELL_CRACKED || isShaft(v)));
+    const flood = () => {
+      const seen = new Uint8Array(GG), st = [];
+      const add = (x, z) => { const c = z * G + x; if (!seen[c] && pass(g[c])) { seen[c] = 1; st.push(c); } };
+      if (f === 0) add(32, 56);
+      for (const r of this.ramps) if (r.f === f - 1) add(r.nx, r.nz);
+      while (st.length) {
+        const c = st.pop(), x = c % G, z = (c / G) | 0;
+        if (x > 0) add(x - 1, z); if (x < G - 1) add(x + 1, z); if (z > 0) add(x, z - 1); if (z < G - 1) add(x, z + 1);
+      }
+      return seen;
+    };
+    const need = [];
+    for (const rm of this.floorRooms[f] || []) need.push([rm.cx, rm.cz]);
+    for (const r of this.ramps) if (r.f === f) need.push([r.ex, r.ez]);
+    for (let pass2 = 0; pass2 < need.length; pass2++) {
+      const seen = flood();
+      const miss = need.find(([x, z]) => isWalkable(g[z * G + x]) && !seen[z * G + x] && !(f === 0 && this.secretHidden.has(z * G + x)));
+      if (!miss) return;
+      // Dijkstra from the unreached cell to the reached area; carving rock costs more, turns cost a little
+      const dist = new Float32Array(GG * 4).fill(1e9), prev = new Int32Array(GG * 4).fill(-1);
+      const q = [];
+      const s0 = miss[1] * G + miss[0];
+      for (let d = 0; d < 4; d++) { dist[s0 * 4 + d] = 0; q.push([0, s0 * 4 + d]); }
+      const D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      let goal = -1;
+      while (q.length) {
+        let bi = 0; for (let i = 1; i < q.length; i++) if (q[i][0] < q[bi][0]) bi = i;
+        const [cd, st] = q[bi]; q[bi] = q[q.length - 1]; q.pop();
+        if (cd > dist[st]) continue;
+        const c = st >> 2, dir = st & 3;
+        if (seen[c]) { goal = st; break; }
+        const x = c % G, z = (c / G) | 0;
+        for (let nd = 0; nd < 4; nd++) {
+          const nx = x + D[nd][0], nz = z + D[nd][1];
+          if (nx < 2 || nz < 2 || nx > G - 3 || nz > G - 3) continue;
+          const n = nz * G + nx, v = g[n];
+          if (this.rampProtect.has(f * GG + n) && !seen[n]) continue;
+          if (v === CELL_VOID || v === CELL_RAMP) continue;
+          const nc = cd + (pass(v) ? 1 : 3) + (nd !== dir ? 2 : 0), ns = n * 4 + nd;
+          if (nc < dist[ns]) { dist[ns] = nc; prev[ns] = st; q.push([nc, ns]); }
+        }
+      }
+      if (goal < 0) return;
+      for (let st = goal; st >= 0; st = prev[st]) { const c = st >> 2; if (g[c] === CELL_WALL) g[c] = CELL_FLOOR; }
+    }
+  }
+
+  liveRooms(f) {
+    const G = GRID_SIZE, g = this.floors[f];
+    const rs = (this.floorRooms[f] || []).filter((r) => isWalkable(g[r.cz * G + r.cx]));
+    return rs.length ? rs : [{ x: 30, z: 30, w: 4, h: 4, cx: 32, cz: 32 }];
+  }
+
+  pickFloorCell(f, rng, i) {
+    const G = GRID_SIZE, g = this.floors[f], rs = this.liveRooms(f);
+    const sorted = rs.slice().sort((a, b) => Math.hypot(b.cx - 32, b.cz - 56) - Math.hypot(a.cx - 32, a.cz - 56));
+    const rm = sorted[Math.floor(i / this.nFloors) % sorted.length];
+    if (isWalkable(g[rm.cz * G + rm.cx])) return [rm.cx, rm.cz];
+    for (let k = 0; k < 40; k++) {
+      const x = rm.x + Math.floor(rng() * rm.w), z = rm.z + Math.floor(rng() * rm.h);
+      if (isWalkable(g[z * G + x])) return [x, z];
+    }
+    return [rm.cx, rm.cz];
+  }
+
+  cellCountsOpen(i) {
+    const GG = GRID_SIZE * GRID_SIZE, f = (i / GG) | 0, c = i % GG;
+    if (f >= this.nFloors) return false;
+    const v = this.floors[f][c];
+    return !isWallLike(v) && v !== CELL_VOID && (f > 0 || !this.secretHidden.has(c));
+  }
+
+  floorOfY(y) {
+    const f = Math.floor(y / WALL_H);
+    return f < 0 ? 0 : (f >= this.nFloors ? this.nFloors - 1 : f);
+  }
+
+  cellAt(x, z) {
+    const gx = worldToGridX(x), gz = worldToGridZ(z);
+    return (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) ? -1 : gz * GRID_SIZE + gx;
+  }
+
+  rampHeight(r, x, z) {
+    let u = ((x - r.sx) * r.dx + (z - r.sz) * r.dz) / r.len;
+    u = u < 0 ? 0 : (u > 1 ? 1 : u);
+    return (r.f + u) * WALL_H;
+  }
+
+  // Height of the surface under (x, z) seen from floor f (a void falls through to the ramp below). Sets _gRamp.
+  groundAt(f, c, x, z) {
+    this._gRamp = null;
+    for (let k = f; k >= 0; k--) {
+      const v = this.floors[k][c];
+      if (v === CELL_RAMP) { this._gRamp = this.ramps[this.rampAt.get(k * GRID_SIZE * GRID_SIZE + c)]; return this.rampHeight(this._gRamp, x, z); }
+      if (v !== CELL_VOID || k === 0) return k * WALL_H;
+    }
+    return 0;
+  }
+
+  ceilAt(f, c) {
+    let k = f;
+    while (k + 1 < this.nFloors && this.floors[k + 1][c] === CELL_VOID) k++;
+    return (k + 1) * WALL_H;
+  }
+
+  // Is the slab at y = k*WALL_H (between floors k-1 and k) open at (x, z)? Only above a ramp.
+  slabOpen(x, z, k) {
+    if (k <= 0 || k >= this.nFloors) return false;
+    const c = this.cellAt(x, z);
+    return c >= 0 && this.floors[k][c] === CELL_VOID;
+  }
+
+  // Point solidity including floors, ceilings and ramps (pad = clearance from horizontal surfaces).
+  pointBlocked(x, y, z, pad = 0) {
+    const c = this.cellAt(x, z);
+    if (c < 0) return true;
+    if (this.isGridSolid(x, z, y)) return true;
+    const f = this.floorOfY(y);
+    return y < this.groundAt(f, c, x, z) + pad || y > this.ceilAt(f, c) - pad;
+  }
+
+  // Wall thickness in cells along a 3D segment; each closed slab crossed counts as half a cell.
+  wallThickness3(ax, ay, az, bx, by, bz) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.01) return 0;
+    const steps = Math.ceil(dist / 1.0);
+    let solid = 0, pf = this.floorOfY(ay), slabs = 0;
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps, x = ax + dx * t, y = ay + dy * t, z = az + dz * t;
+      if (this.isGridSolid(x, z, y)) solid++;
+      const f = this.floorOfY(y);
+      if (f !== pf) { if (!this.slabOpen(x, z, Math.max(f, pf))) slabs++; pf = f; }
+    }
+    return (solid * (dist / steps)) / CELL_SIZE + slabs * 0.5;
+  }
+
+  // Sentries walk only on flat floor of their own level (not onto ramps, voids, walls).
+  sentryBlocked(x, z, s) {
+    const c = this.cellAt(x, z);
+    return c < 0 || !isWalkable(this.floors[s.floor || 0][c]);
+  }
+
   placeBreakables(numericSeed, tier) {
     const rngW = mulberry32((numericSeed ^ 0x9E3779B1) >>> 0);   // own stream: leaves the rest of the level untouched
     const G = GRID_SIZE;
@@ -4155,18 +4448,20 @@ class NikitaGame {
     let x = m.pos.x, z = m.pos.z;
     const dx = -Math.sin(m.yaw), dz = -Math.cos(m.yaw);
     for (let i = 0; i < 9; i++) {
-      if (this.isGridSolid(x + dx, z + dz)) break;
+      if (this.isGridSolid(x + dx, z + dz, m.pos.y)) break;
       x += dx; z += dz;
     }
+    const dc = this.cellAt(x, z);
+    const dy0 = (dc >= 0 ? this.groundAt(this.floorOfY(m.pos.y), dc, x, z) : 0) + 0.7;
     this.decoys--;
     const grp = new THREE.Group();
-    grp.position.set(x, 0.7, z);
+    grp.position.set(x, dy0, z);
     const core = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), new THREE.MeshBasicMaterial({ color: 0x33ddff }));
     const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.06, 6, 24), new THREE.MeshBasicMaterial({ color: 0x33ddff, transparent: true, opacity: 0.7 }));
     ring.rotation.x = Math.PI * 0.5;
     grp.add(core, ring);
     this.levelGroup.add(grp);
-    this.decoyObjs.push({ pos: new THREE.Vector3(x, 0.7, z), t: DECOY_LIFE, mesh: grp, ring });
+    this.decoyObjs.push({ pos: new THREE.Vector3(x, dy0, z), t: DECOY_LIFE, mesh: grp, ring });
     this.audio.playTargetChime();
     this.vibrate(15);
     this.pushFeed(`DECOY DEPLOYED — ${this.decoys} LEFT`, 'cyan');
@@ -4391,7 +4686,7 @@ class NikitaGame {
     this.lidarTime = 0;
     this.lidarMemory = new Map();          // sector key -> { idx: Uint32Array, cls: Uint8Array }
     this.vox = new Uint8Array(VOX_N * VOX_N * VOX_Y);
-    this.seenCells = new Uint8Array(GRID_SIZE * GRID_SIZE);
+    this.seenCells = new Uint8Array(GRID_SIZE * GRID_SIZE * MAX_FLOORS);
     this.seenOpen = 0;
     this.totalOpen = 1;
     this.lidarKey = null;
@@ -4531,18 +4826,18 @@ class NikitaGame {
     return ix + VOX_N * (iz + VOX_N * iy);
   }
 
-  markSeen(x, z) {
+  markSeen(x, z, y = 0) {
     const gx = worldToGridX(x), gz = worldToGridZ(z);
     if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return;
-    const c = gz * GRID_SIZE + gx;
+    const c = this.floorOfY(y) * GRID_SIZE * GRID_SIZE + gz * GRID_SIZE + gx;
     if (this.seenCells[c]) return;
     this.seenCells[c] = 1;
-    if (!isWallLike(this.grid[c]) && !this.secretHidden.has(c)) this.seenOpen++;
+    if (this.cellCountsOpen(c)) this.seenOpen++;
     this.radarSoftDirty = true;
   }
 
   // Store one dot (deduplicated per voxel). birth < 0 = remembered from an earlier attempt (dim).
-  addDot(x, y, z, cls, birth) {
+  addDot(x, y, z, cls, birth, fy) {
     const vi = this.voxIndexAt(x, y, z);
     if (vi < 0 || this.vox[vi]) return;
     this.vox[vi] = cls;
@@ -4556,7 +4851,7 @@ class NikitaGame {
     this.lidarDirtyN++;
     this.lidarHead = (slot + 1) % LIDAR_CAP;
     if (this.lidarCount < LIDAR_CAP) this.lidarCount++;
-    this.markSeen(x, z);
+    if (!this._noMark) this.markSeen(x, z, fy === undefined ? y : fy);
   }
 
   flushDots() {
@@ -4633,12 +4928,10 @@ class NikitaGame {
     }
   }
 
-  // Cast one ray through the grid. Walls, cracked walls, shaft slabs, floor and ceiling are hit analytically.
+  // Cast one ray through the grid in 3D. Per cell column: wall faces on entry, then shaft slabs, ramps,
+  // floor/ceiling slabs (a ray passes a slab only where it is open above a ramp).
   castRay(ox, oy, oz, dx, dy, dz, range) {
-    const G = GRID_SIZE;
-    let tPlane = range;
-    if (dy < -1e-6) tPlane = Math.min(tPlane, -oy / dy);
-    else if (dy > 1e-6) tPlane = Math.min(tPlane, (WALL_H - oy) / dy);
+    const G = GRID_SIZE, GG = G * G, H = WALL_H, NF = this.nFloors;
     let gx = worldToGridX(ox), gz = worldToGridZ(oz);
     const stepX = dx > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
     const bx = (gx - G * 0.5 + (dx > 0 ? 1 : 0)) * CELL_SIZE, bz = (gz - G * 0.5 + (dz > 0 ? 1 : 0)) * CELL_SIZE;
@@ -4649,50 +4942,85 @@ class NikitaGame {
     let tEnter = 0, faceX = true;
     for (let guard = 0; guard < 64; guard++) {
       if (gx < 0 || gz < 0 || gx >= G || gz >= G) return null;
-      const v = this.grid[gz * G + gx];
-      const tExit = Math.min(tMaxX, tMaxZ);
-      if (tEnter > 0 && (v === CELL_WALL || v === CELL_CRACKED)) {
-        if (tEnter > range) return null;
-        this._hit.set(ox + dx * tEnter, oy + dy * tEnter, oz + dz * tEnter);
-        this._hitSeg = this.isEdgeWall(this._hit, gx, gz, faceX, faceX ? stepX : stepZ);
-        this._hitCls = v === CELL_CRACKED ? 2 : (this._hitSeg >= 0 ? 4 : 1);
-        return this._hit;
-      }
-      if (isShaft(v)) {
-        const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3, hi = lo + WALL_H / 3;
-        const yE = oy + dy * tEnter;
-        if (tEnter > 0 && (yE < lo || yE > hi)) {
-          if (tEnter > range) return null;
+      if (tEnter > range) return null;
+      const c = gz * G + gx;
+      const tExit = Math.min(tMaxX, tMaxZ), t1 = Math.min(tExit, range);
+      const yE = oy + dy * tEnter;
+      let fc = this.floorOfY(yE);
+      if (tEnter > 0) {
+        const v = this.floors[fc][c];
+        if (v === CELL_WALL || v === CELL_CRACKED) {
           this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
-          { const face = faceX ? ((faceX ? stepX : stepZ) > 0 ? 1 : 0) : (stepZ > 0 ? 3 : 2);
-            const kk = yE < 0.4 ? 0 : (yE > WALL_H - 0.4 ? 1 : -1);
-            this._hitSeg = kk >= 0 ? ((gz * G + gx) * 4 + face) * 4 + kk : -1; }
-          this._hitShaft = gz * G + gx;
-          this._hitCls = 3;
+          this._hitSeg = this.isEdgeWall(this._hit, gx, gz, faceX, faceX ? stepX : stepZ, fc);
+          this._hitCls = v === CELL_CRACKED ? 2 : (this._hitSeg >= 0 ? 4 : 1);
           return this._hit;
         }
-        let tb = Infinity;
-        if (dy < -1e-6 && lo > 0.01) tb = (lo - oy) / dy;
-        else if (dy > 1e-6 && hi < WALL_H - 0.01) tb = (hi - oy) / dy;
-        if (tb >= tEnter && tb <= tExit) {
-          if (tb > range) return null;
-          this._hit.set(ox + dx * tb, oy + dy * tb, oz + dz * tb);
-          this._hitSeg = -1;
-          this._hitShaft = gz * G + gx;
-          this._hitCls = 3;
-          return this._hit;
+        if (isShaft(v)) {
+          const lo = fc * H + (v - CELL_SHAFT_LOW) * H / 3, hi = lo + H / 3;
+          if (yE < lo || yE > hi) {
+            this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
+            const face = faceX ? (stepX > 0 ? 1 : 0) : (stepZ > 0 ? 3 : 2);
+            const yl = yE - fc * H, kk = yl < 0.4 ? 0 : (yl > H - 0.4 ? 1 : -1);
+            this._hitSeg = kk >= 0 ? fc * FLOOR_SEG + (c * 4 + face) * 4 + kk : -1;
+            this._hitShaft = c;
+            this._hitCls = 3;
+            return this._hit;
+          }
+        }
+        if (v === CELL_RAMP) {
+          const r = this.ramps[this.rampAt.get(fc * GG + c)];
+          const hx = ox + dx * tEnter, hz = oz + dz * tEnter;
+          if (r && yE < this.rampHeight(r, hx, hz)) {
+            this._hit.set(hx, yE, hz);
+            this._hitSeg = -1; this._hitCls = 1; this._hitRamp = r.id;
+            return this._hit;
+          }
         }
       }
-      if (tPlane <= tExit) {
-        // floor/ceiling hit next to a shaft face is handled by isEdgeFloor + validSeg below
-        if (tPlane >= range) return null;
-        this._hit.set(ox + dx * tPlane, oy + dy * tPlane, oz + dz * tPlane);
-        this._hitSeg = this.isEdgeFloor(this._hit, gx, gz);
-        this._hitCls = this._hitSeg >= 0 ? 4 : 1;
-        return this._hit;
+      let ta = tEnter;
+      for (let k = 0; k < 4; k++) {
+        const v = this.floors[fc][c], fb = fc * H, ft = fb + H;
+        let tHit = Infinity, kind = 0, tCross = Infinity, nf = fc, r = null;
+        if (v === CELL_RAMP) {
+          r = this.ramps[this.rampAt.get(fc * GG + c)];
+          if (r) {
+            const g0 = (oy + dy * ta) - this.rampHeight(r, ox + dx * ta, oz + dz * ta);
+            const gs = dy - ((dx * r.dx + dz * r.dz) / r.len) * H;
+            if (gs < -1e-9) { const tr = ta - g0 / gs; if (tr >= ta && tr <= t1) { tHit = tr; kind = 5; } }
+          }
+        } else if (isShaft(v)) {
+          const lo = fb + (v - CELL_SHAFT_LOW) * H / 3, hi = lo + H / 3;
+          let tb = Infinity;
+          if (dy < -1e-6 && lo > fb + 0.01) tb = (lo - oy) / dy;
+          else if (dy > 1e-6 && hi < ft - 0.01) tb = (hi - oy) / dy;
+          if (tb >= ta && tb <= t1) { tHit = tb; kind = 3; }
+        }
+        if (dy < -1e-9) {
+          const tp = (fb - oy) / dy;
+          if (tp <= t1 && tp < tHit) {
+            if (fc > 0 && v === CELL_VOID) { tCross = tp; nf = fc - 1; } else { tHit = tp; kind = 1; }
+          }
+        } else if (dy > 1e-9) {
+          const tp = (ft - oy) / dy;
+          if (tp <= t1 && tp < tHit) {
+            if (fc + 1 < NF && this.floors[fc + 1][c] === CELL_VOID) { tCross = tp; nf = fc + 1; } else { tHit = tp; kind = 2; }
+          }
+        }
+        if (tHit <= t1 && tHit <= tCross) {
+          if (tHit >= range) return null;
+          this._hit.set(ox + dx * tHit, oy + dy * tHit, oz + dz * tHit);
+          if (kind === 5) { this._hitSeg = -1; this._hitCls = 1; this._hitRamp = r.id; }
+          else if (kind === 3) { this._hitSeg = -1; this._hitShaft = c; this._hitCls = 3; }
+          else {
+            this._hitSeg = this.isEdgeFloor(this._hit, gx, gz, fc, kind === 1 ? 0 : 1);
+            this._hitCls = this._hitSeg >= 0 ? 4 : 1;
+          }
+          return this._hit;
+        }
+        if (tCross <= t1) { fc = nf; ta = tCross; continue; }
+        break;
       }
       tEnter = tExit;
-      if (tEnter > range) return null;
       if (tMaxX < tMaxZ) { gx += stepX; tMaxX += tDX; faceX = true; } else { gz += stepZ; tMaxZ += tDZ; faceX = false; }
     }
     return null;
@@ -4701,15 +5029,17 @@ class NikitaGame {
   // Edge detection for crisp outlines: wall/floor and wall/ceiling seams, and wall corners (inner and outer).
   cellSolid(gx, gz) {
     if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return true;
-    return isWallLike(this.grid[gz * GRID_SIZE + gx]);
+    return isWallLike(this.floors[this._ef][gz * GRID_SIZE + gx]);
   }
 
-  isEdgeWall(h, gx, gz, faceX, step) {
+  isEdgeWall(h, gx, gz, faceX, step, f = 0) {
     const E = 0.38;
+    this._ef = f;
     const face = faceX ? (step > 0 ? 1 : 0) : (step > 0 ? 3 : 2);
-    const id = (k) => ((gz * GRID_SIZE + gx) * 4 + face) * 4 + k;
-    if (h.y < E) return id(0);
-    if (h.y > WALL_H - E) return id(1);
+    const id = (k) => f * FLOOR_SEG + ((gz * GRID_SIZE + gx) * 4 + face) * 4 + k;
+    const hy = h.y - f * WALL_H;
+    if (hy < E) return id(0);
+    if (hy > WALL_H - E) return id(1);
     const along = faceX ? h.z - (gz - GRID_SIZE * 0.5) * CELL_SIZE : h.x - (gx - GRID_SIZE * 0.5) * CELL_SIZE;
     for (const side of [-1, 1]) {
       if (side < 0 ? along > E : along < CELL_SIZE - E) continue;
@@ -4730,39 +5060,48 @@ class NikitaGame {
 
   cellFullWall(gx, gz) {
     if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return true;
-    const v = this.grid[gz * GRID_SIZE + gx];
+    const v = this.floors[this._ef][gz * GRID_SIZE + gx];
     return v === CELL_WALL || v === CELL_CRACKED;
   }
 
   // An edge is real only on a full wall whose face looks into open floor (never inside or on a shaft).
   validSeg(seg) {
+    if (seg >= FEAT_BASE) return ((seg - FEAT_BASE) >> 3) < this.ramps.length;
+    this._ef = 0;
     if (seg >= SHAFT_SEG_BASE) {
       const c = Math.floor((seg - SHAFT_SEG_BASE) / 32), k = (seg - SHAFT_SEG_BASE) % 32;
       if (c < 0 || c >= GRID_SIZE * GRID_SIZE || !isShaft(this.grid[c])) return false;
       if (k < 4) return true;
       return this.shaftFaceFramed(c % GRID_SIZE, Math.floor(c / GRID_SIZE), (k - 4) >> 2);
     }
+    const fl = Math.floor(seg / FLOOR_SEG);
+    if (fl >= this.nFloors) return false;
+    this._ef = fl;
+    const grid = this.floors[fl];
+    seg = seg % FLOOR_SEG;
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
-    if (isShaft(this.grid[cell]) && k < 2 && gx > 0 && gz > 0 && gx < GRID_SIZE - 1 && gz < GRID_SIZE - 1) {
+    if (isShaft(grid[cell]) && k < 2 && gx > 0 && gz > 0 && gx < GRID_SIZE - 1 && gz < GRID_SIZE - 1) {
       // a shaft's wall face: floor seam if there is a slab below the opening, ceiling seam if there is one above
-      const band = this.grid[cell] - CELL_SHAFT_LOW;
+      const band = grid[cell] - CELL_SHAFT_LOW;
       if (k === 0 ? band === 0 : band === 2) return false;
       const fx = face === 0 ? gx + 1 : (face === 1 ? gx - 1 : gx), fz = face === 2 ? gz + 1 : (face === 3 ? gz - 1 : gz);
-      return !isWallLike(this.grid[fz * GRID_SIZE + fx]);
+      return !isWallLike(grid[fz * GRID_SIZE + fx]);
     }
     if (!this.cellFullWall(gx, gz) || gx <= 0 || gz <= 0 || gx >= GRID_SIZE - 1 || gz >= GRID_SIZE - 1) return false;
     const fx = face === 0 ? gx + 1 : (face === 1 ? gx - 1 : gx), fz = face === 2 ? gz + 1 : (face === 3 ? gz - 1 : gz);
-    if (isWallLike(this.grid[fz * GRID_SIZE + fx])) return false;
+    const fc = fz * GRID_SIZE + fx, fv = grid[fc];
+    if (isWallLike(fv)) return false;
     if (k >= 2) return this.isCornerEdge(gx, gz, face, k === 2 ? -1 : 1);
-    return true;
+    if (k === 0) return isWalkable(fv);                                                    // no floor seam along a ramp or a void
+    return !(fl + 1 < this.nFloors && this.floors[fl + 1][fc] === CELL_VOID);              // no ceiling seam under an opening
   }
 
-  isEdgeFloor(h, gx, gz) {
+  isEdgeFloor(h, gx, gz, f = 0, k = 0) {
     const E = 0.38;
-    const k = h.y < WALL_H * 0.5 ? 0 : 1;
+    this._ef = f;
     const lx = h.x - (gx - GRID_SIZE * 0.5) * CELL_SIZE, lz = h.z - (gz - GRID_SIZE * 0.5) * CELL_SIZE;
-    const id = (cx, cz, face) => ((cz * GRID_SIZE + cx) * 4 + face) * 4 + k;
+    const id = (cx, cz, face) => f * FLOOR_SEG + ((cz * GRID_SIZE + cx) * 4 + face) * 4 + k;
     if (lx < E && this.cellSolid(gx - 1, gz) && gx > 0) return id(gx - 1, gz, 0);   // (validSeg decides if it is real)
     if (lx > CELL_SIZE - E && this.cellSolid(gx + 1, gz) && gx < GRID_SIZE - 1) return id(gx + 1, gz, 1);
     if (lz < E && this.cellSolid(gx, gz - 1) && gz > 0) return id(gx, gz - 1, 2);
@@ -4775,7 +5114,10 @@ class NikitaGame {
     if (seg < 0 || this.revealedSeg.has(seg) || !this.validSeg(seg)) return;
     this.revealedSeg.add(seg);
     if (this.segCount >= this.SEG_CAP) return;
+    if (seg >= FEAT_BASE) { this.addRampSeg(seg, birth); return; }
     if (seg >= SHAFT_SEG_BASE) { this.addShaftSeg(seg, birth); return; }
+    const fy = Math.floor(seg / FLOOR_SEG) * WALL_H;
+    seg = seg % FLOOR_SEG;
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
     const x0 = (gx - GRID_SIZE * 0.5) * CELL_SIZE, z0 = (gz - GRID_SIZE * 0.5) * CELL_SIZE, off = 0.04;
@@ -4783,8 +5125,36 @@ class NikitaGame {
     const pz = face === 2 ? z0 + CELL_SIZE + off : (face === 3 ? z0 - off : 0);
     const pt = (along, y, out) => { if (face < 2) { out[0] = px; out[1] = y; out[2] = z0 + along; } else { out[0] = x0 + along; out[1] = y; out[2] = pz; } };
     const A = [0, 0, 0], B = [0, 0, 0];
-    if (k < 2) { const y = k === 0 ? 0.04 : WALL_H - 0.04; pt(0, y, A); pt(CELL_SIZE, y, B); }
-    else { const along = k === 2 ? 0 : CELL_SIZE; pt(along, 0, A); pt(along, WALL_H, B); }
+    if (k < 2) { const y = fy + (k === 0 ? 0.04 : WALL_H - 0.04); pt(0, y, A); pt(CELL_SIZE, y, B); }
+    else { const along = k === 2 ? 0 : CELL_SIZE; pt(along, fy, A); pt(along, fy + WALL_H, B); }
+    const i = this.segCount++;
+    this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth; this.segKind[i] = 0;
+    this.segSlot.set(seg + fy / WALL_H * FLOOR_SEG, i);
+    if (this.segDirtyMin < 0 || i < this.segDirtyMin) this.segDirtyMin = i;
+    if (i > this.segDirtyMax) this.segDirtyMax = i;
+  }
+
+  // Ramp outline: the two side seams up the slope, its foot and top, and the lintel over its mouth.
+  revealRamp(id, birth) {
+    for (let k = 0; k < 5; k++) this.revealSeg(FEAT_BASE + id * 8 + k, birth);
+  }
+
+  addRampSeg(seg, birth) {
+    const id = (seg - FEAT_BASE) >> 3, k = (seg - FEAT_BASE) & 7, r = this.ramps[id];
+    if (!r) return;
+    const hw = CELL_SIZE * 0.5 - 0.04, H = WALL_H, y0 = r.f * H + 0.04, y1 = (r.f + 1) * H + 0.04;
+    const tx = r.sx + r.dx * r.len, tz = r.sz + r.dz * r.len;
+    const A = [0, 0, 0], B = [0, 0, 0];
+    if (k < 2) {
+      const sd = k === 0 ? 1 : -1;
+      A[0] = r.sx + r.px * hw * sd; A[1] = y0; A[2] = r.sz + r.pz * hw * sd;
+      B[0] = tx + r.px * hw * sd; B[1] = y1; B[2] = tz + r.pz * hw * sd;
+    } else {
+      const cx = k === 3 ? tx : r.sx, cz = k === 3 ? tz : r.sz;
+      const y = k === 2 ? y0 : (k === 3 ? y1 : (r.f + 1) * H - 0.04);
+      A[0] = cx + r.px * hw; A[1] = y; A[2] = cz + r.pz * hw;
+      B[0] = cx - r.px * hw; B[1] = y; B[2] = cz - r.pz * hw;
+    }
     const i = this.segCount++;
     this.segA.set(A, i * 3); this.segB.set(B, i * 3); this.segBirth[i] = birth; this.segKind[i] = 0;
     this.segSlot.set(seg, i);
@@ -4910,12 +5280,12 @@ class NikitaGame {
 
     const scanning = this.state === 'PLAYING' || this.state === 'READY' || this.state === 'BRIEFING';
     if (scanning) {
-      this.markSeen(o.x, o.z);
+      this.markSeen(o.x, o.z, o.y);
       this.camera.getWorldDirection(_v8);
       const fyaw = Math.atan2(_v8.x, _v8.z), fpitch = Math.asin(Math.max(-1, Math.min(1, _v8.y)));
       const cone = P.coneDeg * Math.PI / 180;
       const rows = 8 + Math.round(this.upg.lres * 1.6);
-      const ox = o.x, oy = Math.max(0.05, Math.min(WALL_H - 0.05, o.y)), oz = o.z;
+      const ox = o.x, oy = Math.max(0.05, Math.min(this.nFloors * WALL_H - 0.05, o.y)), oz = o.z;
       const now = this.lidarTime;
       for (let i = 0; i < P.rays; i++) {
         let yaw, pit;
@@ -4929,8 +5299,9 @@ class NikitaGame {
           pit = (-60 + (120 * (row + 0.5)) / rows) * Math.PI / 180 + (Math.random() - 0.5) * 0.01;
         }
         const cp = Math.cos(pit);
+        this._hitRamp = -1;
         const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
-        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now); if (c === 4) this.revealSeg(this._hitSeg, now); else if (c === 3) this.revealShaftCell(this._hitShaft, now); }
+        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now, h.y - Math.sin(pit) * 0.15); if (c === 4) this.revealSeg(this._hitSeg, now); else if (c === 3) this.revealShaftCell(this._hitShaft, now); if (this._hitRamp >= 0) this.revealRamp(this._hitRamp, now); }
       }
       if (P.deep >= 2) this.deepScanReveal(o, P);
     }
@@ -4992,11 +5363,16 @@ class NikitaGame {
   // 3D line of sight that lets shaft openings through at the right height.
   los3(ax, ay, az, bx, by, bz) {
     const dx = bx - ax, dy = by - ay, dz = bz - az;
-    const dist = Math.hypot(dx, dz);
+    const dist = Math.hypot(dx, dy, dz);
     const steps = Math.max(1, Math.ceil(dist / 1.0));
-    for (let i = 1; i < steps; i++) {
-      const f = i / steps;
-      if (this.isGridSolid(ax + dx * f, az + dz * f, ay + dy * f)) return false;
+    let pf = this.floorOfY(ay);
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps, x = ax + dx * t, y = ay + dy * t, z = az + dz * t;
+      if (i < steps && this.isGridSolid(x, z, y)) return false;
+      if (this.nFloors > 1) {
+        const f = this.floorOfY(y);
+        if (f !== pf) { if (!this.slabOpen(x, z, Math.max(f, pf))) return false; pf = f; }
+      }
     }
     return true;
   }
@@ -5011,10 +5387,10 @@ class NikitaGame {
   updateThermal(o, P) {
     const R = P.thermal;
     const see = (x, y, z, extra = 0) => {
-      const d = Math.hypot(x - o.x, z - o.z);
+      const d = Math.hypot(x - o.x, y - o.y, z - o.z);
       if (d > R + extra) return false;
       if (this.los3(o.x, o.y, o.z, x, y, z)) return true;
-      return P.pen > 0 && this.wallThickness(o.x, o.z, x, z) <= P.pen * 1.05;
+      return P.pen > 0 && this.wallThickness3(o.x, o.y, o.z, x, y, z) <= P.pen * 1.05;
     };
     // heat mark: a contact stays visible for a moment after it leaves sight
     const mark = (obj, v) => {
@@ -5042,7 +5418,7 @@ class NikitaGame {
     }
     let newContact = false;
     for (const s of this.sentries) {
-      const v = (s.active || s.dying) && mark(s, see(s.pos.x, 1.4, s.pos.z));
+      const v = (s.active || s.dying) && mark(s, see(s.pos.x, s.pos.y + 1.4, s.pos.z));
       if (v && !s.thermalVis && s.active) newContact = true;
       s.thermalVis = v;
     }
@@ -5058,7 +5434,7 @@ class NikitaGame {
     if (!this.lidarKey || this.lidarCount === 0) return;
     const idx = [], cls = [];
     for (let s = 0; s < this.lidarCount; s++) { const vi = this.slotVox[s]; if (vi >= 0) { idx.push(vi); cls.push(this.vox[vi]); } }
-    const rec = { idx: Uint32Array.from(idx), cls: Uint8Array.from(cls), seg: Uint32Array.from(this.revealedSeg), t: Date.now() };
+    const rec = { idx: Uint32Array.from(idx), cls: Uint8Array.from(cls), seg: Uint32Array.from(this.revealedSeg), seen: this.seenCells.slice(), t: Date.now() };
     this.lidarMemory.delete(this.lidarKey);
     this.lidarMemory.set(this.lidarKey, rec);
     const keep = this.lidarParams(true).keep;
@@ -5067,12 +5443,19 @@ class NikitaGame {
   }
 
   lidarLoad(rec) {
+    this._noMark = !!rec.seen;
     for (let i = 0; i < rec.idx.length; i++) {
       const vi = rec.idx[i];
       const ix = vi % VOX_N, iz = Math.floor(vi / VOX_N) % VOX_N, iy = Math.floor(vi / (VOX_N * VOX_N));
       const j = (vi * 2654435761) >>> 0;
       const jx = ((j & 255) / 255 - 0.5) * VOX * 0.7, jz = (((j >> 8) & 255) / 255 - 0.5) * VOX * 0.7, jy = (((j >> 16) & 255) / 255 - 0.5) * VOX * 0.7;
-      this.addDot(ix * VOX + VOX * 0.5 - VOX_HALF + jx, Math.max(0.02, Math.min(WALL_H - 0.02, iy * VOX + VOX * 0.5 + jy)), iz * VOX + VOX * 0.5 - VOX_HALF + jz, rec.cls[i] || 1, -1000);
+      this.addDot(ix * VOX + VOX * 0.5 - VOX_HALF + jx, Math.max(0.02, Math.min(this.nFloors * WALL_H - 0.02, iy * VOX + VOX * 0.5 + jy)), iz * VOX + VOX * 0.5 - VOX_HALF + jz, rec.cls[i] || 1, -1000);
+    }
+    this._noMark = false;
+    if (rec.seen) {
+      const n = Math.min(rec.seen.length, this.seenCells.length);
+      for (let i = 0; i < n; i++) if (rec.seen[i] && !this.seenCells[i]) { this.seenCells[i] = 1; if (this.cellCountsOpen(i)) this.seenOpen++; }
+      this.radarSoftDirty = true;
     }
     if (rec.seg) for (const sg of rec.seg) this.revealSeg(sg, -1000);
     this.flushSegs();
@@ -5088,7 +5471,7 @@ class NikitaGame {
     this.lidarKey = key;
     const mem = this.lidarMemory.get(key);
     if (mem) { this.lidarLoad(mem); return; }
-    this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls), seg: rec.seg ? new Uint32Array(rec.seg) : null }); }).catch(() => {});
+    this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls), seg: rec.seg ? new Uint32Array(rec.seg) : null, seen: rec.seen ? new Uint8Array(rec.seen) : null }); }).catch(() => {});
   }
 
   idbOpen() {
@@ -5109,7 +5492,7 @@ class NikitaGame {
     this.idbOpen().then((db) => {
       const tx = db.transaction('maps', 'readwrite');
       const st = tx.objectStore('maps');
-      st.put({ key, t: rec.t, idx: rec.idx.buffer.slice(0), cls: rec.cls.buffer.slice(0), seg: rec.seg.buffer.slice(0) });
+      st.put({ key, t: rec.t, idx: rec.idx.buffer.slice(0), cls: rec.cls.buffer.slice(0), seg: rec.seg.buffer.slice(0), seen: rec.seen ? rec.seen.buffer.slice(0) : null });
       const all = st.getAll();
       all.onsuccess = () => {
         const list = (all.result || []).sort((a, b) => b.t - a.t);
@@ -5583,10 +5966,17 @@ class NikitaGame {
     const gx = worldToGridX(wx);
     const gz = worldToGridZ(wz);
     if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return true;
-    const v = this.grid[gz * GRID_SIZE + gx];
+    let v, base = 0;
+    if (wy === undefined) v = this.grid[gz * GRID_SIZE + gx];
+    else {
+      const f = this.floorOfY(wy);
+      v = this.floors[f][gz * GRID_SIZE + gx];
+      base = f * WALL_H;
+      if (v === CELL_RAMP) return wy < this.rampHeight(this.ramps[this.rampAt.get(f * GRID_SIZE * GRID_SIZE + gz * GRID_SIZE + gx)], wx, wz) - MISSILE_RADIUS * 0.5;
+    }
     if (isShaft(v)) {
       if (wy === undefined) return true;
-      const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3;
+      const lo = base + (v - CELL_SHAFT_LOW) * WALL_H / 3;
       return wy < lo + MISSILE_RADIUS || wy > lo + WALL_H / 3 - MISSILE_RADIUS;
     }
     return v === CELL_WALL || v === CELL_CRACKED;
@@ -5677,7 +6067,7 @@ class NikitaGame {
     for (const t of this.targets) {
       if (!t.active) continue;
       const d = t.pos.distanceTo(epicenter);
-      if (t === directTarget || (d <= radius + t.radius && this.hasLineOfSight(epicenter.x, epicenter.z, t.pos.x, t.pos.z))) {
+      if (t === directTarget || (d <= radius + t.radius && this.los3(epicenter.x, epicenter.y, epicenter.z, t.pos.x, t.pos.y, t.pos.z))) {
         t.active = false;
         t.mesh.visible = false;
         this.vfx.spawnExplosion(t.pos, 10.5, 1.65);
@@ -5690,9 +6080,9 @@ class NikitaGame {
 
     for (const s of this.sentries) {
       if (!s.active) continue;
-      _v5.set(s.pos.x, 1.2, s.pos.z);
+      _v5.set(s.pos.x, s.pos.y + 1.2, s.pos.z);
       const d = _v5.distanceTo(epicenter);
-      if (s === directSentry || (d <= radius && this.hasLineOfSight(epicenter.x, epicenter.z, s.pos.x, s.pos.z))) {
+      if (s === directSentry || (d <= radius && this.los3(epicenter.x, epicenter.y, epicenter.z, _v5.x, _v5.y, _v5.z))) {
         this.neutralizeSentry(s, epicenter);
       }
     }
@@ -5700,7 +6090,7 @@ class NikitaGame {
     for (const b of this.barrels) {
       if (!b.active) continue;
       const d = b.pos.distanceTo(epicenter);
-      if (d <= radius + 1.2 && this.hasLineOfSight(epicenter.x, epicenter.z, b.pos.x, b.pos.z)) {
+      if (d <= radius + 1.2 && this.los3(epicenter.x, epicenter.y, epicenter.z, b.pos.x, b.pos.y, b.pos.z)) {
         b.active = false;
         this.rewardKill('barrel', this.barrels, (x) => !x.active);
         this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: 9.2, power: 1.4, label: 'FUEL BARREL CHAIN REACTION', mult: this.blastMult });
@@ -5982,7 +6372,7 @@ class NikitaGame {
       if (this.missile.active && tu.pos.distanceToSquared(this.missile.pos) < 900) tu.mesh.lookAt(this.missile.pos);
       if (this.missile.active && tu.fireCooldown <= 0) {
         const d = tu.pos.distanceTo(this.missile.pos);
-        if (d < ciwsRange && this.hasLineOfSight(tu.pos.x, tu.pos.z, this.missile.pos.x, this.missile.pos.z)) {
+        if (d < ciwsRange && this.los3(tu.pos.x, tu.pos.y, tu.pos.z, this.missile.pos.x, this.missile.pos.y, this.missile.pos.z)) {
           tu.fireCooldown = ciwsCooldown;
           this.hostileAim(tu.pos, this.missile.pos, _v1, false).multiplyScalar(ciwsBoltSpeed);
           this.vfx.spawnTracer(tu.pos, _v1);
@@ -6032,7 +6422,7 @@ class NikitaGame {
     const dot = _v1.dot(_v2);
     // Strictly enforce 15-degree half-angle cone from rocket nose
     if (dot < Math.cos(TP.seekerDeg * Math.PI / 180)) return;
-    if (!this.hasLineOfSight(m.pos.x, m.pos.z, tx, tz)) return;
+    if (!this.los3(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz)) return;
     const score = dist * 0.4 + (1.0 - dot) * 260.0;
     if (score < this._bestScore) {
       this._bestScore = score;
@@ -6171,7 +6561,7 @@ class NikitaGame {
       if (this.lockedEnemy && this.lockedEnemy.ref && this.lockedEnemy.ref.active) {
         const ePos = this.lockedEnemy.ref.pos;
         const dist = Math.hypot(ePos.x - m.pos.x, (ePos.y + this.lockedEnemy.aimY) - m.pos.y, ePos.z - m.pos.z);
-        const inLOS = this.hasLineOfSight(m.pos.x, m.pos.z, ePos.x, ePos.z);
+        const inLOS = this.los3(m.pos.x, m.pos.y, m.pos.z, ePos.x, ePos.y + this.lockedEnemy.aimY, ePos.z);
         if (dist > this.lidarParams(true).lockRange || !inLOS) {
           this.manualTargetLock = false;
           this.homingLocked = false;
@@ -6354,7 +6744,7 @@ class NikitaGame {
           const dx = _v3.x - s.pos.x;
           const dz = _v3.z - s.pos.z;
           const horizDistSq = dx * dx + dz * dz;
-          if (horizDistSq <= (0.72 + MISSILE_RADIUS) * (0.72 + MISSILE_RADIUS) && _v3.y >= 0.05 && _v3.y <= 2.25) {
+          if (horizDistSq <= (0.72 + MISSILE_RADIUS) * (0.72 + MISSILE_RADIUS) && _v3.y >= s.pos.y + 0.05 && _v3.y <= s.pos.y + 2.25) {
             m.pos.copy(_v3);
             this.hitStopTimer = 0.04;
             this.detonateMissile(_v3, 'DIRECT IMPACT — SENTRY NEUTRALIZED', null, s);
@@ -6439,7 +6829,7 @@ class NikitaGame {
         }
 
         for (const bh of this.bulkheads) {
-          if (Math.abs(_v3.x - bh.x) < bh.halfX + MISSILE_RADIUS && Math.abs(_v3.z - bh.z) < bh.halfZ + MISSILE_RADIUS) {
+          if (_v3.y < WALL_H && Math.abs(_v3.x - bh.x) < bh.halfX + MISSILE_RADIUS && Math.abs(_v3.z - bh.z) < bh.halfZ + MISSILE_RADIUS) {
             this.detonateMissile(_v3, 'IMPACT: ARMORED BULKHEAD');
             return;
           }
@@ -6453,9 +6843,29 @@ class NikitaGame {
           }
         }
 
-        let hitNormalX = 0, hitNormalY = 0, hitNormalZ = 0, hitSurface = false;
-        if (_v3.y < MISSILE_RADIUS) { hitNormalY = 1; _v3.y = MISSILE_RADIUS; hitSurface = true; }
-        else if (_v3.y > WALL_H - MISSILE_RADIUS) { hitNormalY = -1; _v3.y = WALL_H - MISSILE_RADIUS; hitSurface = true; }
+        let hitNormalX = 0, hitNormalY = 0, hitNormalZ = 0, hitSurface = false, hitRamp = null;
+        {
+          const mc = this.cellAt(_v3.x, _v3.z), mf = this.floorOfY(m.pos.y);
+          const gY = mc >= 0 ? this.groundAt(mf, mc, _v3.x, _v3.z) : 0, gR = this._gRamp;
+          const cY = mc >= 0 ? this.ceilAt(mf, mc) : WALL_H;
+          if (_v3.y < gY + MISSILE_RADIUS) {
+            _v3.y = gY + MISSILE_RADIUS; hitSurface = true;
+            if (gR) { const sl = WALL_H / gR.len; hitNormalX = -gR.dx * sl; hitNormalZ = -gR.dz * sl; hitNormalY = 1; hitRamp = gR; }
+            else hitNormalY = 1;
+          } else if (_v3.y > cY - MISSILE_RADIUS) { hitNormalY = -1; _v3.y = cY - MISSILE_RADIUS; hitSurface = true; }
+        }
+        if (hitRamp) {
+          // ride up a gentle ramp: a shallow touch slides along it instead of scraping
+          _v4.set(hitNormalX, hitNormalY, hitNormalZ).normalize();
+          _v5.copy(m.vel).normalize();
+          if (Math.abs(_v5.dot(_v4)) < 0.5) {
+            const vn = m.vel.dot(_v4);
+            if (vn < 0) m.vel.addScaledVector(_v4, -vn);
+            const along = -Math.sin(m.yaw) * hitRamp.dx - Math.cos(m.yaw) * hitRamp.dz;
+            m.pitch = Math.max(m.pitch, Math.atan((WALL_H / hitRamp.len) * along) + 0.03);
+            hitSurface = false; hitNormalX = hitNormalY = hitNormalZ = 0;
+          }
+        }
 
         if (!hitSurface) {
           const hitX = this.isGridSolid(_v3.x + Math.sign(m.vel.x) * MISSILE_RADIUS, m.pos.z, _v3.y);
@@ -6560,7 +6970,7 @@ class NikitaGame {
         // an alerted sentry radios nearby guards, who come to investigate
         for (const o of this.sentries) {
           if (o === sn || !o.active || o.alerted) continue;
-          if (Math.hypot(o.pos.x - sn.pos.x, o.pos.z - sn.pos.z) < 16) {
+          if (o.floor === sn.floor && Math.hypot(o.pos.x - sn.pos.x, o.pos.z - sn.pos.z) < 16) {
             o.invX = m.pos.x; o.invZ = m.pos.z; o.invT = 4.0;
             o.detectMeter = Math.max(o.detectMeter, 0.4);
           }
@@ -6576,8 +6986,9 @@ class NikitaGame {
         s.deathTimer -= dt;
         s.vel.y -= 18 * dt;
         s.pos.addScaledVector(s.vel, dt);
-        if (s.pos.y < 0.25) {
-          s.pos.y = 0.25;
+        const gy = (s.floor || 0) * WALL_H + 0.25;
+        if (s.pos.y < gy) {
+          s.pos.y = gy;
           s.vel.y *= -0.25;
           s.vel.x *= 0.7;
           s.vel.z *= 0.7;
@@ -6593,13 +7004,13 @@ class NikitaGame {
       if (m.active && !this.cfg.godMode) {
         const dx = m.pos.x - s.pos.x;
         const dz = m.pos.z - s.pos.z;
-        const dist = Math.hypot(dx, dz);
+        const dist = Math.hypot(dx, dz, m.pos.y - s.pos.y - 1.5);
         if (dist < SENTRY_VISION + 0.5) {
           const angleToMissile = Math.atan2(-dx, -dz);
           let diff = angleToMissile - s.yaw;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
-          if (Math.abs(diff) < 0.56 && this.hasLineOfSight(s.pos.x, s.pos.z, m.pos.x, m.pos.z)) {
+          if (Math.abs(diff) < 0.56 && this.los3(s.pos.x, s.pos.y + 1.5, s.pos.z, m.pos.x, m.pos.y, m.pos.z)) {
             seesMissile = true;
           }
         }
@@ -6612,9 +7023,9 @@ class NikitaGame {
         if (s.hearT <= 0) {
           s.hearT = 0.2;
           s.heardNow = false;
-          const hd = Math.hypot(m.pos.x - s.pos.x, m.pos.z - s.pos.z);
+          const hd = Math.hypot(m.pos.x - s.pos.x, m.pos.y - s.pos.y - 1.5, m.pos.z - s.pos.z);
           if (hd < noiseR) {
-            const effR = noiseR * Math.pow(HEAR_WALL_DAMP, this.wallThickness(s.pos.x, s.pos.z, m.pos.x, m.pos.z));
+            const effR = noiseR * Math.pow(HEAR_WALL_DAMP, this.wallThickness3(s.pos.x, s.pos.y + 1.5, s.pos.z, m.pos.x, m.pos.y, m.pos.z));
             if (hd < effR) { s.heardNow = true; s.heardLoud = 1 - hd / effR; s.heardClose = hd < effR * 0.6; }
           }
         }
@@ -6649,8 +7060,8 @@ class NikitaGame {
           s.decoyT = 0.25;
           s.decoyHeard = null;
           for (const d of this.decoyObjs) {
-            const dd = Math.hypot(d.pos.x - s.pos.x, d.pos.z - s.pos.z);
-            if (dd < DECOY_RADIUS && dd < DECOY_RADIUS * Math.pow(HEAR_WALL_DAMP, this.wallThickness(s.pos.x, s.pos.z, d.pos.x, d.pos.z))) { s.decoyHeard = d; break; }
+            const dd = Math.hypot(d.pos.x - s.pos.x, d.pos.y - s.pos.y - 1.5, d.pos.z - s.pos.z);
+            if (dd < DECOY_RADIUS && dd < DECOY_RADIUS * Math.pow(HEAR_WALL_DAMP, this.wallThickness3(s.pos.x, s.pos.y + 1.5, s.pos.z, d.pos.x, d.pos.y, d.pos.z))) { s.decoyHeard = d; break; }
           }
         }
         if (s.decoyHeard && s.decoyHeard.t > 0 && !heard && !seesMissile) {
@@ -6669,7 +7080,7 @@ class NikitaGame {
         s.fireCooldown -= dt;
         if (seesMissile && s.fireCooldown <= 0 && m.active) {
           s.fireCooldown = sentryFireDelay;
-          _v7.set(s.pos.x, 1.45, s.pos.z);
+          _v7.set(s.pos.x, s.pos.y + 1.45, s.pos.z);
           this.hostileAim(_v7, m.pos, _v8, true).multiplyScalar(sentryBoltSpeed);
           this.vfx.spawnTracer(_v7, _v8);
           this.vfx.spawnLightFlash(_v7, 0xff4422, 4.5, 0.05);
@@ -6685,7 +7096,7 @@ class NikitaGame {
           const spd = sentryPatrolSpeed * 1.5;
           const nx = s.pos.x + (dx / dist) * spd * dt;
           const nz = s.pos.z + (dz / dist) * spd * dt;
-          if (!this.isGridSolid(nx, nz)) { s.pos.x = nx; s.pos.z = nz; s.walkPhase += dt * 9.0; }
+          if (!this.sentryBlocked(nx, nz, s)) { s.pos.x = nx; s.pos.z = nz; s.walkPhase += dt * 9.0; }
           const targetYaw = Math.atan2(-dx, -dz);
           let dYaw = targetYaw - s.yaw;
           while (dYaw > Math.PI) dYaw -= Math.PI * 2;
@@ -6705,7 +7116,7 @@ class NikitaGame {
           const spd = sentryPatrolSpeed;
           const nx = s.pos.x + (dx / dist) * spd * dt;
           const nz = s.pos.z + (dz / dist) * spd * dt;
-          if (!this.isGridSolid(nx, nz)) {
+          if (!this.sentryBlocked(nx, nz, s)) {
             s.pos.x = nx; s.pos.z = nz;
           } else {
             s.wpIndex = (s.wpIndex + 1) % s.waypoints.length;
@@ -6755,7 +7166,7 @@ class NikitaGame {
       this.sentryGunMesh.setMatrixAt(i, _dummy.matrix);
 
       if (s.active) {
-        _dummy.position.set(s.pos.x, 1.55, s.pos.z);
+        _dummy.position.set(s.pos.x, s.pos.y + 1.55, s.pos.z);
         _dummy.rotation.set(0, s.yaw, 0);
         _dummy.scale.set(1, 1, 1);
         _dummy.updateMatrix();
@@ -6974,7 +7385,7 @@ class NikitaGame {
     for (const t of this.targets) {
       if (!t.active) continue;
       if (this.lockedEnemy && this.lockedEnemy.ref === t) continue;
-      const inLOS = m.active && this.hasLineOfSight(m.pos.x, m.pos.z, t.pos.x, t.pos.z);
+      const inLOS = m.active && this.los3(m.pos.x, m.pos.y, m.pos.z, t.pos.x, t.pos.y, t.pos.z);
       _v1.copy(t.pos).project(this.camera);
       const behind = _v1.z > 1;
       let sx = (_v1.x * 0.5 + 0.5) * w;
@@ -7011,7 +7422,7 @@ class NikitaGame {
       const renderLOSBracket = (ref, label, aimY) => {
         if (!ref.active) return;
         if (this.lockedEnemy && this.lockedEnemy.ref === ref) return;
-        if (!this.hasLineOfSight(m.pos.x, m.pos.z, ref.pos.x, ref.pos.z)) return;
+        if (!this.los3(m.pos.x, m.pos.y, m.pos.z, ref.pos.x, ref.pos.y, ref.pos.z)) return;
         _v2.set(ref.pos.x, ref.pos.y + aimY, ref.pos.z);
         const dist = Math.round(_v2.distanceTo(m.pos));
         if (dist > 95) return;
@@ -7059,7 +7470,7 @@ class NikitaGame {
       for (let i = 0; i < this.pickups.length; i++) {
         const pk = this.pickups[i];
         if (!pk.active || pk.owner.active) continue;
-        if (pk.owner.shaft ? pk.pos.distanceTo(m.pos) > 40 : !this.hasLineOfSight(m.pos.x, m.pos.z, pk.pos.x, pk.pos.z)) continue;
+        if (pk.owner.shaft ? pk.pos.distanceTo(m.pos) > 40 : !this.los3(m.pos.x, m.pos.y, m.pos.z, pk.pos.x, pk.pos.y, pk.pos.z)) continue;
         _v1.copy(pk.pos).project(this.camera);
         if (_v1.z > 1) continue;
         const sx = (_v1.x * 0.5 + 0.5) * w;
@@ -7160,12 +7571,22 @@ class NikitaGame {
     const c = this.radarBase.getContext('2d');
     c.fillStyle = '#020a07';
     c.fillRect(0, 0, size, size);
+    const cf = this._radarFloor = this.radarFloorNow();
+    const order = [];
+    for (let f = 0; f < this.nFloors; f++) if (f !== cf) order.push(f);
+    order.push(cf);
+    for (const f of order) {
+    c.globalAlpha = f === cf ? 1 : 0.3;
+    const grid = this.floors[f], off = f * GRID_SIZE * GRID_SIZE;
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
-        const v = this.grid[z * GRID_SIZE + x];
-        const seen = this.seenCells[z * GRID_SIZE + x] || this.radarDeepCrack(x, z, v);
+        const v = grid[z * GRID_SIZE + x];
+        const seen = this.seenCells[off + z * GRID_SIZE + x] || (f === 0 && this.radarDeepCrack(x, z, v));
         if (!seen) continue;
-        if (v === CELL_WALL || this.secretHidden.has(z * GRID_SIZE + x)) {
+        if (v === CELL_RAMP) {
+          c.fillStyle = 'rgba(120, 255, 200, 0.4)';
+          c.fillRect(x * scale, z * scale, scale, scale);
+        } else if (v === CELL_WALL || (f === 0 && this.secretHidden.has(z * GRID_SIZE + x))) {
           c.fillStyle = '#0f2b20';
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (v === CELL_CRACKED) {
@@ -7180,7 +7601,26 @@ class NikitaGame {
         }
       }
     }
+    }
+    c.globalAlpha = 1;
+    // ramp arrows (uphill) on known ramps
+    for (const r of this.ramps) {
+      if (!this.seenCells[r.f * GRID_SIZE * GRID_SIZE + (r.ez + r.dz) * GRID_SIZE + (r.ex + r.dx)] && !this.seenCells[(r.f + 1) * GRID_SIZE * GRID_SIZE + r.nz * GRID_SIZE + r.nx]) continue;
+      c.globalAlpha = (r.f === cf || r.f + 1 === cf) ? 1 : 0.35;
+      const ax = (r.ex + 0.5 + r.dx) * scale, az = (r.ez + 0.5 + r.dz) * scale;
+      const bx = (r.ex + 0.5 + r.dx * RAMP_LEN) * scale, bz = (r.ez + 0.5 + r.dz * RAMP_LEN) * scale;
+      c.strokeStyle = '#aaffdd'; c.lineWidth = 1.2;
+      c.beginPath(); c.moveTo(ax, az); c.lineTo(bx, bz);
+      c.lineTo(bx - (r.dx * 3 + r.px * 2.5), bz - (r.dz * 3 + r.pz * 2.5));
+      c.moveTo(bx, bz); c.lineTo(bx - (r.dx * 3 - r.px * 2.5), bz - (r.dz * 3 - r.pz * 2.5));
+      c.stroke();
+    }
+    c.globalAlpha = 1;
     this.radarDirty = false;
+  }
+
+  radarFloorNow() {
+    return this.floorOfY(this.missile && this.missile.active ? this.missile.pos.y : this.lidarOrigin().y);
   }
 
   // Deep scan 1+: cracked walls show on the radar within 1.5x scan range even before they are scanned
@@ -7199,8 +7639,11 @@ class NikitaGame {
     const size = this.radarCanvas.width;
     const scale = size / GRID_SIZE;
 
+    if (this.nFloors > 1 && this.radarFloorNow() !== this._radarFloor) this.radarDirty = true;
     if (this.radarDirty || !this.radarBase) this.buildRadarBase();
     ctx.drawImage(this.radarBase, 0, 0);
+    const curF = this._radarFloor || 0;
+    const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : 0.3; };
 
     const toRX = (wx) => (wx / CELL_SIZE + GRID_SIZE * 0.5) * scale;
     const toRZ = (wz) => (wz / CELL_SIZE + GRID_SIZE * 0.5) * scale;
@@ -7255,11 +7698,14 @@ class NikitaGame {
     ctx.fillStyle = '#ff4433';
     for (const b of this.barrels) {
       if (!b.active || !b.thermalVis) continue;
+      fa(b.pos.y);
       ctx.fillRect(toRX(b.pos.x) - 2, toRZ(b.pos.z) - 2, 4, 4);
     }
+    ctx.globalAlpha = 1;
 
     for (const t of this.targets) {
       if (!t.active) continue;
+      fa(t.pos.y);
       const rx = toRX(t.pos.x), rz = toRZ(t.pos.z);
       ctx.strokeStyle = '#ffaa00';
       ctx.lineWidth = 1.8;
@@ -7269,8 +7715,10 @@ class NikitaGame {
       ctx.stroke();
     }
 
+    ctx.globalAlpha = 1;
     for (const s of this.sentries) {
       if (!s.thermalVis && s.active) continue;
+      fa(s.pos.y + 1);
       const rx = toRX(s.pos.x), rz = toRZ(s.pos.z);
       if (!s.active) {
         ctx.strokeStyle = 'rgba(140, 180, 160, 0.45)';
@@ -7297,6 +7745,12 @@ class NikitaGame {
       ctx.fill();
     }
 
+    ctx.globalAlpha = 1;
+    if (this.nFloors > 1) {
+      ctx.font = 'bold 11px monospace';
+      ctx.fillStyle = '#aaffdd';
+      ctx.fillText(`FLOOR ${curF + 1}/${this.nFloors}`, 5, 13);
+    }
     for (const d of this.decoyObjs) {
       ctx.strokeStyle = 'rgba(51, 221, 255, 0.8)';
       ctx.lineWidth = 1.2;

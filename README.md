@@ -27,6 +27,15 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Multi-floor sectors (v2.4)
+
+- **Floors.** From sector 16 (tier 4) the facility has 2 floors, and from sector 31 (tier 7) it has 3. Each floor is a full room-and-corridor level stacked on the one below. You always launch on the ground floor.
+- **Ramps.** Two gentle ramps (about 17°, six cells long) join each pair of floors. Each runs in its own one-cell tube: the mouth is in a room on the lower floor, and a short straight run-out at the top opens into the floor above. Touching a ramp at a shallow angle lets the rocket ride up it with no hull damage; flying into it head-on still counts as an impact.
+- **What is up there.** Primary targets, sentries and fuel barrels are spread across all floors. Lasers, turbines, grates, turrets, ECM zones, bulkheads, shafts and cracked walls stay on the ground floor for now.
+- **Sensing across floors.** Lidar, thermal, lock-on, blasts, sentry sight, hearing and hostile fire are all 3D. Floors and ceilings block line of sight except where a ramp opens the slab. Sound passing through a slab is muffled like half a wall.
+- **Lidar and memory.** Floors, walls, ceilings and ramps are mapped per floor. Ramps are outlined (side seams up the slope, foot, top and the lintel over the mouth), and the map memory keeps all floors. Maps saved by older versions are not reused.
+- **Radar.** Shows every floor at once. The floor you are on is drawn at full strength, the others faded, and enemies on other floors are dimmed. Known ramps show as arrows pointing uphill, and the radar is labelled FLOOR n/N.
+
 ## Balance (v2.3)
 
 - **Rockets.** 40 per sector; the rack holds 100 and up to 20 unspent rockets carry into the next sector. Rockets are earned only from points (5 rockets per 250 points), supply caches (+5) and medals (+1 each); the old per-kill rocket payouts are gone.
