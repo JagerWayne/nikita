@@ -2545,6 +2545,8 @@ class NikitaGame {
     this.thermalMats = new Map();
     this._hit = new THREE.Vector3();
     this._hitCls = 1;
+    this._hitSeg = -1;
+    this.revealedSeg = new Set();
     this.thermalTime = { value: 0 };
     this.initSentryInstancedMeshes();
     this.initBarrelInstancedMesh();
@@ -4357,9 +4359,11 @@ class NikitaGame {
           float b = max(uMem + 0.55 * near, fresh) + sweep;
           vec3 col = vec3(0.12, 1.0, 0.45);
           if (aInfo.x > 1.5 && aInfo.x < 2.5) { col = vec3(1.0, 0.58, 0.1); b = max(b, uCrack); }
+          else if (aInfo.x > 3.5) { col = vec3(0.72, 1.0, 0.84); b = max(b * 1.3, 0.62 + 0.4 * near); }
           else if (aInfo.x > 2.5) col = vec3(0.25, 0.9, 1.0);
           vCol = col * b + vec3(0.55, 1.0, 0.75) * fresh * 0.45;
-          gl_PointSize = clamp(uScale * (26.0 + 18.0 * fresh) / max(0.5, -mv.z), 1.6, 7.0);
+          float edge = aInfo.x > 3.5 ? 1.25 : 1.0;
+          gl_PointSize = clamp(uScale * edge * (26.0 + 18.0 * fresh) / max(0.5, -mv.z), 1.6 * edge, 7.5);
         }`,
       fragmentShader: `
         varying vec3 vCol;
@@ -4428,6 +4432,7 @@ class NikitaGame {
   }
 
   clearDots() {
+    this.revealedSeg.clear();
     this.vox.fill(0);
     this.slotVox.fill(-1);
     this.seenCells.fill(0);
@@ -4445,6 +4450,10 @@ class NikitaGame {
     let changed = false;
     for (let s = 0; s < LIDAR_CAP; s++) {
       const vi = this.slotVox[s];
+      if (vi <= -2) {
+        if (-vi - 2 === gz * GRID_SIZE + gx) { this.slotVox[s] = -1; this.lidarPos[s * 3 + 1] = -1000; changed = true; }
+        continue;
+      }
       if (vi < 0) continue;
       const ix = vi % VOX_N, iz = Math.floor(vi / VOX_N) % VOX_N;
       const x = ix * VOX + VOX * 0.5 - VOX_HALF, z = iz * VOX + VOX * 0.5 - VOX_HALF;
@@ -4455,6 +4464,8 @@ class NikitaGame {
         changed = true;
       }
     }
+    const cell = gz * GRID_SIZE + gx;
+    for (const sg of [...this.revealedSeg]) if ((sg >> 4) === cell) this.revealedSeg.delete(sg);
     if (changed) {
       this.lidarPosAttr.clearUpdateRanges();
       this.lidarPosAttr.addUpdateRange(0, LIDAR_CAP * 3);
@@ -4475,7 +4486,7 @@ class NikitaGame {
     let tMaxZ = Math.abs(dz) > 1e-6 ? (bz - oz) / dz : Infinity;
     const tDX = Math.abs(dx) > 1e-6 ? CELL_SIZE / Math.abs(dx) : Infinity;
     const tDZ = Math.abs(dz) > 1e-6 ? CELL_SIZE / Math.abs(dz) : Infinity;
-    let tEnter = 0;
+    let tEnter = 0, faceX = true;
     for (let guard = 0; guard < 64; guard++) {
       if (gx < 0 || gz < 0 || gx >= G || gz >= G) return null;
       const v = this.grid[gz * G + gx];
@@ -4483,7 +4494,8 @@ class NikitaGame {
       if (tEnter > 0 && (v === CELL_WALL || v === CELL_CRACKED)) {
         if (tEnter > range) return null;
         this._hit.set(ox + dx * tEnter, oy + dy * tEnter, oz + dz * tEnter);
-        this._hitCls = v === CELL_CRACKED ? 2 : 1;
+        this._hitSeg = this.isEdgeWall(this._hit, gx, gz, faceX, faceX ? stepX : stepZ);
+        this._hitCls = v === CELL_CRACKED ? 2 : (this._hitSeg >= 0 ? 4 : 1);
         return this._hit;
       }
       if (isShaft(v)) {
@@ -4492,6 +4504,7 @@ class NikitaGame {
         if (tEnter > 0 && (yE < lo || yE > hi)) {
           if (tEnter > range) return null;
           this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
+          this._hitSeg = -1;
           this._hitCls = 3;
           return this._hit;
         }
@@ -4501,6 +4514,7 @@ class NikitaGame {
         if (tb >= tEnter && tb <= tExit) {
           if (tb > range) return null;
           this._hit.set(ox + dx * tb, oy + dy * tb, oz + dz * tb);
+          this._hitSeg = -1;
           this._hitCls = 3;
           return this._hit;
         }
@@ -4508,14 +4522,88 @@ class NikitaGame {
       if (tPlane <= tExit) {
         if (tPlane >= range) return null;
         this._hit.set(ox + dx * tPlane, oy + dy * tPlane, oz + dz * tPlane);
-        this._hitCls = 1;
+        this._hitSeg = this.isEdgeFloor(this._hit, gx, gz);
+        this._hitCls = this._hitSeg >= 0 ? 4 : 1;
         return this._hit;
       }
       tEnter = tExit;
       if (tEnter > range) return null;
-      if (tMaxX < tMaxZ) { gx += stepX; tMaxX += tDX; } else { gz += stepZ; tMaxZ += tDZ; }
+      if (tMaxX < tMaxZ) { gx += stepX; tMaxX += tDX; faceX = true; } else { gz += stepZ; tMaxZ += tDZ; faceX = false; }
     }
     return null;
+  }
+
+  // Edge detection for crisp outlines: wall/floor and wall/ceiling seams, and wall corners (inner and outer).
+  cellSolid(gx, gz) {
+    if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return true;
+    return isWallLike(this.grid[gz * GRID_SIZE + gx]);
+  }
+
+  isEdgeWall(h, gx, gz, faceX, step) {
+    const E = 0.38;
+    const face = faceX ? (step > 0 ? 1 : 0) : (step > 0 ? 3 : 2);
+    const id = (k) => ((gz * GRID_SIZE + gx) * 4 + face) * 4 + k;
+    if (h.y < E) return id(0);
+    if (h.y > WALL_H - E) return id(1);
+    const along = faceX ? h.z - (gz - GRID_SIZE * 0.5) * CELL_SIZE : h.x - (gx - GRID_SIZE * 0.5) * CELL_SIZE;
+    for (const side of [-1, 1]) {
+      if (side < 0 ? along > E : along < CELL_SIZE - E) continue;
+      if (this.isCornerEdge(gx, gz, face, side)) return id(side < 0 ? 2 : 3);
+    }
+    return -1;
+  }
+
+  // Is the vertical edge at one end of a wall face a real corner (the wall ends, or another wall meets it)?
+  isCornerEdge(gx, gz, face, side) {
+    const faceX = face < 2;
+    const step = (face === 1 || face === 3) ? 1 : -1;          // direction the ray travelled into the wall
+    const nx = faceX ? gx : gx + side, nz = faceX ? gz + side : gz;
+    const fx = faceX ? gx - step : nx, fz = faceX ? nz : gz - step;
+    return !this.cellSolid(nx, nz) || this.cellSolid(fx, fz);
+  }
+
+  isEdgeFloor(h, gx, gz) {
+    const E = 0.38;
+    const k = h.y < WALL_H * 0.5 ? 0 : 1;
+    const lx = h.x - (gx - GRID_SIZE * 0.5) * CELL_SIZE, lz = h.z - (gz - GRID_SIZE * 0.5) * CELL_SIZE;
+    const id = (cx, cz, face) => ((cz * GRID_SIZE + cx) * 4 + face) * 4 + k;
+    if (lx < E && this.cellSolid(gx - 1, gz) && gx > 0) return id(gx - 1, gz, 0);
+    if (lx > CELL_SIZE - E && this.cellSolid(gx + 1, gz) && gx < GRID_SIZE - 1) return id(gx + 1, gz, 1);
+    if (lz < E && this.cellSolid(gx, gz - 1) && gz > 0) return id(gx, gz - 1, 2);
+    if (lz > CELL_SIZE - E && this.cellSolid(gx, gz + 1) && gz < GRID_SIZE - 1) return id(gx, gz + 1, 3);
+    return -1;
+  }
+
+  // Draw a whole edge (4 units) as a tight line of bright dots, once per edge.
+  revealSeg(seg, birth) {
+    if (this.revealedSeg.has(seg)) return;
+    this.revealedSeg.add(seg);
+    const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
+    const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
+    const x0 = (gx - GRID_SIZE * 0.5) * CELL_SIZE, z0 = (gz - GRID_SIZE * 0.5) * CELL_SIZE, off = 0.05;
+    // point on the face: plane coordinate + along coordinate
+    const px = face === 0 ? x0 + CELL_SIZE + off : (face === 1 ? x0 - off : 0);
+    const pz = face === 2 ? z0 + CELL_SIZE + off : (face === 3 ? z0 - off : 0);
+    const put = (along, y) => {
+      if (face < 2) this.addEdgeDot(px, y, z0 + along, cell, birth);
+      else this.addEdgeDot(x0 + along, y, pz, cell, birth);
+    };
+    const N = 12;
+    if (k < 2) { const y = k === 0 ? 0.05 : WALL_H - 0.05; for (let i = 0; i <= N; i++) put((i / N) * CELL_SIZE, y); }
+    else { const along = k === 2 ? 0.02 : CELL_SIZE - 0.02; const M = Math.round(WALL_H / (CELL_SIZE / N)); for (let i = 0; i <= M; i++) put(along, (i / M) * WALL_H); }
+  }
+
+  addEdgeDot(x, y, z, cell, birth) {
+    const slot = this.lidarHead;
+    const old = this.slotVox[slot];
+    if (old >= 0) this.vox[old] = 0;
+    this.slotVox[slot] = -2 - cell;                      // negative: an edge dot belonging to this wall cell
+    this.lidarPos[slot * 3] = x; this.lidarPos[slot * 3 + 1] = y; this.lidarPos[slot * 3 + 2] = z;
+    this.lidarInfo[slot * 2] = 4; this.lidarInfo[slot * 2 + 1] = birth;
+    if (this.lidarDirtyFrom < 0) { this.lidarDirtyFrom = slot; this.lidarDirtyN = 0; }
+    this.lidarDirtyN++;
+    this.lidarHead = (slot + 1) % LIDAR_CAP;
+    if (this.lidarCount < LIDAR_CAP) this.lidarCount++;
   }
 
   lidarOrigin() {
@@ -4563,7 +4651,7 @@ class NikitaGame {
         }
         const cp = Math.cos(pit);
         const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
-        if (h) this.addDot(h.x, h.y, h.z, this._hitCls, now);
+        if (h) { this.addDot(h.x, h.y, h.z, this._hitCls, now); if (this._hitCls === 4) this.revealSeg(this._hitSeg, now); }
       }
       if (P.deep >= 2) this.deepScanReveal(o, P);
     }
@@ -4675,7 +4763,7 @@ class NikitaGame {
     if (!this.lidarKey || this.lidarCount === 0) return;
     const idx = [], cls = [];
     for (let s = 0; s < this.lidarCount; s++) { const vi = this.slotVox[s]; if (vi >= 0) { idx.push(vi); cls.push(this.vox[vi]); } }
-    const rec = { idx: Uint32Array.from(idx), cls: Uint8Array.from(cls), t: Date.now() };
+    const rec = { idx: Uint32Array.from(idx), cls: Uint8Array.from(cls), seg: Uint32Array.from(this.revealedSeg), t: Date.now() };
     this.lidarMemory.delete(this.lidarKey);
     this.lidarMemory.set(this.lidarKey, rec);
     const keep = this.lidarParams(true).keep;
@@ -4691,6 +4779,7 @@ class NikitaGame {
       const jx = ((j & 255) / 255 - 0.5) * VOX * 0.7, jz = (((j >> 8) & 255) / 255 - 0.5) * VOX * 0.7, jy = (((j >> 16) & 255) / 255 - 0.5) * VOX * 0.7;
       this.addDot(ix * VOX + VOX * 0.5 - VOX_HALF + jx, Math.max(0.02, Math.min(WALL_H - 0.02, iy * VOX + VOX * 0.5 + jy)), iz * VOX + VOX * 0.5 - VOX_HALF + jz, rec.cls[i] || 1, -1000);
     }
+    if (rec.seg) for (const sg of rec.seg) this.revealSeg(sg, -1000);
     this.flushDots();
   }
 
@@ -4703,7 +4792,7 @@ class NikitaGame {
     this.lidarKey = key;
     const mem = this.lidarMemory.get(key);
     if (mem) { this.lidarLoad(mem); return; }
-    this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls) }); }).catch(() => {});
+    this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls), seg: rec.seg ? new Uint32Array(rec.seg) : null }); }).catch(() => {});
   }
 
   idbOpen() {
@@ -4724,7 +4813,7 @@ class NikitaGame {
     this.idbOpen().then((db) => {
       const tx = db.transaction('maps', 'readwrite');
       const st = tx.objectStore('maps');
-      st.put({ key, t: rec.t, idx: rec.idx.buffer.slice(0), cls: rec.cls.buffer.slice(0) });
+      st.put({ key, t: rec.t, idx: rec.idx.buffer.slice(0), cls: rec.cls.buffer.slice(0), seg: rec.seg.buffer.slice(0) });
       const all = st.getAll();
       all.onsuccess = () => {
         const list = (all.result || []).sort((a, b) => b.t - a.t);
