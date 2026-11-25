@@ -4632,7 +4632,25 @@ class NikitaGame {
     const step = (face === 1 || face === 3) ? 1 : -1;          // direction the ray travelled into the wall
     const nx = faceX ? gx : gx + side, nz = faceX ? gz + side : gz;
     const fx = faceX ? gx - step : nx, fz = faceX ? nz : gz - step;
-    return !this.cellSolid(nx, nz) || this.cellSolid(fx, fz);
+    // shaft cells continue a wall face (they are slabs), but a shaft in front is a hole, not an inner corner
+    return !this.cellSolid(nx, nz) || this.cellFullWall(fx, fz);
+  }
+
+  cellFullWall(gx, gz) {
+    if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return true;
+    const v = this.grid[gz * GRID_SIZE + gx];
+    return v === CELL_WALL || v === CELL_CRACKED;
+  }
+
+  // An edge is real only on a full wall whose face looks into open floor (never inside or on a shaft).
+  validSeg(seg) {
+    const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
+    const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
+    if (!this.cellFullWall(gx, gz) || gx <= 0 || gz <= 0 || gx >= GRID_SIZE - 1 || gz >= GRID_SIZE - 1) return false;
+    const fx = face === 0 ? gx + 1 : (face === 1 ? gx - 1 : gx), fz = face === 2 ? gz + 1 : (face === 3 ? gz - 1 : gz);
+    if (isWallLike(this.grid[fz * GRID_SIZE + fx])) return false;
+    if (k >= 2) return this.isCornerEdge(gx, gz, face, k === 2 ? -1 : 1);
+    return true;
   }
 
   isEdgeFloor(h, gx, gz) {
@@ -4649,7 +4667,7 @@ class NikitaGame {
 
   // Draw a whole edge (4 units) as a tight line of bright dots, once per edge.
   revealSeg(seg, birth) {
-    if (this.revealedSeg.has(seg)) return;
+    if (seg < 0 || this.revealedSeg.has(seg) || !this.validSeg(seg)) return;
     this.revealedSeg.add(seg);
     if (this.segCount >= this.SEG_CAP) return;
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
