@@ -91,7 +91,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
-**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about two thirds of a second, then the engine ignites.
+**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about a third of a second, then the engine ignites.
 
 **Flip and burn.** The FLIP & BURN button (key `X`) fires two small attitude jets that backflip the rocket 180 degrees with the engine cut, then the engine burns hard to reverse course. Once per rocket. After the flip the controls stay exactly as before (stick left still turns left, stick up still looks up).
 
