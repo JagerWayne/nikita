@@ -37,6 +37,19 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 - **Radar.** The minimap shows only what you have scanned, plus target markers; enemies appear on it only while you can see them. The badge at the top right shows how much of the sector you have scanned.
 - **Performance.** Up to 100,000 dots per sector. If frames get slow the scanner lowers its ray count automatically (AUTO-THROTTLED); low-spec mode halves it. The Blackout modifier now cuts lidar range by 40%, and ECM fields scramble the scanner.
 
+### Thermal upgrades (THERMAL tab)
+
+| Upgrade | Level 0 | Max | Cost per level |
+| --- | --- | --- | --- |
+| Thermal range | 18 units | 60 units (level 10) | 100 + 70 x level |
+| Penetration (3 levels) | line of sight only | sees through 1 / 2 / 3 walls | 400 + 300 x level |
+| Tracking | 15 degree seeker, 68-unit lock range | 25 degrees, 108 units (level 10) | 100 + 70 x level |
+| Heat mark | off | contacts stay marked 5 s after leaving sight (level 10) | 100 + 70 x level |
+
+**Delete saved data.** Title screen, OPTIONS: DELETE SAVED DATA (tap twice) erases credits, upgrades, preferences and every saved lidar map on this device.
+
+**Scanner look.** A lidar wavefront pulses outward from the rocket every 1.6 s, lighting dots and edges as it passes, and a sweep line circles the rocket. Thermal objects carry camera scanlines and a scan band sweeping down the screen.
+
 ### Lidar upgrades (LIDAR tab of the upgrade screen)
 
 | Upgrade | Level 0 | Level 10 | Cost per level |
@@ -44,7 +57,6 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 | Range | 32 units | 80 units | 100 + 70 x level |
 | Resolution | 600 rays per frame | 1,800 | 100 + 70 x level |
 | Focus beam | 30% of rays in a 25 degree cone | 70% in a 45 degree cone | 100 + 70 x level |
-| Thermal | 18 units | 60 units, sees through one wall | 100 + 70 x level |
 | Memory | 2 s glow, dim old dots, 3 sectors kept | 6 s glow, brighter old dots, 10 sectors | 100 + 70 x level |
 | Deep scan (3 levels) | off | 1: cracked walls visible from afar (and on the radar); 2: secret chambers outlined and their power-ups shown; 3: shaft interiors and power-ups shown | 400 + 300 x level |
 

@@ -745,7 +745,7 @@
   .upg-bar i { display: block; height: 100%; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); }
   .upg-row .tac-btn { min-width: 104px; min-height: 40px; padding: 6px 10px; font-size: 12px; }
   .tac-btn.dim, .tac-btn:disabled { opacity: 0.4; cursor: default; }
-  .upg-tab { min-width: 130px; opacity: 0.55; }
+  .upg-tab { min-width: 108px; opacity: 0.55; }
   .upg-tab.on { opacity: 1; background: rgba(0, 255, 136, 0.3); }
   .title-card { max-width: 460px; text-align: center; }
   .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
@@ -1326,6 +1326,9 @@ window.addEventListener('unhandledrejection', function (e) {
           <input type="number" id="brief-level" value="1" min="1" max="100" style="width:68px" />
         </label>
       </div>
+      <div class="btn-row center" style="padding:10px;">
+        <button type="button" class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVED DATA</button>
+      </div>
     </details>
 
     <div class="btn-row center" style="margin-top:12px;">
@@ -1341,12 +1344,13 @@ window.addEventListener('unhandledrejection', function (e) {
 <div id="upgrade-modal" class="modal-backdrop" style="display:none; z-index:40;">
   <div class="modal-card" style="max-width:640px;">
     <div class="modal-title">
-      <span>ROCKET UPGRADES</span>
+      <span>UPGRADES</span>
       <span class="modal-subtitle">CREDITS: <strong id="upg-credits" style="color:#ffaa00">0</strong></span>
     </div>
     <div class="btn-row center" style="margin-bottom:10px;">
       <button class="tac-btn upg-tab on" id="upg-tab-rocket">ROCKET</button>
       <button class="tac-btn upg-tab" id="upg-tab-lidar">LIDAR</button>
+      <button class="tac-btn upg-tab" id="upg-tab-thermal">THERMAL</button>
     </div>
     <div id="upg-list"></div>
     <div class="btn-row" style="margin-top:12px;">
@@ -2545,6 +2549,7 @@ class NikitaGame {
     this._hitSeg = -1;
     this.revealedSeg = new Set();
     this.thermalTime = { value: 0 };
+    this.thermalRes = { value: 1 };
     this.initSentryInstancedMeshes();
     this.initBarrelInstancedMesh();
     this.sentryTorsoMesh.material = this.thermalMat(0.8);
@@ -2577,7 +2582,7 @@ class NikitaGame {
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
-    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0 };
+    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0, tpen: 0, ttrack: 0, tmark: 0 };
     this.upgTab = 'rocket';
     this.initLidar();
     this.credits = 0;
@@ -4239,7 +4244,11 @@ class NikitaGame {
       focus: 0.3 + 0.04 * u.lfocus,
       coneDeg: 25 + 2 * u.lfocus,
       thermal: 18 + 4.2 * u.ltherm,
-      throughWall: u.ltherm >= 10,
+      pen: u.tpen,                          // walls thermal sees through (0-3)
+      throughWall: u.tpen > 0,
+      mark: 0.5 * u.tmark,                  // seconds a contact stays marked after it leaves sight
+      seekerDeg: 15 + u.ttrack,
+      lockRange: 68 + 4 * u.ttrack,
       glow: 2 + 0.4 * u.lmem,
       mem: 0.25 + 0.03 * u.lmem,
       keep: 3 + Math.round(0.7 * u.lmem),
@@ -4259,7 +4268,7 @@ class NikitaGame {
     if (m) return m;
     m = new THREE.ShaderMaterial({
       wireframe: wire,
-      uniforms: { uHeat: { value: h }, uTime: this.thermalTime },
+      uniforms: { uHeat: { value: h }, uTime: this.thermalTime, uResY: this.thermalRes },
       vertexShader: `
         varying float vRim;
         #include <common>
@@ -4273,7 +4282,7 @@ class NikitaGame {
           vRim = 1.0 - abs(dot(n, v));
         }`,
       fragmentShader: `
-        uniform float uHeat; uniform float uTime; varying float vRim;
+        uniform float uHeat; uniform float uTime; uniform float uResY; varying float vRim;
         vec3 pal(float t) {
           t = clamp(t, 0.0, 1.0);
           vec3 c = mix(vec3(0.12, 0.0, 0.06), vec3(0.8, 0.06, 0.02), smoothstep(0.0, 0.35, t));
@@ -4283,7 +4292,10 @@ class NikitaGame {
         }
         void main() {
           float t = uHeat * (1.0 - 0.6 * vRim) + 0.035 * sin(uTime * 7.0);
-          gl_FragColor = vec4(pal(t), 1.0);
+          float scan = 0.8 + 0.2 * step(0.5, fract(gl_FragCoord.y * 0.3333));           // thermal-camera scanlines
+          float sy = gl_FragCoord.y / max(uResY, 1.0);
+          float band = 1.0 - smoothstep(0.0, 0.04, abs(sy - fract(-uTime * 0.45)));     // scan band sweeping down the screen
+          gl_FragColor = vec4(pal(t + band * 0.3) * scan + vec3(1.0, 0.85, 0.55) * band * 0.25, 1.0);
         }`
     });
     this.thermalMats.set(key, m);
@@ -4333,13 +4345,13 @@ class NikitaGame {
     geo.setDrawRange(0, 0);
     this.lidarUniforms = {
       uTime: { value: 0 }, uOrigin: { value: new THREE.Vector3() }, uGlow: { value: 2 }, uMem: { value: 0.25 },
-      uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uCrack: { value: 0 }
+      uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uCrack: { value: 0 }, uPulse: { value: 0 }
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.lidarUniforms,
       vertexShader: `
         attribute vec2 aInfo;
-        uniform float uTime, uGlow, uMem, uRange, uSweep, uScale, uCrack;
+        uniform float uTime, uGlow, uMem, uRange, uSweep, uScale, uCrack, uPulse;
         uniform vec3 uOrigin;
         varying vec3 vCol;
         void main() {
@@ -4353,14 +4365,15 @@ class NikitaGame {
           float ang = atan(d.z, d.x);
           float sw = abs(mod(ang - uSweep + 3.14159, 6.28318) - 3.14159);
           float sweep = (1.0 - smoothstep(0.0, 0.22, sw)) * near * 0.6;
-          float b = max(uMem + 0.55 * near, fresh) + sweep;
+          float wave = exp(-abs(dist - uPulse) * 1.1) * (1.0 - smoothstep(uRange, uRange * 1.3, uPulse));
+          float b = max(uMem + 0.55 * near, fresh) + sweep + wave * 0.9;
           vec3 col = vec3(0.12, 1.0, 0.45);
           if (aInfo.x > 1.5 && aInfo.x < 2.5) { col = vec3(1.0, 0.58, 0.1); b = max(b, uCrack); }
           else if (aInfo.x > 3.5) { col = vec3(0.72, 1.0, 0.84); b = max(b * 1.3, 0.62 + 0.4 * near); }
           else if (aInfo.x > 2.5) col = vec3(0.25, 0.9, 1.0);
           vCol = col * b + vec3(0.55, 1.0, 0.75) * fresh * 0.45;
           float edge = aInfo.x > 3.5 ? 1.25 : 1.0;
-          gl_PointSize = clamp(uScale * edge * (26.0 + 18.0 * fresh) / max(0.5, -mv.z), 1.6 * edge, 7.5);
+          gl_PointSize = clamp(uScale * edge * (26.0 + 18.0 * fresh) * (1.0 + 0.7 * wave) / max(0.5, -mv.z), 1.6 * edge, 8.5);
         }`,
       fragmentShader: `
         varying vec3 vCol;
@@ -4390,14 +4403,14 @@ class NikitaGame {
     lg.setAttribute('aBirth', this.segTAttr);
     lg.instanceCount = 0;
     this.segGeo = lg;
-    this.segUniforms = { uTime: this.lidarUniforms.uTime, uOrigin: this.lidarUniforms.uOrigin, uRange: this.lidarUniforms.uRange, uGlow: this.lidarUniforms.uGlow,
+    this.segUniforms = { uTime: this.lidarUniforms.uTime, uOrigin: this.lidarUniforms.uOrigin, uRange: this.lidarUniforms.uRange, uGlow: this.lidarUniforms.uGlow, uPulse: this.lidarUniforms.uPulse,
                          uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 } };
     const lmat = new THREE.ShaderMaterial({
       uniforms: this.segUniforms,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: `
         attribute vec3 aA; attribute vec3 aB; attribute float aBirth;
-        uniform float uTime, uGlow, uRange, uWidth; uniform vec2 uRes; uniform vec3 uOrigin;
+        uniform float uTime, uGlow, uRange, uWidth, uPulse; uniform vec2 uRes; uniform vec3 uOrigin;
         varying float vB; varying float vEdge;
         void main() {
           vec4 va = modelViewMatrix * vec4(aA, 1.0);
@@ -4418,7 +4431,8 @@ class NikitaGame {
           float mid = length(mix(aA, aB, position.x) - uOrigin);
           float near = 1.0 - smoothstep(uRange * 0.4, uRange * 1.8, mid);
           float breath = 0.5 + 0.5 * sin(uTime * 2.3);
-          vB = (0.3 + 0.7 * near) * (0.55 + 0.45 * breath) + fresh * 0.9;
+          float wave = exp(-abs(mid - uPulse) * 0.9) * (1.0 - smoothstep(uRange, uRange * 1.3, uPulse));
+          vB = (0.3 + 0.7 * near) * (0.55 + 0.45 * breath) + fresh * 0.9 + wave * 1.1;
           vEdge = position.y;
         }`,
       fragmentShader: `
@@ -4733,6 +4747,8 @@ class NikitaGame {
     U.uScale.value = Math.min(window.devicePixelRatio || 1, 2);
     this.lidarSweep = (this.lidarSweep + dt * 4.2) % (Math.PI * 2);
     U.uSweep.value = this.lidarSweep;
+    U.uPulse.value = ((this.lidarTime % 1.6) / 1.6) * P.range * 1.3;      // scanner wavefront expanding from the rocket
+    this.thermalRes.value = this.segUniforms.uRes.value.y || 1;
 
     const scanning = this.state === 'PLAYING' || this.state === 'READY' || this.state === 'BRIEFING';
     if (scanning) {
@@ -4839,17 +4855,22 @@ class NikitaGame {
       const d = Math.hypot(x - o.x, z - o.z);
       if (d > R + extra) return false;
       if (this.los3(o.x, o.y, o.z, x, y, z)) return true;
-      return P.throughWall && this.wallThickness(o.x, o.z, x, z) <= 1.05;
+      return P.pen > 0 && this.wallThickness(o.x, o.z, x, z) <= P.pen * 1.05;
     };
-    for (const t of this.targets) this.setThermalVis(t.mesh, t.active && see(t.pos.x, t.pos.y, t.pos.z, 2));
-    for (const tu of this.turrets) { const v = tu.active && see(tu.pos.x, tu.pos.y - 0.6, tu.pos.z); this.setThermalVis(tu.mesh, v); this.setThermalVis(tu.stem, v); }
+    // heat mark: a contact stays visible for a moment after it leaves sight
+    const mark = (obj, v) => {
+      if (v) { obj._seenT = this.lidarTime; return true; }
+      return P.mark > 0 && this.lidarTime - (obj._seenT === undefined ? -99 : obj._seenT) < P.mark;
+    };
+    for (const t of this.targets) this.setThermalVis(t.mesh, t.active && mark(t, see(t.pos.x, t.pos.y, t.pos.z, 2)));
+    for (const tu of this.turrets) { const v = tu.active && mark(tu, see(tu.pos.x, tu.pos.y - 0.6, tu.pos.z)); this.setThermalVis(tu.mesh, v); this.setThermalVis(tu.stem, v); }
     for (const bh of this.bulkheads) this.setThermalVis(bh.mesh, see(bh.x, 3.6, bh.z, 2));
     for (const tb of this.turbines) this.setThermalVis(tb.mesh, see(tb.pos.x, tb.pos.y, tb.pos.z, 3));
     for (const g of this.grates) this.setThermalVis(g.mesh, g.active && see(g.pos.x, g.pos.y, g.pos.z, 2));
     for (const ez of this.ecmZones) this.setThermalVis(ez.mesh, see(ez.pos.x, ez.pos.y, ez.pos.z, ez.radius));
     for (const l of this.lasers) {
       const lx = Math.max(l.xMin, Math.min(l.xMax, o.x));
-      const v = see(lx, 3.5, l.z, 1) || see(l.relayPos.x, l.relayPos.y, l.relayPos.z);
+      const v = mark(l, see(lx, 3.5, l.z, 1) || see(l.relayPos.x, l.relayPos.y, l.relayPos.z));
       l.thermalVis = v;
       for (const bm of l.beams) { this.setThermalVis(bm.coreMesh, v); this.setThermalVis(bm.glowMesh, v); }
       for (const e of l.emitters) this.setThermalVis(e, v);
@@ -4863,7 +4884,7 @@ class NikitaGame {
     }
     let newContact = false;
     for (const s of this.sentries) {
-      const v = (s.active || s.dying) && see(s.pos.x, 1.4, s.pos.z);
+      const v = (s.active || s.dying) && mark(s, see(s.pos.x, 1.4, s.pos.z));
       if (v && !s.thermalVis && s.active) newContact = true;
       s.thermalVis = v;
     }
@@ -4977,12 +4998,12 @@ class NikitaGame {
   upgradeCost(key) {
     const l = this.upg[key];
     if (key === 'speed') return 150 + 50 * l;
-    if (key === 'ldeep') return 400 + 300 * l;
-    if (key[0] === 'l') return 100 + 70 * l;
+    if (key === 'ldeep' || key === 'tpen') return 400 + 300 * l;
+    if (key[0] === 'l' || key[0] === 't') return 100 + 70 * l;
     return 120 + 90 * l;
   }
 
-  upgradeMax(key) { return key === 'speed' ? 20 : (key === 'ldeep' ? 3 : UPG_MAX_LEVEL); }
+  upgradeMax(key) { return key === 'speed' ? 20 : ((key === 'ldeep' || key === 'tpen') ? 3 : UPG_MAX_LEVEL); }
 
   buyUpgrade(key) {
     const max = this.upgradeMax(key);
@@ -5005,9 +5026,14 @@ class NikitaGame {
       { key: 'lrange', name: 'LIDAR RANGE', desc: () => `${P.range.toFixed(1)} UNITS` },
       { key: 'lres', name: 'RESOLUTION', desc: () => `${P.rays} RAYS PER FRAME` },
       { key: 'lfocus', name: 'FOCUS BEAM', desc: () => `${Math.round(P.focus * 100)}% OF RAYS IN A ±${Math.round(P.coneDeg)}° FORWARD CONE` },
-      { key: 'ltherm', name: 'THERMAL', desc: () => `ENEMIES + LASERS SHOWN TO ${P.thermal.toFixed(1)} UNITS` + (P.throughWall ? '  ·  SEES THROUGH ONE WALL' : (this.upg.ltherm === 9 ? '  ·  NEXT: SEE THROUGH ONE WALL' : '')) },
       { key: 'lmem', name: 'MEMORY', desc: () => `GLOW ${P.glow.toFixed(1)}s  ·  OLD DOTS ${Math.round(P.mem * 100)}%  ·  ${P.keep} SECTORS KEPT` },
       { key: 'ldeep', name: 'DEEP SCAN', desc: () => ['OFF  ·  NEXT: CRACKED WALLS VISIBLE FROM AFAR', 'CRACKED WALLS VISIBLE FROM AFAR  ·  NEXT: SECRET CHAMBERS OUTLINED', 'SECRET CHAMBERS OUTLINED  ·  NEXT: SHAFT INTERIORS + POWER-UPS', 'CRACKED WALLS, SECRET CHAMBERS AND SHAFTS REVEALED'][this.upg.ldeep] }
+    ];
+    const thermalDefs = [
+      { key: 'ltherm', name: 'THERMAL RANGE', desc: () => `ENEMIES + LASERS DETECTED TO ${P.thermal.toFixed(1)} UNITS` },
+      { key: 'tpen', name: 'PENETRATION', desc: () => ['LINE OF SIGHT ONLY  ·  NEXT: SEE THROUGH 1 WALL', 'SEES THROUGH 1 WALL  ·  NEXT: 2 WALLS', 'SEES THROUGH 2 WALLS  ·  NEXT: 3 WALLS', 'SEES THROUGH 3 WALLS'][this.upg.tpen] },
+      { key: 'ttrack', name: 'TRACKING', desc: () => `SEEKER CONE ${P.seekerDeg}°  ·  LOCK RANGE ${P.lockRange} UNITS` },
+      { key: 'tmark', name: 'HEAT MARK', desc: () => P.mark > 0 ? `CONTACTS STAY MARKED ${P.mark.toFixed(1)}s AFTER LEAVING SIGHT` : 'OFF  ·  NEXT: CONTACTS STAY MARKED 0.5s AFTER LEAVING SIGHT' }
     ];
     const rocketDefs = [
       { key: 'speed', name: 'MAX SPEED', desc: () => `${this.maxSpeed().toFixed(1)} m/s  ·  x${this.fullSpeedMult().toFixed(2)} POINTS AT FULL SPEED` + (this.upg.speed < 20 ? `   (next ${(this.maxSpeed() + SPEED_STEP).toFixed(1)} m/s, x${((this.maxSpeed() + SPEED_STEP) / 10).toFixed(2)})` : '') },
@@ -5016,9 +5042,8 @@ class NikitaGame {
       { key: 'hull', name: 'HULL', desc: () => `DAMAGE TAKEN -${pct(1 - this.hullDmgMult())}` },
       { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` }
     ];
-    const defs = this.upgTab === 'lidar' ? lidarDefs : rocketDefs;
-    document.getElementById('upg-tab-rocket').classList.toggle('on', this.upgTab !== 'lidar');
-    document.getElementById('upg-tab-lidar').classList.toggle('on', this.upgTab === 'lidar');
+    const defs = this.upgTab === 'lidar' ? lidarDefs : (this.upgTab === 'thermal' ? thermalDefs : rocketDefs);
+    for (const t of ['rocket', 'lidar', 'thermal']) document.getElementById(`upg-tab-${t}`).classList.toggle('on', this.upgTab === t);
     const box = document.getElementById('upg-list');
     box.innerHTML = '';
     for (const d of defs) {
@@ -5832,11 +5857,12 @@ class NikitaGame {
   _considerTarget(type, ref, tx, ty, tz, aimY, m) {
     _v2.set(tx - m.pos.x, ty - m.pos.y, tz - m.pos.z);
     const dist = _v2.length();
-    if (dist < 0.6 || dist > MAX_LOCK_RANGE) return;
+    const TP = this.lidarParams(true);
+    if (dist < 0.6 || dist > TP.lockRange) return;
     _v2.multiplyScalar(1 / dist);
     const dot = _v1.dot(_v2);
     // Strictly enforce 15-degree half-angle cone from rocket nose
-    if (dot < SEEKER_CONE_COS) return;
+    if (dot < Math.cos(TP.seekerDeg * Math.PI / 180)) return;
     if (!this.hasLineOfSight(m.pos.x, m.pos.z, tx, tz)) return;
     const score = dist * 0.4 + (1.0 - dot) * 260.0;
     if (score < this._bestScore) {
@@ -5862,7 +5888,7 @@ class NikitaGame {
       this.audio.playLockTone();
       this.pushFeed(`LOCK ENGAGED: ${candidate.type}`, 'cyan');
     } else {
-      this.pushFeed('NO TARGET IN 15° SEEKER CONE', 'amber');
+      this.pushFeed(`NO TARGET IN ${this.lidarParams(true).seekerDeg}° SEEKER CONE`, 'amber');
     }
   }
 
@@ -5960,7 +5986,7 @@ class NikitaGame {
         const ePos = this.lockedEnemy.ref.pos;
         const dist = Math.hypot(ePos.x - m.pos.x, (ePos.y + this.lockedEnemy.aimY) - m.pos.y, ePos.z - m.pos.z);
         const inLOS = this.hasLineOfSight(m.pos.x, m.pos.z, ePos.x, ePos.z);
-        if (dist > MAX_LOCK_RANGE || !inLOS) {
+        if (dist > this.lidarParams(true).lockRange || !inLOS) {
           this.manualTargetLock = false;
           this.homingLocked = false;
           this.lockedEnemy = null;
@@ -6708,7 +6734,7 @@ class NikitaGame {
     ctx.fillStyle = this.lockedEnemy ? 'rgba(0, 229, 255, 0.75)' : 'rgba(0, 255, 136, 0.42)';
     ctx.font = '8.5px Consolas, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('15° SEEKER', cx, cy + coneRadiusPx + 11);
+    ctx.fillText(`${this.lidarParams(true).seekerDeg}° SEEKER`, cx, cy + coneRadiusPx + 11);
     ctx.restore();
 
     ctx.strokeStyle = 'rgba(0, 255, 136, 0.8)';
@@ -7318,6 +7344,19 @@ class NikitaGame {
   // Shut the game down completely: stop the loop, silence audio, release sensors/fullscreen/pointer, then close the
   // window. Browsers only let a page close itself in some cases (installed app, script-opened tab); where
   // it does not work, a "game closed" screen replaces the game.
+  // Wipe credits, upgrades, every saved lidar map and preferences on this device, then restart fresh.
+  deleteSavedData() {
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); } catch (_) {}
+    this.lidarKey = null;
+    this.lidarMemory.clear();
+    const done = () => location.reload();
+    try {
+      const go = () => { const rq = indexedDB.deleteDatabase('nikita-lidar'); rq.onsuccess = done; rq.onerror = done; rq.onblocked = done; };
+      if (this._idb) this._idb.then((db) => { db.close(); go(); }).catch(go); else go();
+    } catch (_) { done(); }
+    setTimeout(done, 1500);
+  }
+
   exitGame() {
     this.stopped = true;
     this.paused = true;
@@ -7838,12 +7877,21 @@ class NikitaGame {
     }
 
     document.getElementById('btn-exit').addEventListener('click', () => this.exitGame());
+    const delBtn = document.getElementById('btn-delete-save');
+    let delArmed = 0;
+    delBtn.addEventListener('click', () => {
+      if (delArmed && performance.now() - delArmed < 4000) { delBtn.textContent = 'DELETING...'; this.deleteSavedData(); return; }
+      delArmed = performance.now();
+      delBtn.textContent = 'TAP AGAIN: ERASE CREDITS, UPGRADES + MAPS';
+      setTimeout(() => { if (performance.now() - delArmed >= 3900) { delArmed = 0; delBtn.textContent = 'DELETE SAVED DATA'; } }, 4100);
+    });
     document.getElementById('btn-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-fail-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-upg-back').addEventListener('click', () => this.closeUpgrades());
     document.getElementById('upg-tab-rocket').addEventListener('click', () => { this.upgTab = 'rocket'; this.renderUpgrades(); });
     document.getElementById('upg-tab-lidar').addEventListener('click', () => { this.upgTab = 'lidar'; this.renderUpgrades(); });
+    document.getElementById('upg-tab-thermal').addEventListener('click', () => { this.upgTab = 'thermal'; this.renderUpgrades(); });
     // Exit to menu asks twice so a stray tap cannot throw away a sector
     const menuBtn = document.getElementById('btn-pause-menu');
     let menuArmed = 0;
