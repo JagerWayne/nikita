@@ -1558,7 +1558,7 @@ const POINTS = {
   barrel: { each: 5,   all: 20 },
   grate:  { each: 10,  all: 20 }
 };
-const POINTS_BONUS = { directHit: 50, combo3: 40, combo5: 120, stealth: 150, wall: 25, pickup: 20, medal: 60,
+const POINTS_BONUS = { floor: 30, directHit: 50, combo3: 40, combo5: 120, stealth: 150, wall: 25, pickup: 20, medal: 60,
                        rank: { PANTHER: 0, DOBERMAN: 40, HOUND: 80, FOXHOUND: 160 } };
 const MULT_SLOW = 0.75;
 const MULT_FAST = 2.0;
@@ -3264,6 +3264,7 @@ class NikitaGame {
     this.power = { stealth: 0, freeBoost: 0, overcharge: false };
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
+    this.floorsReached = new Set();
     this.rooms = [];
     this.grid.fill(CELL_WALL);
 
@@ -3603,7 +3604,7 @@ class NikitaGame {
     }
 
     // CIWS turrets hang from the ceiling over every atrium: they cover both floors of the hall
-    for (const at of this.atriums) {
+    for (const at of (tier >= 5 ? this.atriums.slice(0, tier >= 7 ? 9 : 1) : [])) {
       const cxg = at.x0 + Math.floor(at.w / 2), czg = at.z0 + Math.floor(at.h / 2);
       const top = this.ceilAt(at.f, czg * GRID_SIZE + cxg);
       this.spawnTurret(gridToWorldX(cxg), top - 1.15, gridToWorldZ(czg));
@@ -6784,7 +6785,12 @@ class NikitaGame {
       const burning = m.drop <= 0 && !m.flipping && m.fuel > 0;
       // efficiency: distance per fuel relative to the best possible (straight flight at cruise) = 1.0
       m.eff = burning ? vr / (0.5 + 0.5 * vr * vr + 0.3 * turn) : -1;
-      m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() : 0;
+      m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() / (1 + 0.15 * (this.nFloors - 1)) : 0;
+      if (this.nFloors > 1) {
+        // first visit to each upper floor in a sector pays a small scouting bonus
+        const fNow = this.floorOfY(m.pos.y);
+        if (fNow > 0 && !this.floorsReached.has(fNow)) { this.floorsReached.add(fNow); this.awardPoints(POINTS_BONUS.floor, `FLOOR ${fNow + 1} REACHED`, false); }
+      }
       m.fuel = Math.max(0, m.fuel - dt * m.fuelBurn);
     } else {
       m.fuel = 100;

@@ -27,7 +27,7 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
-## Multi-floor sectors (v2.4–2.6)
+## Multi-floor sectors (v2.4–2.7)
 
 - **Floors.** From sector 16 (tier 4) the facility has 2 floors, and from sector 31 (tier 7) it has 3. Each floor is a full room-and-corridor level stacked on the one below. You always launch on the ground floor.
 - **Ramps.** Two gentle ramps (about 17°, six cells long) join each pair of floors. Each runs in its own one-cell tube: the mouth is in a room on the lower floor, and a short straight run-out at the top opens into the floor above. Touching a ramp at a shallow angle lets the rocket ride up it with no hull damage; flying into it head-on still counts as an impact.
@@ -36,6 +36,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **Lift (v2.5).** Every multi-floor sector has one 2x2 lift shaft open through all floors (⇕ on the radar, cyan corner beams in the lidar view). Inside it the rocket drifts at a quarter speed while the lift carries it: nose up goes up a floor, nose down goes down a floor, and nose level stops at the current floor. Each upper floor has a landing beside the shaft, so turn toward it before you leave.
 - **Sentries change floors (v2.6).** Sentries plan a walking route over every floor, using the ramps. A sentry that hears you on another floor, or loses sight of you while alerted, walks over and up or down the ramps to find you; a cross-floor search lasts up to 20 s. Then it walks back to its own patrol. Alerted sentries now chase where the rocket was last heard instead of standing still. Floors are repaired so every room and ramp can be reached on foot, not only by flying over holes. Sentries never walk into holes or lifts.
 - **Atrium turrets (v2.6).** A CIWS turret hangs from the ceiling over every atrium and covers both floors of the hall. It counts as a turret for points and the clear-all bonus.
+- **Balance (v2.7).** Multi-floor sectors are bigger: the farthest target can be about 40% further to fly to. Fuel burns 13% slower with 2 floors and 23% slower with 3, giving 15% and 30% more range. The first time a rocket reaches each upper floor in a sector it earns 30 points (FLOOR n REACHED). Atrium turrets start at sector 21 (tier 5): one per sector until tier 7, then one over every atrium. Sector 16–20 is a gentle introduction with floors, ramps, holes and a lift, but no new turrets.
 - **Openings on the map.** The edge of every hole, atrium and lift is drawn as a green rim line. Line of sight, heat and sound pass through openings, so sentries below can spot a rocket overhead. On the radar, openings are cyan outlines.
 - **What is up there.** Primary targets, sentries and fuel barrels are spread across all floors. Lasers, turbines, grates, turrets, ECM zones, bulkheads, shafts and cracked walls stay on the ground floor for now.
 - **Sensing across floors.** Lidar, thermal, lock-on, blasts, sentry sight, hearing and hostile fire are all 3D. Floors and ceilings block line of sight except where a ramp opens the slab. Sound passing through a slab is muffled like half a wall.
