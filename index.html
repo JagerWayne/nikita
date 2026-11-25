@@ -2603,6 +2603,7 @@ class NikitaGame {
     this.rampProtect = new Set();
     this.lifts = [];
     this.liftCells = new Set();
+    this.atriums = [];
     this._ef = 0;
     this._hitRamp = -1;
     this.rooms = [];
@@ -3601,6 +3602,12 @@ class NikitaGame {
       }
     }
 
+    // CIWS turrets hang from the ceiling over every atrium: they cover both floors of the hall
+    for (const at of this.atriums) {
+      const cxg = at.x0 + Math.floor(at.w / 2), czg = at.z0 + Math.floor(at.h / 2);
+      const top = this.ceilAt(at.f, czg * GRID_SIZE + cxg);
+      this.spawnTurret(gridToWorldX(cxg), top - 1.15, gridToWorldZ(czg));
+    }
     const hazardRooms = this.rooms.slice(2);
     if (hazardRooms.length > 0) {
       if (tier >= 4) {
@@ -3876,6 +3883,7 @@ class NikitaGame {
     this.lifts = [];
     this.liftCells = new Set();
     this.extraNeed = [];
+    this.atriums = [];
     if (this.nFloors > 1) {
       const ro = mulberry32((numericSeed ^ 0x0A7B1E55) >>> 0);
       for (let f = 1; f < this.nFloors; f++) {
@@ -3981,7 +3989,8 @@ class NikitaGame {
   // Make sure every room and ramp mouth on a floor can be reached; carve 1-cell connectors where a ramp cut a path.
   repairFloor(f) {
     const G = GRID_SIZE, GG = G * G, g = this.floors[f];
-    const pass = (v) => isWalkable(v) || v === CELL_VOID || (f === 0 && (v === CELL_CRACKED || isShaft(v)));
+    // walking connectivity (sentries cannot cross openings); the rocket can always fly where they walk
+    const pass = (v) => isWalkable(v) || (f === 0 && (v === CELL_CRACKED || isShaft(v)));
     const flood = () => {
       const seen = new Uint8Array(GG), st = [];
       const add = (x, z) => { const c = z * G + x; if (!seen[c] && pass(g[c])) { seen[c] = 1; st.push(c); } };
@@ -4055,6 +4064,7 @@ class NikitaGame {
       if (!ok) continue;
       let walk = 0;
       for (let z = z0; z < z0 + h; z++) for (let x = x0; x < x0 + w; x++) { if (isWalkable(this.floors[f][z * G + x])) walk++; this.floors[f][z * G + x] = CELL_VOID; }
+      this.atriums.push({ f, x0, z0, w, h });
       // keep a gallery: if the hall cut through rooms up here, the repair pass reconnects around it
       this.atrium = this.atrium || [];
       return;
@@ -4271,6 +4281,115 @@ class NikitaGame {
       if (f !== pf) { if (!this.slabOpen(x, z, Math.max(f, pf))) slabs++; pf = f; }
     }
     return (solid * (dist / steps)) / CELL_SIZE + slabs * 0.5;
+  }
+
+
+  // ---- sentry navigation across floors ----
+  // What a sentry at (x, z) could stand on, near its current feet height: flat floor, a ramp, or the ramp under a void.
+  sentrySupport(x, z, s) {
+    const c = this.cellAt(x, z);
+    if (c < 0) return null;
+    const GG = GRID_SIZE * GRID_SIZE, y = s.groundY === undefined ? s.pos.y : s.groundY;
+    let best = null, bd = 1.1;
+    for (const f of [s.floor || 0, (s.floor || 0) + 1, (s.floor || 0) - 1]) {
+      if (f < 0 || f >= this.nFloors) continue;
+      const v = this.floors[f][c];
+      let h = null, sf = f;
+      if (isWalkable(v)) h = f * WALL_H;
+      else if (v === CELL_RAMP) h = this.rampHeight(this.ramps[this.rampAt.get(f * GG + c)], x, z);
+      else if (v === CELL_VOID && f > 0 && this.floors[f - 1][c] === CELL_RAMP) { sf = f - 1; h = this.rampHeight(this.ramps[this.rampAt.get(sf * GG + c)], x, z); }
+      if (h === null) continue;
+      const d = Math.abs(h - y);
+      if (d < bd) { bd = d; best = { f: sf, y: h }; }
+    }
+    return best;
+  }
+
+  // Move a sentry to (nx, nz) if it can stand there; follows ramps and changes floor at the top / bottom.
+  sentryStep(s, nx, nz) {
+    const sp = this.sentrySupport(nx, nz, s);
+    if (!sp) return false;
+    s.pos.x = nx; s.pos.z = nz;
+    s.groundY = sp.y; s.pos.y = sp.y;
+    s.floor = sp.f;
+    if (sp.y >= (sp.f + 1) * WALL_H - 0.01 && sp.f + 1 < this.nFloors) s.floor = sp.f + 1;
+    return true;
+  }
+
+  navLinksBuild() {
+    const G = GRID_SIZE, GG = G * G;
+    this.navLinks = new Map();
+    const link = (a, b) => { if (!this.navLinks.has(a)) this.navLinks.set(a, []); this.navLinks.get(a).push(b); };
+    for (const r of this.ramps) {
+      const top = r.f * GG + (r.ez + r.dz * RAMP_LEN) * G + (r.ex + r.dx * RAMP_LEN);
+      const exit = (r.f + 1) * GG + r.nz * G + r.nx;
+      link(top, exit); link(exit, top);
+    }
+    this.navFor = this.ramps;
+  }
+
+  // Breadth-first path over (floor, cell) nodes from the sentry to within one cell of the goal on floor gf.
+  navPath(s, gf, tx, tz) {
+    if (this.navFor !== this.ramps) this.navLinksBuild();
+    const G = GRID_SIZE, GG = G * G, NF = this.nFloors;
+    const sc = this.cellAt(s.pos.x, s.pos.z), gc = this.cellAt(tx, tz);
+    if (sc < 0 || gc < 0) return null;
+    const gx = gc % G, gz = (gc / G) | 0;
+    const ok = (i) => { const v = this.floors[(i / GG) | 0][i % GG]; return isWalkable(v) || v === CELL_RAMP; };
+    let sf = s.floor || 0;
+    if (sf > 0 && this.floors[sf][sc] === CELL_VOID) sf--;
+    const start = sf * GG + sc;
+    const prev = new Int32Array(GG * NF).fill(-2);
+    prev[start] = -1;
+    const q = [start];
+    let goal = -1;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], f = (i / GG) | 0, c = i % GG, x = c % G, z = (c / G) | 0;
+      if (f === gf && Math.abs(x - gx) <= 1 && Math.abs(z - gz) <= 1) { goal = i; break; }
+      const nb = [];
+      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
+      const extra = this.navLinks.get(i);
+      if (extra) nb.push(...extra);
+      for (const n of nb) if (prev[n] === -2 && ok(n)) { prev[n] = i; q.push(n); }
+    }
+    if (goal < 0) return null;
+    const path = [];
+    for (let i = goal; i !== start && i >= 0; i = prev[i]) path.push(i);
+    return path.reverse();
+  }
+
+  // Walk toward (tx, ty, tz): straight on the same floor, along a ramp path to another floor. Returns distance left.
+  sentryWalkTo(s, tx, ty, tz, spd, dt) {
+    const G = GRID_SIZE, GG = G * G;
+    const gf = this.floorOfY(ty);
+    let wx = tx, wz = tz;
+    const far = gf !== (s.floor || 0) || Math.hypot(tx - s.pos.x, tz - s.pos.z) > CELL_SIZE * 2;
+    if (far) {
+      s.pathT = (s.pathT || 0) - dt;
+      if (!s.path || s.pathT <= 0 || s.pathGoalF !== gf) {
+        s.path = this.navPath(s, gf, tx, tz);
+        s.pathI = 0; s.pathT = 1.5; s.pathGoalF = gf;
+      }
+      if (s.path && s.pathI < s.path.length) {
+        let n = s.path[s.pathI], c = n % GG;
+        let cx = gridToWorldX(c % G), cz = gridToWorldZ((c / G) | 0);
+        if (Math.hypot(cx - s.pos.x, cz - s.pos.z) < 0.8 && s.pathI < s.path.length - 1) {
+          s.pathI++; n = s.path[s.pathI]; c = n % GG; cx = gridToWorldX(c % G); cz = gridToWorldZ((c / G) | 0);
+        }
+        wx = cx; wz = cz;
+      } else if (gf !== (s.floor || 0)) { s.path = null; return 0; }
+    }
+    const dx = wx - s.pos.x, dz = wz - s.pos.z, dist = Math.hypot(dx, dz);
+    if (dist > 0.3) {
+      const st = Math.min(dist, spd * dt);
+      if (this.sentryStep(s, s.pos.x + (dx / dist) * st, s.pos.z + (dz / dist) * st)) s.walkPhase += dt * 9.0;
+      else if (!this.sentryStep(s, s.pos.x + Math.sign(dx) * st, s.pos.z)) this.sentryStep(s, s.pos.x, s.pos.z + Math.sign(dz) * st);
+      let dYaw = Math.atan2(-dx, -dz) - s.yaw;
+      while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+      while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+      s.yaw += dYaw * Math.min(1, dt * 6.0);
+    }
+    return gf === (s.floor || 0) ? Math.hypot(tx - s.pos.x, tz - s.pos.z) : dist + 99;
   }
 
   // Sentries walk only on flat floor of their own level (not onto ramps, voids, walls).
@@ -7168,7 +7287,7 @@ class NikitaGame {
         for (const o of this.sentries) {
           if (o === sn || !o.active || o.alerted) continue;
           if (o.floor === sn.floor && Math.hypot(o.pos.x - sn.pos.x, o.pos.z - sn.pos.z) < 16) {
-            o.invX = m.pos.x; o.invZ = m.pos.z; o.invT = 4.0;
+            o.invX = m.pos.x; o.invZ = m.pos.z; o.invY = m.pos.y; o.invT = 4.0;
             o.detectMeter = Math.max(o.detectMeter, 0.4);
           }
         }
@@ -7183,7 +7302,7 @@ class NikitaGame {
         s.deathTimer -= dt;
         s.vel.y -= 18 * dt;
         s.pos.addScaledVector(s.vel, dt);
-        const gy = (s.floor || 0) * WALL_H + 0.25;
+        const gy = (s.groundY === undefined ? (s.floor || 0) * WALL_H : s.groundY) + 0.25;
         if (s.pos.y < gy) {
           s.pos.y = gy;
           s.vel.y *= -0.25;
@@ -7235,7 +7354,8 @@ class NikitaGame {
         s.detectMeter = Math.min(1, s.detectMeter + dt * detectRate * speedProf.detectMult * stealthDetect);
         if (s.detectMeter >= 0.75) raiseAlert(s);
       } else if (heard) {
-        s.invX = m.pos.x; s.invZ = m.pos.z; s.invT = 4.0;
+        s.invX = m.pos.x; s.invZ = m.pos.z; s.invY = m.pos.y;
+        s.invT = this.floorOfY(m.pos.y) !== s.floor ? 20.0 : 4.0;
         if (!s.alerted) {
           if (s.detectMeter < 0.62) s.detectMeter = Math.min(0.62, s.detectMeter + dt * detectRate * 0.4 * (0.5 + s.heardLoud));
           if (m.effThrottle >= 0.85 && s.heardClose) { s.detectMeter = 1; raiseAlert(s); }
@@ -7262,7 +7382,7 @@ class NikitaGame {
           }
         }
         if (s.decoyHeard && s.decoyHeard.t > 0 && !heard && !seesMissile) {
-          s.invX = s.decoyHeard.pos.x; s.invZ = s.decoyHeard.pos.z; s.invT = 5.0;
+          s.invX = s.decoyHeard.pos.x; s.invZ = s.decoyHeard.pos.z; s.invY = s.decoyHeard.pos.y; s.invT = this.floorOfY(s.decoyHeard.pos.y) !== s.floor ? 20.0 : 5.0;
         }
       }
 
@@ -7274,6 +7394,11 @@ class NikitaGame {
         while (dYaw < -Math.PI) dYaw += Math.PI * 2;
         s.yaw += dYaw * Math.min(1, dt * 6.5);
 
+        if (!seesMissile && m.active) {
+          // lost sight: hunt where the rocket is heard / was last seen, taking ramps between floors
+          if (s.invY === undefined || heard) { s.invX = m.pos.x; s.invY = m.pos.y; s.invZ = m.pos.z; }
+          this.sentryWalkTo(s, s.invX, s.invY, s.invZ, sentryPatrolSpeed * 1.7, dt);
+        }
         s.fireCooldown -= dt;
         if (seesMissile && s.fireCooldown <= 0 && m.active) {
           s.fireCooldown = sentryFireDelay;
@@ -7284,24 +7409,13 @@ class NikitaGame {
           this.audio.playGunshot();
         }
       } else if (s.invT > 0) {
-        // investigating a noise: walk to where the rocket was heard, then look around
+        // investigating a noise: walk to where it was heard (up or down a ramp if needed), then look around
         s.invT -= dt;
-        const dx = s.invX - s.pos.x;
-        const dz = s.invZ - s.pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist > 1.5) {
-          const spd = sentryPatrolSpeed * 1.5;
-          const nx = s.pos.x + (dx / dist) * spd * dt;
-          const nz = s.pos.z + (dz / dist) * spd * dt;
-          if (!this.sentryBlocked(nx, nz, s)) { s.pos.x = nx; s.pos.z = nz; s.walkPhase += dt * 9.0; }
-          const targetYaw = Math.atan2(-dx, -dz);
-          let dYaw = targetYaw - s.yaw;
-          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-          s.yaw += dYaw * Math.min(1, dt * 6.0);
-        } else {
-          s.yaw += dt * 1.6;
-        }
+        const left = this.sentryWalkTo(s, s.invX, s.invY === undefined ? s.pos.y + 1 : s.invY, s.invZ, sentryPatrolSpeed * 1.5, dt);
+        if (left <= 1.5) s.yaw += dt * 1.6;
+      } else if (s.waypoints[0] && this.floorOfY(s.waypoints[0].y + 0.5) !== (s.floor || 0)) {
+        const wp0 = s.waypoints[s.wpIndex];
+        this.sentryWalkTo(s, wp0.x, wp0.y + 0.5, wp0.z, sentryPatrolSpeed, dt);
       } else {
         const wp = s.waypoints[s.wpIndex];
         const dx = wp.x - s.pos.x;
@@ -7313,8 +7427,7 @@ class NikitaGame {
           const spd = sentryPatrolSpeed;
           const nx = s.pos.x + (dx / dist) * spd * dt;
           const nz = s.pos.z + (dz / dist) * spd * dt;
-          if (!this.sentryBlocked(nx, nz, s)) {
-            s.pos.x = nx; s.pos.z = nz;
+          if (!this.sentryBlocked(nx, nz, s) && this.sentryStep(s, nx, nz)) {
           } else {
             s.wpIndex = (s.wpIndex + 1) % s.waypoints.length;
           }
@@ -7895,6 +8008,7 @@ class NikitaGame {
     ctx.fillStyle = '#ff2244';
     for (const tu of this.turrets) {
       if (!tu.active || !tu.mesh.userData._tv) continue;
+      fa(tu.pos.y - 2);
       const tx = toRX(tu.pos.x), tz = toRZ(tu.pos.z);
       ctx.beginPath();
       ctx.moveTo(tx, tz - 3.5); ctx.lineTo(tx + 3.5, tz + 3); ctx.lineTo(tx - 3.5, tz + 3);
