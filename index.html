@@ -1578,6 +1578,7 @@ const RAMP_LEN = 6;
 const RIM_BASE = 1 << 26;              // edge ids at or above this: rims of floor openings (holes, atriums, lifts)
 const LIFT_BASE = 1 << 27;             // edge ids at or above this: lift shaft corner beams
 const LIFT_SPEED = 6.0;                // how fast a lift carries the rocket (units/s)                    // ramp length in cells (gentle: ~17 degrees)
+const SHAFT_REVEAL_R = 10;             // shaft interiors are outlined only within this distance of the rocket
 const SHAFT_SEG_BASE = 1 << 24;        // edge ids at or above this are shaft outlines (cyan)
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
@@ -5460,7 +5461,7 @@ class NikitaGame {
 
   // Shaft outline: 4 lines along the tunnel's inside corners (k 0-3) and a rectangle around each opening (k 4+).
   revealShaftCell(c0, birth) {
-    // outline the whole connected shaft (same opening height) as soon as any part of it is scanned
+    // outline a whole connected shaft (same opening height); kept for tools/tests, the scanner reveals cell by cell
     if (this.revealedSeg.has(SHAFT_SEG_BASE + c0 * 32)) return;
     const v0 = this.grid[c0], stack = [c0], seen = new Set([c0]);
     while (stack.length) {
@@ -5475,11 +5476,18 @@ class NikitaGame {
     }
   }
 
-  revealShaftCellOnly(c, birth) {
+  // Shafts are mapped gradually: only the tunnel cells the scanner actually hits get their outline.
+  // From further away only the opening's frame is drawn; the tunnel's inside is mapped up close, a cell at a time.
+  revealShaftCellOnly(c, birth, near = true) {
+    this._ef = 0;
     const gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE);
-    for (let k = 0; k < 4; k++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + k, birth);
+    if (near) for (let k = 0; k < 4; k++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + k, birth);
     for (let f = 0; f < 4; f++) {
       if (!this.shaftFaceFramed(gx, gz, f)) continue;
+      if (!near) {   // far: only real openings (open floor beyond), not dead-end caps deep inside
+        const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
+        if (this.cellSolid(nx, nz)) continue;
+      }
       for (let j = 0; j < 4; j++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + 4 + f * 4 + j, birth);
     }
   }
@@ -5597,7 +5605,7 @@ class NikitaGame {
         const cp = Math.cos(pit);
         this._hitRamp = -1;
         const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
-        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now, h.y - Math.sin(pit) * 0.15); if (c === 4) this.revealSeg(this._hitSeg, now); else if (c === 3) this.revealShaftCell(this._hitShaft, now); if (this._hitRamp >= 0) this.revealRamp(this._hitRamp, now); }
+        if (h) { const c = this._hitCls; this.addDot(h.x, h.y, h.z, c === 4 ? 1 : c, now, h.y - Math.sin(pit) * 0.15); if (c === 4) this.revealSeg(this._hitSeg, now); else if (c === 3) this.revealShaftCellOnly(this._hitShaft, now, Math.hypot(h.x - ox, h.y - oy, h.z - oz) < SHAFT_REVEAL_R); if (this._hitRamp >= 0) this.revealRamp(this._hitRamp, now); }
       }
       if (P.deep >= 2) this.deepScanReveal(o, P);
       if (this.lifts.length) this.revealLifts(o, P);
