@@ -6393,13 +6393,10 @@ class NikitaGame {
           if (l.disabled) continue;
 
           if (l.relayActive && _v3.distanceTo(l.relayPos) < 0.72 + MISSILE_RADIUS) {
-            this.blastMult = this.hitMultNow();
-            this.disableLaserGrid(l, true);
-            this.flushRewards();
-            this.audio.playScrape();
-            m.hull = Math.max(0, m.hull - 10 * this.hullDmgMult());
-            if (m.hull <= 0) { this.detonateMissile(_v3, 'HULL BREACHED ON LASER RELAY'); return; }
-            continue;
+            // a direct hit on a laser control box detonates the warhead; the blast switches the grid off
+            m.pos.copy(_v3);
+            this.detonateMissile(_v3, 'DIRECT HIT: LASER BOX');
+            return;
           }
 
           if (l.state !== 'ACTIVE') continue;
