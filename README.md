@@ -27,6 +27,26 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Lidar view (v2.0)
+
+The facility is seen only through the rocket's lidar. The screen is near-black green; a spinning scanner (rows of beams all around plus a dense forward focus cone) paints every surface it hits as green dots. Fresh dots flash, then settle into a dim memory; nearby dots are brighter and a sweep line circles the rocket. Cracked walls scan amber and shaft openings cyan. The view is always the nose camera (the third-person view is gone); the short orbit kill-cam after a target is destroyed stays.
+
+- **Map memory.** Each sector remembers its dots. Retrying or replaying a sector starts with everything you scanned before; the last few sectors are also saved on the device and survive closing the app. A shattered cracked wall erases its old dots.
+- **Thermal.** Sentries, targets, turrets, barrels, turbines, bulkheads, grates and laser emitters are drawn as heat (white-hot core to dark-red edge); laser beams are white-hot lines with a red-orange glow, and a disabled grid cools down. They only appear within thermal range and with a clear line of sight. Power-ups appear the same way.
+- **Radar.** The minimap shows only what you have scanned, plus target markers; enemies appear on it only while you can see them. The badge at the top right shows how much of the sector you have scanned.
+- **Performance.** Up to 100,000 dots per sector. If frames get slow the scanner lowers its ray count automatically (AUTO-THROTTLED); low-spec mode halves it. The Blackout modifier now cuts lidar range by 40%, and ECM fields scramble the scanner.
+
+### Lidar upgrades (LIDAR tab of the upgrade screen)
+
+| Upgrade | Level 0 | Level 10 | Cost per level |
+| --- | --- | --- | --- |
+| Range | 32 units | 80 units | 100 + 70 x level |
+| Resolution | 600 rays per frame | 1,800 | 100 + 70 x level |
+| Focus beam | 30% of rays in a 25 degree cone | 70% in a 45 degree cone | 100 + 70 x level |
+| Thermal | 18 units | 60 units, sees through one wall | 100 + 70 x level |
+| Memory | 2 s glow, dim old dots, 3 sectors kept | 6 s glow, brighter old dots, 10 sectors | 100 + 70 x level |
+| Deep scan (3 levels) | off | 1: cracked walls visible from afar (and on the radar); 2: secret chambers outlined and their power-ups shown; 3: shaft interiors and power-ups shown | 400 + 300 x level |
+
 ## Stealth, rewards and secrets (v1.1)
 
 **Hearing.** Sentries hear the rocket as well as see it. The hearing radius grows with the speed lever: about 6 units at minimum speed, 15 at cruise, 46 at full throttle. Walls muffle the sound, so a fast rocket is loud in open halls but quieter next door. Sentries see the rocket only within 14 units, in front of them and with a clear line. A sentry that hears you shows `?`, walks to the noise and looks around; a sentry that hears you at close range at top speed goes straight to alert `!`. An alerted sentry radios nearby guards. The dashed amber ring on the radar is your current noise radius.
@@ -87,13 +107,12 @@ The speed lever is locked at minimum while the rocket waits on the pad and works
 | Right half (drag) | Fine aim |
 | LOCK | Lock the target highlighted in the 15 degree seeker cone |
 | HOLD DET (hold 0.3 s) | Manual warhead detonation |
-| CAM | Nose-cam or chase-cam |
 | Speed lever (screen edge) | Analog throttle from minimum to maximum speed. Above cruise it drains the boost capacitor, which recharges below cruise |
 | FIRE | Launches the rocket at the start of a sector |
 | MENU | Pause sheet: gyro, invert pitch, haptics, low-spec mode, left-handed layout, button size and opacity, radar, sound |
 | Radar (tap) | Enlarge or shrink the minimap |
 
-Desktop: click to capture the mouse, `WASD` or arrows steer, `L` lock, `Shift`/`Space` boost, `Ctrl` brake, `Enter`/`Space` fire, `[` `]` fine throttle, `E` camera, `R` detonate, `1-3` speed, `Tab` radar, `~` developer overrides.
+Desktop: click to capture the mouse, `WASD` or arrows steer, `L` lock, `Shift`/`Space` boost, `Ctrl` brake, `Enter`/`Space` fire, `[` `]` fine throttle, `R` detonate, `1-3` speed, `Tab` radar, `~` developer overrides.
 
 ## Notes
 

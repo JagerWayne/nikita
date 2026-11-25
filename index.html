@@ -745,6 +745,8 @@
   .upg-bar i { display: block; height: 100%; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); }
   .upg-row .tac-btn { min-width: 104px; min-height: 40px; padding: 6px 10px; font-size: 12px; }
   .tac-btn.dim, .tac-btn:disabled { opacity: 0.4; cursor: default; }
+  .upg-tab { min-width: 130px; opacity: 0.55; }
+  .upg-tab.on { opacity: 1; background: rgba(0, 255, 136, 0.3); }
   .title-card { max-width: 460px; text-align: center; }
   .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
   .title-card .briefing-desc { margin: 6px 0 16px; }
@@ -1168,7 +1170,7 @@ window.addEventListener('unhandledrejection', function (e) {
       <button class="hud-icon-btn" id="btn-hud-mute" aria-label="Toggle Audio">SFX: ON</button>
       <button class="hud-icon-btn amber" id="btn-hud-pause" aria-label="Open menu and pause">&#9776; MENU</button>
     </div>
-    <div id="cam-mode-badge">NOSE-CAM FPV</div>
+    <div id="cam-mode-badge">LIDAR</div>
     <div class="desktop-only-hint">[CLICK] MOUSE STEER | [L] LOCK | [E / RMB] CAM | [TAB] RADAR</div>
     <div class="desktop-only-hint">[-/= / WHEEL] SPEED | [SHIFT/SPACE] BOOST | [CTRL] CRAWL</div>
     <div class="desktop-only-hint">[R] DETONATE | [~] OVERRIDE</div>
@@ -1224,7 +1226,6 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="right-aim-zone" aria-label="Right Fine Aim Zone"></div>
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
-    <button class="touch-act-btn" id="tbtn-cam">CAM<br/>VIEW</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-flip">FLIP &amp;<br/>BURN</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
@@ -1341,6 +1342,10 @@ window.addEventListener('unhandledrejection', function (e) {
     <div class="modal-title">
       <span>ROCKET UPGRADES</span>
       <span class="modal-subtitle">CREDITS: <strong id="upg-credits" style="color:#ffaa00">0</strong></span>
+    </div>
+    <div class="btn-row center" style="margin-bottom:10px;">
+      <button class="tac-btn upg-tab on" id="upg-tab-rocket">ROCKET</button>
+      <button class="tac-btn upg-tab" id="upg-tab-lidar">LIDAR</button>
     </div>
     <div id="upg-list"></div>
     <div class="btn-row" style="margin-top:12px;">
@@ -1541,13 +1546,20 @@ const MULT_SLOW = 0.75;
 const MULT_FAST = 2.0;
 const POINTS_PER_PACKAGE = 100;
 const PACKAGE_ROCKETS = 10;
+// ---- LIDAR VIEW ----
+const LIDAR_CAP = 100000;              // max dots kept / drawn per sector
+const VOX = 0.8;                       // memory resolution: one dot per 0.8-unit cube of surface
+const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels across the facility (x and z)
+const VOX_Y = Math.ceil(WALL_H / VOX);
+const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
+const LIDAR_KEY_PREFIX = 'L';
 const SENTRY_VISION = 14;             // how far sentries can see the rocket (was 22.5)
 const HOSTILE_ACCURACY = 0.5;         // fraction of hostile shots (sentries + CIWS) aimed true; the rest are deliberate near-misses
 const DECOY_RADIUS = 34;               // how far a decoy's noise carries
 const DECOY_LIFE = 7;                  // seconds a decoy keeps making noise
 const DECOYS_PER_SECTOR = 2;
 const MODIFIER_INFO = {
-  'BLACKOUT':       'LIGHTS OUT — FLY BY YOUR HEADLAMP',
+  'BLACKOUT':       'SENSOR INTERFERENCE — LIDAR RANGE -40%',
   'LOW FUEL':       'FUEL BURNS 60% FASTER',
   'KEEN EARS':      'SENTRIES HEAR 50% FARTHER',
   'HEAVY SECURITY': '50% MORE SENTRIES'
@@ -2467,8 +2479,8 @@ class NikitaGame {
     this.renderer.toneMappingExposure = 1.5;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c1b17);
-    this.scene.fog = new THREE.FogExp2(0x0e211c, 0.0065);
+    this.scene.background = new THREE.Color(0x010804);   // lidar screen: near-black green
+    this.scene.fog = new THREE.FogExp2(0x010804, 0.0);
 
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.15, 210);
 
@@ -2530,8 +2542,16 @@ class NikitaGame {
 
     this.maxSentries = 40;
     this.maxBarrels = 48;
+    this.thermalMats = new Map();
+    this._hit = new THREE.Vector3();
+    this._hitCls = 1;
+    this.thermalTime = { value: 0 };
     this.initSentryInstancedMeshes();
     this.initBarrelInstancedMesh();
+    this.sentryTorsoMesh.material = this.thermalMat(0.8);
+    this.sentryHeadMesh.material = this.thermalMat(0.97);
+    this.sentryGunMesh.material = this.thermalMat(0.5);
+    this.barrelMesh.material = this.thermalMat(0.62);
     this.initMissileMesh();
     this.initWireTether();
     this.initAmbientMotes();
@@ -2558,7 +2578,9 @@ class NikitaGame {
     this.secretsFound = 0;
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
-    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0 };
+    this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0 };
+    this.upgTab = 'rocket';
+    this.initLidar();
     this.credits = 0;
     this.loadProgress();
     this.score = 0;
@@ -3074,6 +3096,7 @@ class NikitaGame {
     });
     this.tetherLine = new THREE.Line(this.tetherGeo, mat);
     this.tetherLine.frustumCulled = false;
+    this.tetherLine.visible = false;
     this.scene.add(this.tetherLine);
     this.tetherCount = 0;
   }
@@ -3095,6 +3118,7 @@ class NikitaGame {
     });
     this.motePoints = new THREE.Points(this.moteGeo, moteMat);
     this.motePoints.frustumCulled = false;
+    this.motePoints.visible = false;
     this.scene.add(this.motePoints);
   }
 
@@ -3159,6 +3183,7 @@ class NikitaGame {
     this.modifier = (this.level >= 4 && modRng() < 0.55) ? MODS[Math.floor(modRng() * MODS.length)] : null;
 
     const sharedMats = new Set([this.wallMat, this.floorMat, this.runwayMat, this.ceilMat, this.hazardMat]);
+    for (const tm of this.thermalMats.values()) sharedMats.add(tm);
     while (this.levelGroup.children.length > 0) {
       const ch = this.levelGroup.children[0];
       this.levelGroup.remove(ch);
@@ -3347,6 +3372,7 @@ class NikitaGame {
       }
     }
     [wallInst, floorInst, runwayInst, ceilInst].forEach((m) => {
+      m.userData.structural = true;
       m.instanceMatrix.needsUpdate = true;
       m.matrixAutoUpdate = false;
       this.levelGroup.add(m);
@@ -3393,6 +3419,8 @@ class NikitaGame {
       shaftInst.instanceMatrix.needsUpdate = true;
       fixInst.matrixAutoUpdate = false;
       shaftInst.matrixAutoUpdate = false;
+      fixInst.userData.structural = true;
+      shaftInst.userData.structural = true;
       this.levelGroup.add(fixInst, shaftInst);
     }
 
@@ -3552,10 +3580,17 @@ class NikitaGame {
     this.lights.amb.intensity = 0.65 * (bo ? 0.3 : 1);
     this.lights.hemi.intensity = 1.55 * (bo ? 0.26 : 1);
     this.lights.dir.intensity = 1.15 * (bo ? 0.3 : 1);
-    this.scene.fog.density = bo ? 0.013 : 0.0065;
+    this.scene.fog.density = 0;
     this.headlamp.intensity = bo ? 9.0 : 5.0;
     this.syncSentryInstances();
     this.syncBarrelInstances();
+    this.applyLidarLook();
+    let open = 0;
+    for (let c = 0; c < GRID_SIZE * GRID_SIZE; c++) if (!isWallLike(this.grid[c]) && !this.secretHidden.has(c)) open++;
+    this.totalOpen = Math.max(1, open);
+    this.lidarBegin(`${LIDAR_KEY_PREFIX}${this.level}:${this.seedStr}`);
+    this.seenOpen = 0;
+    for (let c = 0; c < GRID_SIZE * GRID_SIZE; c++) if (this.seenCells[c] && !isWallLike(this.grid[c]) && !this.secretHidden.has(c)) this.seenOpen++;
     this.updateHUDText();
   }
 
@@ -3612,6 +3647,7 @@ class NikitaGame {
     floorRing.position.y = 0.04;
     grp.add(floorRing);
 
+    grp.userData.heat = 0.9;
     this.levelGroup.add(grp);
     this.targets.push({
       id: idx + 1, name, active: true,
@@ -3639,6 +3675,7 @@ class NikitaGame {
       lens.rotation.z = Math.PI * 0.5;
       lens.position.x = 0.24;
       g.add(housing, collar, lens);
+      g.userData.heat = 0.55;
       this.levelGroup.add(g);
       return g;
     };
@@ -3648,7 +3685,7 @@ class NikitaGame {
         color: 0xffdddd, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.95, depthWrite: false
       });
       const glowMat = new THREE.MeshBasicMaterial({
-        color: 0xff1133, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.72, depthWrite: false
+        color: 0xff4411, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8, depthWrite: false
       });
       const coreMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, length, 6), coreMat);
       const glowMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, length, 8), glowMat);
@@ -3670,6 +3707,7 @@ class NikitaGame {
     const relayCore = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.52, 0.26), relayCoreMat);
     relayCore.position.x = relaySide === 'R' ? -0.22 : 0.22;
     relayGroup.add(relayBody, relayCore);
+    relayGroup.userData.heat = 0.72;
     this.levelGroup.add(relayGroup);
 
     const beams = [];
@@ -3857,6 +3895,7 @@ class NikitaGame {
       const wx = gridToWorldX(b.gx), wz = gridToWorldZ(b.gz);
       const mesh = new THREE.Mesh(blockGeo, this.crackMat);
       mesh.position.set(wx, WALL_H * 0.5, wz);
+      mesh.userData.structural = true;
       this.levelGroup.add(mesh);
       b.active = true;
       b.mesh = mesh;
@@ -3941,17 +3980,20 @@ class NikitaGame {
         if (lo > 0.01) {
           const m = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE, lo, CELL_SIZE), this.wallMat);
           m.position.set(wx, lo * 0.5, wz);
+          m.userData.structural = true;
           this.levelGroup.add(m);
         }
         if (hi < WALL_H - 0.01) {
           const h = WALL_H - hi;
           const m = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE, h, CELL_SIZE), this.wallMat);
           m.position.set(wx, hi + h * 0.5, wz);
+          m.userData.structural = true;
           this.levelGroup.add(m);
         }
         for (const ty of [lo + 0.05, hi - 0.05]) {          // glowing rails mark the opening
           const t = new THREE.Mesh(new THREE.BoxGeometry(CELL_SIZE * 0.98, 0.1, CELL_SIZE * 0.98), trimMat);
           t.position.set(wx, ty, wz);
+          t.userData.structural = true;
           this.levelGroup.add(t);
         }
       }
@@ -3973,6 +4015,7 @@ class NikitaGame {
       color: col, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false
     }));
     grp.add(core, ring, halo);
+    grp.userData.noThermal = true;
     this.levelGroup.add(grp);
     this.pickups.push({ active: true, type, owner, baseY: y, radius, pos: new THREE.Vector3(x, y, z), mesh: grp, core, ring, phase: Math.random() * 6.28 });
   }
@@ -3983,6 +4026,8 @@ class NikitaGame {
     bw.mesh.visible = false;
     this.grid[bw.gz * GRID_SIZE + bw.gx] = CELL_FLOOR;
     for (const ci of bw.chamber) this.secretHidden.delete(ci);
+    this.forgetCell(bw.gx, bw.gz);
+    this.totalOpen += 1 + bw.chamber.length;
     this.radarDirty = true;
     this.awardPoints(POINTS_BONUS.wall, 'WALL BREACH', true);
     _v5.copy(bw.pos); _v5.y = 1.8;
@@ -4184,6 +4229,519 @@ class NikitaGame {
   }
 
   /* ------------------------------------------------------------------------
+     LIDAR VIEW: scanner, point cloud, per-sector memory, thermal entities
+     ------------------------------------------------------------------------ */
+  // Upgrade levels -> scan settings (the one place to tune the lidar)
+  lidarParams(raw = false) {
+    const u = this.upg;
+    const p = {
+      range: 32 + 4.8 * u.lrange,
+      rays: Math.round(600 + 120 * u.lres),
+      focus: 0.3 + 0.04 * u.lfocus,
+      coneDeg: 25 + 2 * u.lfocus,
+      thermal: 18 + 4.2 * u.ltherm,
+      throughWall: u.ltherm >= 10,
+      glow: 2 + 0.4 * u.lmem,
+      mem: 0.25 + 0.03 * u.lmem,
+      keep: 3 + Math.round(0.7 * u.lmem),
+      deep: u.ldeep
+    };
+    if (raw) return p;
+    if (this.modifier === 'BLACKOUT') p.range *= 0.6;
+    if (this.prefs && this.prefs.lowSpec) p.rays = Math.round(p.rays * 0.5);
+    p.rays = Math.max(80, Math.round(p.rays * this.lidarThrottle * (this.missile.inECM ? 0.4 : 1)));
+    return p;
+  }
+
+  thermalMat(heat, wire = false) {
+    const h = Math.round(heat * 20) / 20;
+    const key = h + (wire ? 'w' : '');
+    let m = this.thermalMats.get(key);
+    if (m) return m;
+    m = new THREE.ShaderMaterial({
+      wireframe: wire,
+      uniforms: { uHeat: { value: h }, uTime: this.thermalTime },
+      vertexShader: `
+        varying float vRim;
+        #include <common>
+        void main() {
+          #include <beginnormal_vertex>
+          #include <defaultnormal_vertex>
+          #include <begin_vertex>
+          #include <project_vertex>
+          vec3 n = normalize(transformedNormal);
+          vec3 v = normalize(-mvPosition.xyz);
+          vRim = 1.0 - abs(dot(n, v));
+        }`,
+      fragmentShader: `
+        uniform float uHeat; uniform float uTime; varying float vRim;
+        vec3 pal(float t) {
+          t = clamp(t, 0.0, 1.0);
+          vec3 c = mix(vec3(0.12, 0.0, 0.06), vec3(0.8, 0.06, 0.02), smoothstep(0.0, 0.35, t));
+          c = mix(c, vec3(1.0, 0.5, 0.0), smoothstep(0.3, 0.62, t));
+          c = mix(c, vec3(1.0, 0.92, 0.3), smoothstep(0.58, 0.86, t));
+          return mix(c, vec3(1.0), smoothstep(0.88, 1.0, t));
+        }
+        void main() {
+          float t = uHeat * (1.0 - 0.6 * vRim) + 0.035 * sin(uTime * 7.0);
+          gl_FragColor = vec4(pal(t), 1.0);
+        }`
+    });
+    this.thermalMats.set(key, m);
+    return m;
+  }
+
+  // Hide the lit structure (collisions use the grid), turn everything else into thermal objects.
+  applyLidarLook() {
+    for (const ch of this.levelGroup.children) {
+      if (ch.userData.structural) { ch.visible = false; continue; }
+      if (ch.userData.noThermal) continue;
+      const heat = ch.userData.heat !== undefined ? ch.userData.heat : 0.5;
+      ch.traverse((o) => {
+        if (o.isMesh && o.material && !o.material.transparent && !(o.material instanceof THREE.ShaderMaterial)) {
+          o.material = this.thermalMat(heat, Boolean(o.material.wireframe));
+        }
+      });
+    }
+  }
+
+  initLidar() {
+    this.lidarThrottle = 1;
+    this.lidarSlowT = 0;
+    this.lidarFastT = 0;
+    this.lidarSweep = 0;
+    this.lidarTime = 0;
+    this.lidarMemory = new Map();          // sector key -> { idx: Uint32Array, cls: Uint8Array }
+    this.vox = new Uint8Array(VOX_N * VOX_N * VOX_Y);
+    this.seenCells = new Uint8Array(GRID_SIZE * GRID_SIZE);
+    this.seenOpen = 0;
+    this.totalOpen = 1;
+    this.lidarKey = null;
+    const pos = new Float32Array(LIDAR_CAP * 3);
+    const info = new Float32Array(LIDAR_CAP * 2);
+    this.lidarPos = pos;
+    this.lidarInfo = info;
+    this.slotVox = new Int32Array(LIDAR_CAP).fill(-1);
+    this.lidarCount = 0;
+    this.lidarHead = 0;
+    this.lidarDirtyFrom = -1;
+    this.lidarDirtyN = 0;
+    const geo = new THREE.BufferGeometry();
+    this.lidarPosAttr = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.lidarInfoAttr = new THREE.BufferAttribute(info, 2).setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', this.lidarPosAttr);
+    geo.setAttribute('aInfo', this.lidarInfoAttr);
+    geo.setDrawRange(0, 0);
+    this.lidarUniforms = {
+      uTime: { value: 0 }, uOrigin: { value: new THREE.Vector3() }, uGlow: { value: 2 }, uMem: { value: 0.25 },
+      uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uCrack: { value: 0 }
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.lidarUniforms,
+      vertexShader: `
+        attribute vec2 aInfo;
+        uniform float uTime, uGlow, uMem, uRange, uSweep, uScale, uCrack;
+        uniform vec3 uOrigin;
+        varying vec3 vCol;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+          float age = uTime - aInfo.y;
+          float fresh = exp(-max(age, 0.0) / uGlow);
+          vec3 d = position - uOrigin;
+          float dist = length(d);
+          float near = 1.0 - smoothstep(uRange * 0.35, uRange * 1.25, dist);
+          float ang = atan(d.z, d.x);
+          float sw = abs(mod(ang - uSweep + 3.14159, 6.28318) - 3.14159);
+          float sweep = (1.0 - smoothstep(0.0, 0.22, sw)) * near * 0.6;
+          float b = max(uMem + 0.55 * near, fresh) + sweep;
+          vec3 col = vec3(0.12, 1.0, 0.45);
+          if (aInfo.x > 1.5 && aInfo.x < 2.5) { col = vec3(1.0, 0.58, 0.1); b = max(b, uCrack); }
+          else if (aInfo.x > 2.5) col = vec3(0.25, 0.9, 1.0);
+          vCol = col * b + vec3(0.55, 1.0, 0.75) * fresh * 0.45;
+          gl_PointSize = clamp(uScale * (26.0 + 18.0 * fresh) / max(0.5, -mv.z), 1.6, 7.0);
+        }`,
+      fragmentShader: `
+        varying vec3 vCol;
+        void main() {
+          vec2 c = gl_PointCoord - 0.5;
+          if (dot(c, c) > 0.25) discard;
+          gl_FragColor = vec4(vCol, 1.0);
+        }`
+    });
+    this.lidarPoints = new THREE.Points(geo, mat);
+    this.lidarPoints.frustumCulled = false;
+    this.lidarGeo = geo;
+    this.scene.add(this.lidarPoints);
+  }
+
+  voxIndexAt(x, y, z) {
+    const ix = Math.floor((x + VOX_HALF) / VOX), iz = Math.floor((z + VOX_HALF) / VOX), iy = Math.floor(y / VOX);
+    if (ix < 0 || iz < 0 || iy < 0 || ix >= VOX_N || iz >= VOX_N || iy >= VOX_Y) return -1;
+    return ix + VOX_N * (iz + VOX_N * iy);
+  }
+
+  markSeen(x, z) {
+    const gx = worldToGridX(x), gz = worldToGridZ(z);
+    if (gx < 0 || gz < 0 || gx >= GRID_SIZE || gz >= GRID_SIZE) return;
+    const c = gz * GRID_SIZE + gx;
+    if (this.seenCells[c]) return;
+    this.seenCells[c] = 1;
+    if (!isWallLike(this.grid[c]) && !this.secretHidden.has(c)) this.seenOpen++;
+    this.radarSoftDirty = true;
+  }
+
+  // Store one dot (deduplicated per voxel). birth < 0 = remembered from an earlier attempt (dim).
+  addDot(x, y, z, cls, birth) {
+    const vi = this.voxIndexAt(x, y, z);
+    if (vi < 0 || this.vox[vi]) return;
+    this.vox[vi] = cls;
+    const slot = this.lidarHead;
+    const old = this.slotVox[slot];
+    if (old >= 0) this.vox[old] = 0;                      // ring full: forget the oldest dot
+    this.slotVox[slot] = vi;
+    this.lidarPos[slot * 3] = x; this.lidarPos[slot * 3 + 1] = y; this.lidarPos[slot * 3 + 2] = z;
+    this.lidarInfo[slot * 2] = cls; this.lidarInfo[slot * 2 + 1] = birth;
+    if (this.lidarDirtyFrom < 0) { this.lidarDirtyFrom = slot; this.lidarDirtyN = 0; }
+    this.lidarDirtyN++;
+    this.lidarHead = (slot + 1) % LIDAR_CAP;
+    if (this.lidarCount < LIDAR_CAP) this.lidarCount++;
+    this.markSeen(x, z);
+  }
+
+  flushDots() {
+    if (this.lidarDirtyFrom < 0) return;
+    const from = this.lidarDirtyFrom, n = this.lidarDirtyN;
+    const pa = this.lidarPosAttr, ia = this.lidarInfoAttr;
+    pa.clearUpdateRanges(); ia.clearUpdateRanges();
+    if (n >= LIDAR_CAP) { pa.addUpdateRange(0, LIDAR_CAP * 3); ia.addUpdateRange(0, LIDAR_CAP * 2); }
+    else if (from + n <= LIDAR_CAP) { pa.addUpdateRange(from * 3, n * 3); ia.addUpdateRange(from * 2, n * 2); }
+    else {
+      const a = LIDAR_CAP - from, b = n - a;
+      pa.addUpdateRange(from * 3, a * 3); ia.addUpdateRange(from * 2, a * 2);
+      pa.addUpdateRange(0, b * 3); ia.addUpdateRange(0, b * 2);
+    }
+    pa.needsUpdate = true; ia.needsUpdate = true;
+    this.lidarGeo.setDrawRange(0, this.lidarCount);
+    this.lidarDirtyFrom = -1;
+    this.lidarDirtyN = 0;
+  }
+
+  clearDots() {
+    this.vox.fill(0);
+    this.slotVox.fill(-1);
+    this.seenCells.fill(0);
+    this.seenOpen = 0;
+    this.lidarCount = 0;
+    this.lidarHead = 0;
+    this.lidarDirtyFrom = -1;
+    this.lidarDirtyN = 0;
+    this.lidarGeo.setDrawRange(0, 0);
+    this.radarSoftDirty = true;
+  }
+
+  // Remove remembered dots inside one grid cell (a cracked wall that has been shattered).
+  forgetCell(gx, gz) {
+    let changed = false;
+    for (let s = 0; s < LIDAR_CAP; s++) {
+      const vi = this.slotVox[s];
+      if (vi < 0) continue;
+      const ix = vi % VOX_N, iz = Math.floor(vi / VOX_N) % VOX_N;
+      const x = ix * VOX + VOX * 0.5 - VOX_HALF, z = iz * VOX + VOX * 0.5 - VOX_HALF;
+      if (worldToGridX(x) === gx && worldToGridZ(z) === gz) {
+        this.vox[vi] = 0;
+        this.slotVox[s] = -1;
+        this.lidarPos[s * 3 + 1] = -1000;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.lidarPosAttr.clearUpdateRanges();
+      this.lidarPosAttr.addUpdateRange(0, LIDAR_CAP * 3);
+      this.lidarPosAttr.needsUpdate = true;
+    }
+  }
+
+  // Cast one ray through the grid. Walls, cracked walls, shaft slabs, floor and ceiling are hit analytically.
+  castRay(ox, oy, oz, dx, dy, dz, range) {
+    const G = GRID_SIZE;
+    let tPlane = range;
+    if (dy < -1e-6) tPlane = Math.min(tPlane, -oy / dy);
+    else if (dy > 1e-6) tPlane = Math.min(tPlane, (WALL_H - oy) / dy);
+    let gx = worldToGridX(ox), gz = worldToGridZ(oz);
+    const stepX = dx > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+    const bx = (gx - G * 0.5 + (dx > 0 ? 1 : 0)) * CELL_SIZE, bz = (gz - G * 0.5 + (dz > 0 ? 1 : 0)) * CELL_SIZE;
+    let tMaxX = Math.abs(dx) > 1e-6 ? (bx - ox) / dx : Infinity;
+    let tMaxZ = Math.abs(dz) > 1e-6 ? (bz - oz) / dz : Infinity;
+    const tDX = Math.abs(dx) > 1e-6 ? CELL_SIZE / Math.abs(dx) : Infinity;
+    const tDZ = Math.abs(dz) > 1e-6 ? CELL_SIZE / Math.abs(dz) : Infinity;
+    let tEnter = 0;
+    for (let guard = 0; guard < 64; guard++) {
+      if (gx < 0 || gz < 0 || gx >= G || gz >= G) return null;
+      const v = this.grid[gz * G + gx];
+      const tExit = Math.min(tMaxX, tMaxZ);
+      if (tEnter > 0 && (v === CELL_WALL || v === CELL_CRACKED)) {
+        if (tEnter > range) return null;
+        this._hit.set(ox + dx * tEnter, oy + dy * tEnter, oz + dz * tEnter);
+        this._hitCls = v === CELL_CRACKED ? 2 : 1;
+        return this._hit;
+      }
+      if (isShaft(v)) {
+        const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3, hi = lo + WALL_H / 3;
+        const yE = oy + dy * tEnter;
+        if (tEnter > 0 && (yE < lo || yE > hi)) {
+          if (tEnter > range) return null;
+          this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
+          this._hitCls = 3;
+          return this._hit;
+        }
+        let tb = Infinity;
+        if (dy < -1e-6 && lo > 0.01) tb = (lo - oy) / dy;
+        else if (dy > 1e-6 && hi < WALL_H - 0.01) tb = (hi - oy) / dy;
+        if (tb >= tEnter && tb <= tExit) {
+          if (tb > range) return null;
+          this._hit.set(ox + dx * tb, oy + dy * tb, oz + dz * tb);
+          this._hitCls = 3;
+          return this._hit;
+        }
+      }
+      if (tPlane <= tExit) {
+        if (tPlane >= range) return null;
+        this._hit.set(ox + dx * tPlane, oy + dy * tPlane, oz + dz * tPlane);
+        this._hitCls = 1;
+        return this._hit;
+      }
+      tEnter = tExit;
+      if (tEnter > range) return null;
+      if (tMaxX < tMaxZ) { gx += stepX; tMaxX += tDX; } else { gz += stepZ; tMaxZ += tDZ; }
+    }
+    return null;
+  }
+
+  lidarOrigin() {
+    if (this.missile.active && (this.state === 'PLAYING' || this.state === 'RESPAWNING')) return this.missile.pos;
+    if (this.state === 'KILLCAM') return this.killCamTarget;
+    return this.camera.position;
+  }
+
+  // One frame of scanning: a spinning sweep in fixed elevation rows plus a focus cone along the view.
+  updateLidar(dt) {
+    this.lidarTime += dt;
+    this.thermalTime.value = this.lidarTime;
+    const P = this.lidarParams();
+    const U = this.lidarUniforms;
+    const o = this.lidarOrigin();
+    U.uTime.value = this.lidarTime;
+    U.uOrigin.value.copy(o);
+    U.uGlow.value = P.glow;
+    U.uMem.value = P.mem;
+    U.uRange.value = P.range;
+    U.uCrack.value = P.deep >= 1 ? 0.9 : 0;
+    U.uScale.value = Math.min(window.devicePixelRatio || 1, 2);
+    this.lidarSweep = (this.lidarSweep + dt * 4.2) % (Math.PI * 2);
+    U.uSweep.value = this.lidarSweep;
+
+    const scanning = this.state === 'PLAYING' || this.state === 'READY' || this.state === 'BRIEFING';
+    if (scanning) {
+      this.markSeen(o.x, o.z);
+      this.camera.getWorldDirection(_v8);
+      const fyaw = Math.atan2(_v8.x, _v8.z), fpitch = Math.asin(Math.max(-1, Math.min(1, _v8.y)));
+      const cone = P.coneDeg * Math.PI / 180;
+      const rows = 8 + Math.round(this.upg.lres * 1.6);
+      const ox = o.x, oy = Math.max(0.05, Math.min(WALL_H - 0.05, o.y)), oz = o.z;
+      const now = this.lidarTime;
+      for (let i = 0; i < P.rays; i++) {
+        let yaw, pit;
+        if (Math.random() < P.focus) {
+          const r = Math.sqrt(Math.random()) * cone, a = Math.random() * Math.PI * 2;
+          yaw = fyaw + Math.cos(a) * r;
+          pit = fpitch + Math.sin(a) * r;
+        } else {
+          yaw = Math.random() * Math.PI * 2;
+          const row = Math.floor(Math.random() * rows);
+          pit = (-60 + (120 * (row + 0.5)) / rows) * Math.PI / 180 + (Math.random() - 0.5) * 0.01;
+        }
+        const cp = Math.cos(pit);
+        const h = this.castRay(ox, oy, oz, Math.sin(yaw) * cp, Math.sin(pit), Math.cos(yaw) * cp, P.range);
+        if (h) this.addDot(h.x, h.y, h.z, this._hitCls, now);
+      }
+      if (P.deep >= 2) this.deepScanReveal(o, P);
+    }
+    this.flushDots();
+
+    // performance guard: drop the ray count if frames get slow, recover when fast again
+    if (this.frameMs > 24) { this.lidarSlowT += dt; this.lidarFastT = 0; } else if (this.frameMs < 15) { this.lidarFastT += dt; this.lidarSlowT = 0; }
+    if (this.lidarSlowT > 1.5) { this.lidarThrottle = Math.max(0.35, this.lidarThrottle * 0.8); this.lidarSlowT = 0; }
+    if (this.lidarFastT > 3 && this.lidarThrottle < 1) { this.lidarThrottle = Math.min(1, this.lidarThrottle * 1.15); this.lidarFastT = 0; }
+
+    this.lidarThermalT = (this.lidarThermalT || 0) - dt;
+    if (this.lidarThermalT <= 0) { this.lidarThermalT = 0.05; this.updateThermal(o, P); }
+    if (this.radarSoftDirty && (this._radarRebuildT = (this._radarRebuildT || 0) - dt) <= 0) { this._radarRebuildT = 0.25; this.radarSoftDirty = false; this.radarDirty = true; }
+    const badge = document.getElementById('cam-mode-badge');
+    if (badge) this.cText(badge, `LIDAR · SCAN ${Math.min(100, Math.round((this.seenOpen / this.totalOpen) * 100))}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
+  }
+
+  // Deep scan 2-3: outline secret chambers (and shafts at 3) that lie within scan range, plus reveal their power-ups.
+  deepScanReveal(o, P) {
+    const G = GRID_SIZE;
+    const outline = (gx, gz, lo, hi, cls) => {
+      const x0 = (gx - G * 0.5) * CELL_SIZE, z0 = (gz - G * 0.5) * CELL_SIZE;
+      for (let k = 0; k <= 5; k++) {
+        const f = k / 5 * CELL_SIZE;
+        for (const y of [lo + 0.1, hi - 0.1]) {
+          this.addDot(x0 + f, y, z0 + 0.05, cls, -100); this.addDot(x0 + f, y, z0 + CELL_SIZE - 0.05, cls, -100);
+          this.addDot(x0 + 0.05, y, z0 + f, cls, -100); this.addDot(x0 + CELL_SIZE - 0.05, y, z0 + f, cls, -100);
+        }
+      }
+    };
+    if (!this._deepDone) this._deepDone = new Set();
+    for (const b of this.breakables) {
+      if (b.kind !== 'secret' || !b.active) continue;
+      for (const ci of b.chamber) {
+        if (this._deepDone.has(ci)) continue;
+        const gx = ci % G, gz = Math.floor(ci / G);
+        if (Math.hypot(gridToWorldX(gx) - o.x, gridToWorldZ(gz) - o.z) > P.range) continue;
+        this._deepDone.add(ci);
+        outline(gx, gz, 0, WALL_H, 2);
+      }
+    }
+    if (P.deep >= 3) {
+      for (let c = 0; c < G * G; c++) {
+        const v = this.grid[c];
+        if (!isShaft(v) || this._deepDone.has(c)) continue;
+        const gx = c % G, gz = Math.floor(c / G);
+        if (Math.hypot(gridToWorldX(gx) - o.x, gridToWorldZ(gz) - o.z) > P.range) continue;
+        this._deepDone.add(c);
+        const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3;
+        outline(gx, gz, lo, lo + WALL_H / 3, 3);
+      }
+    }
+  }
+
+  // 3D line of sight that lets shaft openings through at the right height.
+  los3(ax, ay, az, bx, by, bz) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const dist = Math.hypot(dx, dz);
+    const steps = Math.max(1, Math.ceil(dist / 1.0));
+    for (let i = 1; i < steps; i++) {
+      const f = i / steps;
+      if (this.isGridSolid(ax + dx * f, az + dz * f, ay + dy * f)) return false;
+    }
+    return true;
+  }
+
+  setThermalVis(obj, on) {
+    if (!obj || obj.userData._tv === on) return;
+    obj.userData._tv = on;
+    obj.traverse((o) => o.layers.set(on ? 0 : 5));
+  }
+
+  // Thermal objects are only drawn within thermal range and with a clear line of sight (or through one wall at max level).
+  updateThermal(o, P) {
+    const R = P.thermal;
+    const see = (x, y, z, extra = 0) => {
+      const d = Math.hypot(x - o.x, z - o.z);
+      if (d > R + extra) return false;
+      if (this.los3(o.x, o.y, o.z, x, y, z)) return true;
+      return P.throughWall && this.wallThickness(o.x, o.z, x, z) <= 1.05;
+    };
+    for (const t of this.targets) this.setThermalVis(t.mesh, t.active && see(t.pos.x, t.pos.y, t.pos.z, 2));
+    for (const tu of this.turrets) { const v = tu.active && see(tu.pos.x, tu.pos.y - 0.6, tu.pos.z); this.setThermalVis(tu.mesh, v); this.setThermalVis(tu.stem, v); }
+    for (const bh of this.bulkheads) this.setThermalVis(bh.mesh, see(bh.x, 3.6, bh.z, 2));
+    for (const tb of this.turbines) this.setThermalVis(tb.mesh, see(tb.pos.x, tb.pos.y, tb.pos.z, 3));
+    for (const g of this.grates) this.setThermalVis(g.mesh, g.active && see(g.pos.x, g.pos.y, g.pos.z, 2));
+    for (const ez of this.ecmZones) this.setThermalVis(ez.mesh, see(ez.pos.x, ez.pos.y, ez.pos.z, ez.radius));
+    for (const l of this.lasers) {
+      const lx = Math.max(l.xMin, Math.min(l.xMax, o.x));
+      const v = see(lx, 3.5, l.z, 1) || see(l.relayPos.x, l.relayPos.y, l.relayPos.z);
+      l.thermalVis = v;
+      for (const bm of l.beams) { this.setThermalVis(bm.coreMesh, v); this.setThermalVis(bm.glowMesh, v); }
+      for (const e of l.emitters) this.setThermalVis(e, v);
+      this.setThermalVis(l.relayGroup, v);
+    }
+    for (const pk of this.pickups) {
+      let v = pk.active && see(pk.pos.x, pk.pos.y, pk.pos.z);
+      const d = Math.hypot(pk.pos.x - o.x, pk.pos.z - o.z);
+      if (pk.active && !v && d < P.range && ((P.deep >= 2 && !pk.owner.shaft) || (P.deep >= 3 && pk.owner.shaft))) v = true;
+      this.setThermalVis(pk.mesh, v);
+    }
+    for (const s of this.sentries) s.thermalVis = (s.active || s.dying) && see(s.pos.x, 1.4, s.pos.z);
+    for (const b of this.barrels) b.thermalVis = b.active && see(b.pos.x, b.pos.y, b.pos.z);
+    this.syncBarrelInstances();
+  }
+
+  // Map memory: snapshot the current sector's dots, keep the last few sectors in memory and on the device.
+  lidarSnapshot() {
+    if (!this.lidarKey || this.lidarCount === 0) return;
+    const idx = [], cls = [];
+    for (let s = 0; s < this.lidarCount; s++) { const vi = this.slotVox[s]; if (vi >= 0) { idx.push(vi); cls.push(this.vox[vi]); } }
+    const rec = { idx: Uint32Array.from(idx), cls: Uint8Array.from(cls), t: Date.now() };
+    this.lidarMemory.delete(this.lidarKey);
+    this.lidarMemory.set(this.lidarKey, rec);
+    const keep = this.lidarParams(true).keep;
+    while (this.lidarMemory.size > keep) this.lidarMemory.delete(this.lidarMemory.keys().next().value);
+    this.idbPut(this.lidarKey, rec, keep);
+  }
+
+  lidarLoad(rec) {
+    for (let i = 0; i < rec.idx.length; i++) {
+      const vi = rec.idx[i];
+      const ix = vi % VOX_N, iz = Math.floor(vi / VOX_N) % VOX_N, iy = Math.floor(vi / (VOX_N * VOX_N));
+      const j = (vi * 2654435761) >>> 0;
+      const jx = ((j & 255) / 255 - 0.5) * VOX * 0.7, jz = (((j >> 8) & 255) / 255 - 0.5) * VOX * 0.7, jy = (((j >> 16) & 255) / 255 - 0.5) * VOX * 0.7;
+      this.addDot(ix * VOX + VOX * 0.5 - VOX_HALF + jx, Math.max(0.02, Math.min(WALL_H - 0.02, iy * VOX + VOX * 0.5 + jy)), iz * VOX + VOX * 0.5 - VOX_HALF + jz, rec.cls[i] || 1, -1000);
+    }
+    this.flushDots();
+  }
+
+  // Called when a sector starts. Same sector + seed (retry / replay) keeps its map; otherwise load or start blank.
+  lidarBegin(key) {
+    this._deepDone = new Set();
+    if (key === this.lidarKey) return;
+    this.lidarSnapshot();
+    this.clearDots();
+    this.lidarKey = key;
+    const mem = this.lidarMemory.get(key);
+    if (mem) { this.lidarLoad(mem); return; }
+    this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls) }); }).catch(() => {});
+  }
+
+  idbOpen() {
+    if (!this._idb) {
+      this._idb = new Promise((res, rej) => {
+        try {
+          const r = indexedDB.open('nikita-lidar', 1);
+          r.onupgradeneeded = () => r.result.createObjectStore('maps', { keyPath: 'key' });
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => rej(r.error);
+        } catch (e) { rej(e); }
+      });
+    }
+    return this._idb;
+  }
+
+  idbPut(key, rec, keep) {
+    this.idbOpen().then((db) => {
+      const tx = db.transaction('maps', 'readwrite');
+      const st = tx.objectStore('maps');
+      st.put({ key, t: rec.t, idx: rec.idx.buffer.slice(0), cls: rec.cls.buffer.slice(0) });
+      const all = st.getAll();
+      all.onsuccess = () => {
+        const list = (all.result || []).sort((a, b) => b.t - a.t);
+        for (const r of list.slice(keep)) st.delete(r.key);
+      };
+    }).catch(() => {});
+  }
+
+  idbGet(key) {
+    return this.idbOpen().then((db) => new Promise((res) => {
+      const rq = db.transaction('maps', 'readonly').objectStore('maps').get(key);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => res(null);
+    }));
+  }
+
+  /* ------------------------------------------------------------------------
      ROCKET UPGRADES (bought with credits; saved on the device)
      ------------------------------------------------------------------------ */
   loadProgress() {
@@ -4191,7 +4749,7 @@ class NikitaGame {
       const d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
       if (d && typeof d === 'object') {
         this.credits = Math.max(0, Math.floor(d.credits || 0));
-        for (const k of Object.keys(this.upg)) this.upg[k] = Math.max(0, Math.min(k === 'speed' ? 20 : UPG_MAX_LEVEL, Math.floor((d.upg && d.upg[k]) || 0)));
+        for (const k of Object.keys(this.upg)) this.upg[k] = Math.max(0, Math.min(this.upgradeMax(k), Math.floor((d.upg && d.upg[k]) || 0)));
       }
     } catch (_) {}
   }
@@ -4211,10 +4769,13 @@ class NikitaGame {
 
   upgradeCost(key) {
     const l = this.upg[key];
-    return key === 'speed' ? 150 + 50 * l : 120 + 90 * l;
+    if (key === 'speed') return 150 + 50 * l;
+    if (key === 'ldeep') return 400 + 300 * l;
+    if (key[0] === 'l') return 100 + 70 * l;
+    return 120 + 90 * l;
   }
 
-  upgradeMax(key) { return key === 'speed' ? 20 : UPG_MAX_LEVEL; }
+  upgradeMax(key) { return key === 'speed' ? 20 : (key === 'ldeep' ? 3 : UPG_MAX_LEVEL); }
 
   buyUpgrade(key) {
     const max = this.upgradeMax(key);
@@ -4232,13 +4793,25 @@ class NikitaGame {
 
   renderUpgrades() {
     const pct = (v) => `${Math.round(v * 100)}%`;
-    const defs = [
+    const P = this.lidarParams(true);
+    const lidarDefs = [
+      { key: 'lrange', name: 'LIDAR RANGE', desc: () => `${P.range.toFixed(1)} UNITS` },
+      { key: 'lres', name: 'RESOLUTION', desc: () => `${P.rays} RAYS PER FRAME` },
+      { key: 'lfocus', name: 'FOCUS BEAM', desc: () => `${Math.round(P.focus * 100)}% OF RAYS IN A ±${Math.round(P.coneDeg)}° FORWARD CONE` },
+      { key: 'ltherm', name: 'THERMAL', desc: () => `ENEMIES + LASERS SHOWN TO ${P.thermal.toFixed(1)} UNITS` + (P.throughWall ? '  ·  SEES THROUGH ONE WALL' : (this.upg.ltherm === 9 ? '  ·  NEXT: SEE THROUGH ONE WALL' : '')) },
+      { key: 'lmem', name: 'MEMORY', desc: () => `GLOW ${P.glow.toFixed(1)}s  ·  OLD DOTS ${Math.round(P.mem * 100)}%  ·  ${P.keep} SECTORS KEPT` },
+      { key: 'ldeep', name: 'DEEP SCAN', desc: () => ['OFF  ·  NEXT: CRACKED WALLS VISIBLE FROM AFAR', 'CRACKED WALLS VISIBLE FROM AFAR  ·  NEXT: SECRET CHAMBERS OUTLINED', 'SECRET CHAMBERS OUTLINED  ·  NEXT: SHAFT INTERIORS + POWER-UPS', 'CRACKED WALLS, SECRET CHAMBERS AND SHAFTS REVEALED'][this.upg.ldeep] }
+    ];
+    const rocketDefs = [
       { key: 'speed', name: 'MAX SPEED', desc: () => `${this.maxSpeed().toFixed(1)} m/s  ·  x${this.fullSpeedMult().toFixed(2)} POINTS AT FULL SPEED` + (this.upg.speed < 20 ? `   (next ${(this.maxSpeed() + SPEED_STEP).toFixed(1)} m/s, x${((this.maxSpeed() + SPEED_STEP) / 10).toFixed(2)})` : '') },
       { key: 'fuel', name: 'FUEL', desc: () => `FUEL BURN -${pct(1 - this.fuelBurnMult())}` },
       { key: 'boost', name: 'BOOST', desc: () => `DRAIN -${pct(1 - this.boostDrainMult())}  ·  RECHARGE +${pct(this.boostRechargeMult() - 1)}` },
       { key: 'hull', name: 'HULL', desc: () => `DAMAGE TAKEN -${pct(1 - this.hullDmgMult())}` },
       { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` }
     ];
+    const defs = this.upgTab === 'lidar' ? lidarDefs : rocketDefs;
+    document.getElementById('upg-tab-rocket').classList.toggle('on', this.upgTab !== 'lidar');
+    document.getElementById('upg-tab-lidar').classList.toggle('on', this.upgTab === 'lidar');
     const box = document.getElementById('upg-list');
     box.innerHTML = '';
     for (const d of defs) {
@@ -4275,6 +4848,7 @@ class NikitaGame {
 
   // Abandon the current sector and go back to the title screen (where upgrades can be bought).
   exitToMenu() {
+    this.lidarSnapshot();
     this.paused = false;
     this.state = 'BRIEFING';
     this.missile.active = false;
@@ -4359,6 +4933,8 @@ class NikitaGame {
     laser.relayActive = false;
     laser.state = 'OFF';
     laser.relayCoreMat.color.setHex(0x182022);
+    laser.relayGroup.traverse((o) => { if (o.isMesh) o.material = this.thermalMat(0.12); });
+    for (const e of laser.emitters) e.traverse((o) => { if (o.isMesh) o.material = this.thermalMat(0.12); });
     laser.lensMat.color.setHex(0x182628);
     for (let i = 0; i < laser.beams.length; i++) {
       laser.beams[i].coreMesh.visible = false;
@@ -4394,6 +4970,7 @@ class NikitaGame {
     pylon.position.y = -1.8;
     const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), new THREE.MeshBasicMaterial({ color: 0x33eeff }));
     grp.add(shell, lattice, pylon, beacon);
+    grp.userData.heat = 0.4;
     this.levelGroup.add(grp);
     this.ecmZones.push({ pos: new THREE.Vector3(x, 3.6, z), radius, mesh: grp, arcTimer: 0 });
   }
@@ -4402,6 +4979,7 @@ class NikitaGame {
     const darkMat = new THREE.MeshStandardMaterial({ color: 0x2b363c, metalness: 0.78, roughness: 0.3 });
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 1.2, 8), darkMat);
     stem.position.set(x, y + 0.6, z);
+    stem.userData.heat = 0.45;
     this.levelGroup.add(stem);
 
     const grp = new THREE.Group();
@@ -4412,13 +4990,15 @@ class NikitaGame {
     const eye = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff2233 }));
     eye.position.set(0, 0.12, 0.5);
     grp.add(dome, barrel, eye);
+    grp.userData.heat = 0.78;
     this.levelGroup.add(grp);
-    this.turrets.push({ active: true, pos: new THREE.Vector3(x, y, z), mesh: grp, fireCooldown: 1.0 });
+    this.turrets.push({ active: true, pos: new THREE.Vector3(x, y, z), mesh: grp, stem, fireCooldown: 1.0 });
   }
 
   spawnBulkhead(x, z, phase) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.4, WALL_H - 0.2, 4.4), this.hazardMat);
     mesh.position.set(x, WALL_H * 0.5, z);
+    mesh.userData.heat = 0.3;
     this.levelGroup.add(mesh);
     this.bulkheads.push({ x, baseX: x, z, halfX: 0.7, halfZ: 2.2, phase, mesh });
   }
@@ -4430,6 +5010,7 @@ class NikitaGame {
     const b1 = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.55, 0.22), mat);
     const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.55, 5.6, 0.22), mat);
     grp.add(b1, b2);
+    grp.userData.heat = 0.5;
     this.levelGroup.add(grp);
     this.turbines.push({ pos: new THREE.Vector3(x, y, z), radius: 2.9, angle: 0, rotSpeed, mesh: grp });
   }
@@ -4440,6 +5021,7 @@ class NikitaGame {
       new THREE.MeshStandardMaterial({ color: 0x607d8b, wireframe: true })
     );
     mesh.position.set(x, y, z);
+    mesh.userData.heat = 0.25;
     this.levelGroup.add(mesh);
     this.grates.push({ active: true, pos: new THREE.Vector3(x, y, z), halfX: 1.9, halfY: 1.9, halfZ: 0.4, mesh });
   }
@@ -4586,7 +5168,7 @@ class NikitaGame {
     m.signal = 100;
     m.inECM = false;
     m.wallProximity = 0;
-    this.missileGroup.visible = (this.camMode !== 'FPV');
+    this.missileGroup.visible = false;    // nose camera only
     this.resetTether(m.pos);
     this.vfx.spawnRing(m.pos, 2.8, 0.26, 0x00ffaa, 0, 0);
     this.vfx.spawnLightFlash(m.pos, 0xffaa44, 9, 0.16);
@@ -5813,7 +6395,7 @@ class NikitaGame {
   syncSentryInstances() {
     for (let i = 0; i < this.maxSentries; i++) {
       const s = this.sentries[i];
-      if (!s || (!s.active && !s.dying)) {
+      if (!s || (!s.active && !s.dying) || !s.thermalVis) {
         _dummy.position.set(0, -500, 0);
         _dummy.scale.set(0.0001, 0.0001, 0.0001);
         _dummy.updateMatrix();
@@ -5865,7 +6447,7 @@ class NikitaGame {
   syncBarrelInstances() {
     for (let i = 0; i < this.maxBarrels; i++) {
       const b = this.barrels[i];
-      if (!b || !b.active) {
+      if (!b || !b.active || !b.thermalVis) {
         _dummy.position.set(0, -500, 0);
         _dummy.scale.set(0.0001, 0.0001, 0.0001);
       } else {
@@ -5920,24 +6502,13 @@ class NikitaGame {
       this.camera.fov += (profile.fov - this.camera.fov) * Math.min(1, dt * 7.5);
       this.camera.updateProjectionMatrix();
 
-      if (this.camMode === 'FPV') {
-        this.missileGroup.visible = false;
-        this.camera.position.copy(m.pos);
-        // always upright: aim along the rocket's heading with world-up as the camera's up (no banking, never inverted)
-        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
-        _v1.copy(_fwd).applyEuler(_e1);
-        this.camera.up.set(0, 1, 0);
-        this.camera.lookAt(m.pos.x + _v1.x, m.pos.y + _v1.y, m.pos.z + _v1.z);
-      } else {
-        this.missileGroup.visible = true;
-        _e1.set(m.pitch, m.yaw, 0, 'YXZ');
-        _v1.set(0, 1.35, 4.4).applyEuler(_e1);
-        _v2.copy(m.pos).add(_v1);
-        _v2.y = Math.max(0.55, Math.min(WALL_H - 0.45, _v2.y));
-        this.camera.position.lerp(_v2, Math.min(1, dt * 14));
-        _v3.copy(_fwd).applyEuler(_e1).multiplyScalar(12).add(m.pos);
-        this.camera.lookAt(_v3);
-      }
+      // nose camera, always upright (world-up), never banks or inverts
+      this.missileGroup.visible = false;
+      this.camera.position.copy(m.pos);
+      _e1.set(m.pitch, m.yaw, 0, 'YXZ');
+      _v1.copy(_fwd).applyEuler(_e1);
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(m.pos.x + _v1.x, m.pos.y + _v1.y, m.pos.z + _v1.z);
     }
 
     if (this.cameraTrauma > 0.001) {
@@ -6239,6 +6810,8 @@ class NikitaGame {
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
         const v = this.grid[z * GRID_SIZE + x];
+        const seen = this.seenCells[z * GRID_SIZE + x] || this.radarDeepCrack(x, z, v);
+        if (!seen) continue;
         if (v === CELL_WALL || this.secretHidden.has(z * GRID_SIZE + x)) {
           c.fillStyle = '#0f2b20';
           c.fillRect(x * scale, z * scale, scale, scale);
@@ -6257,6 +6830,13 @@ class NikitaGame {
     this.radarDirty = false;
   }
 
+  // Deep scan 1+: cracked walls show on the radar within 1.5x scan range even before they are scanned
+  radarDeepCrack(x, z, v) {
+    if (v !== CELL_CRACKED || this.upg.ldeep < 1) return false;
+    const o = this.lidarOrigin();
+    return Math.hypot(gridToWorldX(x) - o.x, gridToWorldZ(z) - o.z) < this.lidarParams().range * 1.5;
+  }
+
   renderSolitonRadar() {
     if (!this.radarOpen) return;
     if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'RESPAWNING') return;
@@ -6273,6 +6853,7 @@ class NikitaGame {
     const toRZ = (wz) => (wz / CELL_SIZE + GRID_SIZE * 0.5) * scale;
 
     for (const ez of this.ecmZones) {
+      if (!ez.mesh.userData._tv) continue;
       ctx.strokeStyle = 'rgba(0, 229, 255, 0.55)';
       ctx.beginPath();
       ctx.arc(toRX(ez.pos.x), toRZ(ez.pos.z), (ez.radius / CELL_SIZE) * scale, 0, Math.PI * 2);
@@ -6280,7 +6861,7 @@ class NikitaGame {
     }
 
     for (const l of this.lasers) {
-      if (l.disabled) continue;
+      if (l.disabled || !l.thermalVis) continue;
       const lx1 = toRX(l.xMin), lx2 = toRX(l.xMax), lz = toRZ(l.z);
       ctx.save();
       if (l.state === 'ACTIVE') {
@@ -6305,11 +6886,12 @@ class NikitaGame {
 
     ctx.fillStyle = 'rgba(255, 170, 0, 0.8)';
     for (const bh of this.bulkheads) {
+      if (!bh.mesh.userData._tv) continue;
       ctx.fillRect(toRX(bh.x) - 2, toRZ(bh.z) - 4, 4, 8);
     }
     ctx.fillStyle = '#ff2244';
     for (const tu of this.turrets) {
-      if (!tu.active) continue;
+      if (!tu.active || !tu.mesh.userData._tv) continue;
       const tx = toRX(tu.pos.x), tz = toRZ(tu.pos.z);
       ctx.beginPath();
       ctx.moveTo(tx, tz - 3.5); ctx.lineTo(tx + 3.5, tz + 3); ctx.lineTo(tx - 3.5, tz + 3);
@@ -6319,7 +6901,7 @@ class NikitaGame {
 
     ctx.fillStyle = '#ff4433';
     for (const b of this.barrels) {
-      if (!b.active) continue;
+      if (!b.active || !b.thermalVis) continue;
       ctx.fillRect(toRX(b.pos.x) - 2, toRZ(b.pos.z) - 2, 4, 4);
     }
 
@@ -6335,6 +6917,7 @@ class NikitaGame {
     }
 
     for (const s of this.sentries) {
+      if (!s.thermalVis && s.active) continue;
       const rx = toRX(s.pos.x), rz = toRZ(s.pos.z);
       if (!s.active) {
         ctx.strokeStyle = 'rgba(140, 180, 160, 0.45)';
@@ -6403,6 +6986,7 @@ class NikitaGame {
      ------------------------------------------------------------------------ */
   triggerSectorClear() {
     this.state = 'CLEAR';
+    this.lidarSnapshot();
     const used = this.fired;
     const tCount = this.targets.length;
     let rank = 'PANTHER';
@@ -6461,6 +7045,7 @@ class NikitaGame {
 
   triggerMissionFailed(reason) {
     this.state = 'FAILED';
+    this.lidarSnapshot();
     document.getElementById('fail-reason').textContent = reason;
     document.getElementById('fail-modal').style.display = 'flex';
     this.resetAllInputs();
@@ -6550,7 +7135,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-cam', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-flip', 'tbtn-detonate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -6670,6 +7255,7 @@ class NikitaGame {
     }
 
     this.updateCamera(rawDt);
+    this.updateLidar(rawDt);
     this.renderer.render(this.scene, this.camera);
     this.renderHUDCanvas();
     this.renderSolitonRadar();
@@ -6983,18 +7569,6 @@ class NikitaGame {
     btnDecoy.addEventListener('pointerup', clearDecoyPress);
     btnDecoy.addEventListener('pointercancel', clearDecoyPress);
 
-    const btnCam = document.getElementById('tbtn-cam');
-    btnCam.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.audio.unlock();
-      btnCam.classList.add('pressed');
-      this.vibrate(12);
-      if (this.state === 'PLAYING') this.toggleCameraMode();
-    });
-    const clearCamPress = () => btnCam.classList.remove('pressed');
-    btnCam.addEventListener('pointerup', clearCamPress);
-    btnCam.addEventListener('pointercancel', clearCamPress);
 
     const btnDet = document.getElementById('tbtn-detonate');
     const DET_HOLD_MS = 300;
@@ -7072,9 +7646,6 @@ class NikitaGame {
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyX' && this.state === 'PLAYING') this.startFlip();
-      if (e.code === 'KeyE' && this.state === 'PLAYING') {
-        this.toggleCameraMode();
-      }
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
       }
@@ -7102,7 +7673,6 @@ class NikitaGame {
     window.addEventListener('contextmenu', (e) => {
       if (this.state === 'PLAYING') {
         e.preventDefault();
-        if (this.lastPointerType === 'mouse') this.toggleCameraMode();
       }
     });
 
@@ -7146,6 +7716,8 @@ class NikitaGame {
     document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-fail-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-upg-back').addEventListener('click', () => this.closeUpgrades());
+    document.getElementById('upg-tab-rocket').addEventListener('click', () => { this.upgTab = 'rocket'; this.renderUpgrades(); });
+    document.getElementById('upg-tab-lidar').addEventListener('click', () => { this.upgTab = 'lidar'; this.renderUpgrades(); });
     // Exit to menu asks twice so a stray tap cannot throw away a sector
     const menuBtn = document.getElementById('btn-pause-menu');
     let menuArmed = 0;
@@ -7332,10 +7904,7 @@ class NikitaGame {
     this.setThrottle(mode === 1 ? 0 : (mode === 3 ? 1 : CRUISE_THROTTLE));
   }
 
-  toggleCameraMode() {
-    this.camMode = this.camMode === 'FPV' ? 'CHASE' : 'FPV';
-    document.getElementById('cam-mode-badge').textContent = this.camMode === 'FPV' ? 'NOSE-CAM FPV' : 'TACTICAL CHASE-CAM';
-  }
+
 
   startSector(lvl, seed, carryOver = false) {
     document.getElementById('clear-modal').style.display = 'none';
