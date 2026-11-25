@@ -33,7 +33,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **Points.** Primary target 150, CIWS turret 60, sentry 40, laser control box 35, cracked wall 25, vent grate 10, fuel barrel 5, power-up 20. Clear-all bonuses: targets 150, turrets 100, sentries 80, lasers 80, barrels and grates 20. Direct hit 50, 3-kill blast 40, 5-kill blast 120, no-alert sector 150, rank 0/40/80/160, medals 60 each. Kill points are multiplied by speed at impact (x0.75 slow, x2 at full speed, up to x3 with max-speed upgrades).
 - **Credits.** Every point is a credit, but replaying a sector only pays for beating your previous best there.
 - **Upgrade costs** grow about 28% per level (15% per max-speed step): rocket upgrades 200 to 1,840 per level, lidar and thermal 160 to 1,480, the 3-level perks 600 / 1,200 / 2,400, max speed 150 to 2,130. Buying everything costs about 98,000 credits.
-- **Fuel.** About 42 s at cruise before upgrades. FUEL LOW warns at 20%; an empty tank cuts the engine and the warhead self-destructs 2.5 s later.
+- **Fuel.** Burn follows speed like drag: base x (0.5 + 0.5 x (speed / cruise speed)^2), plus up to 30% more while turning hard, so cruise gives the most distance per tank; full speed burns about 1.8x, minimum speed about 0.7x. Nothing burns in the launch drop or while flipping (the flip's attitude jets cost 3%). The FUEL readout shows seconds left at the current burn (amber when low, red under 8 s). About 42 s straight at cruise before upgrades. FUEL LOW warns at 20%; an empty tank cuts the engine and the warhead self-destructs 2.5 s later.
 
 ## Lidar view (v2.0)
 
@@ -112,7 +112,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 
 **Laser grids.** The control box that shuts a laser grid down is on the left or the right end, chosen per grid.
 
-**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about a third of a second, then the engine ignites.
+**Flight.** There is no pitch limit: hold the stick up (or down) and the rocket keeps rotating, so loops are possible when there is room. The camera always stays upright and never banks; it wobbles slightly with speed and turning (more in the launch drop and with the engine out) and trails a little behind turns. After every rocket you press FIRE to launch the next one. While waiting on the pad, the stick (or keys, mouse or gyro) adjusts the launch angle, and the FIRE button shows the yaw and pitch. The rocket leaves the rail with cold thrusters, falls for about a third of a second, then the engine ignites.
 
 **Flip and burn.** The FLIP & BURN button (key `X`) fires two small attitude jets that backflip the rocket 180 degrees with the engine cut, then the engine burns hard to reverse course. Once per rocket. After the flip the controls stay exactly as before (stick left still turns left, stick up still looks up).
 
