@@ -4437,7 +4437,7 @@ class NikitaGame {
           vec3 col = vec3(0.12, 1.0, 0.45);
           if (aInfo.x > 1.5 && aInfo.x < 2.5) { col = vec3(1.0, 0.58, 0.1); b = max(b, uCrack); }
           else if (aInfo.x > 3.5) { col = vec3(0.72, 1.0, 0.84); b = max(b * 1.3, 0.62 + 0.4 * near); }
-          else if (aInfo.x > 2.5) col = vec3(0.25, 0.9, 1.0);
+          else if (aInfo.x > 2.5) col = vec3(0.12, 1.0, 0.45);      // shafts: same green as the rest of the map
           vCol = col * b + vec3(0.55, 1.0, 0.75) * fresh * 0.45;
           float edge = aInfo.x > 3.5 ? 1.25 : 1.0;
           gl_PointSize = clamp(uScale * edge * (26.0 + 18.0 * fresh) * (1.0 + 0.7 * wave) / max(0.5, -mv.z), 1.6 * edge, 8.5);
@@ -4511,7 +4511,7 @@ class NikitaGame {
         varying float vB; varying float vEdge; varying float vK;
         void main() {
           float core = 1.0 - abs(vEdge);
-          vec3 col = mix(vec3(0.12, 1.0, 0.42), vec3(0.3, 0.95, 1.0) * 1.35, vK);
+          vec3 col = vec3(0.12, 1.0, 0.42);                          // shaft edges use the same green as wall edges
           gl_FragColor = vec4(col * vB * (0.35 + 0.65 * core), 1.0);
         }`
     });
@@ -4664,7 +4664,9 @@ class NikitaGame {
         if (tEnter > 0 && (yE < lo || yE > hi)) {
           if (tEnter > range) return null;
           this._hit.set(ox + dx * tEnter, yE, oz + dz * tEnter);
-          this._hitSeg = -1;
+          { const face = faceX ? ((faceX ? stepX : stepZ) > 0 ? 1 : 0) : (stepZ > 0 ? 3 : 2);
+            const kk = yE < 0.4 ? 0 : (yE > WALL_H - 0.4 ? 1 : -1);
+            this._hitSeg = kk >= 0 ? ((gz * G + gx) * 4 + face) * 4 + kk : -1; }
           this._hitShaft = gz * G + gx;
           this._hitCls = 3;
           return this._hit;
@@ -4682,6 +4684,7 @@ class NikitaGame {
         }
       }
       if (tPlane <= tExit) {
+        // floor/ceiling hit next to a shaft face is handled by isEdgeFloor + validSeg below
         if (tPlane >= range) return null;
         this._hit.set(ox + dx * tPlane, oy + dy * tPlane, oz + dz * tPlane);
         this._hitSeg = this.isEdgeFloor(this._hit, gx, gz);
@@ -4737,12 +4740,17 @@ class NikitaGame {
       const c = Math.floor((seg - SHAFT_SEG_BASE) / 32), k = (seg - SHAFT_SEG_BASE) % 32;
       if (c < 0 || c >= GRID_SIZE * GRID_SIZE || !isShaft(this.grid[c])) return false;
       if (k < 4) return true;
-      const f = (k - 4) >> 2, gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE);
-      const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
-      return !this.cellSolid(nx, nz);
+      return this.shaftFaceFramed(c % GRID_SIZE, Math.floor(c / GRID_SIZE), (k - 4) >> 2);
     }
     const k = seg & 3, face = (seg >> 2) & 3, cell = seg >> 4;
     const gx = cell % GRID_SIZE, gz = Math.floor(cell / GRID_SIZE);
+    if (isShaft(this.grid[cell]) && k < 2 && gx > 0 && gz > 0 && gx < GRID_SIZE - 1 && gz < GRID_SIZE - 1) {
+      // a shaft's wall face: floor seam if there is a slab below the opening, ceiling seam if there is one above
+      const band = this.grid[cell] - CELL_SHAFT_LOW;
+      if (k === 0 ? band === 0 : band === 2) return false;
+      const fx = face === 0 ? gx + 1 : (face === 1 ? gx - 1 : gx), fz = face === 2 ? gz + 1 : (face === 3 ? gz - 1 : gz);
+      return !isWallLike(this.grid[fz * GRID_SIZE + fx]);
+    }
     if (!this.cellFullWall(gx, gz) || gx <= 0 || gz <= 0 || gx >= GRID_SIZE - 1 || gz >= GRID_SIZE - 1) return false;
     const fx = face === 0 ? gx + 1 : (face === 1 ? gx - 1 : gx), fz = face === 2 ? gz + 1 : (face === 3 ? gz - 1 : gz);
     if (isWallLike(this.grid[fz * GRID_SIZE + fx])) return false;
@@ -4755,7 +4763,7 @@ class NikitaGame {
     const k = h.y < WALL_H * 0.5 ? 0 : 1;
     const lx = h.x - (gx - GRID_SIZE * 0.5) * CELL_SIZE, lz = h.z - (gz - GRID_SIZE * 0.5) * CELL_SIZE;
     const id = (cx, cz, face) => ((cz * GRID_SIZE + cx) * 4 + face) * 4 + k;
-    if (lx < E && this.cellSolid(gx - 1, gz) && gx > 0) return id(gx - 1, gz, 0);
+    if (lx < E && this.cellSolid(gx - 1, gz) && gx > 0) return id(gx - 1, gz, 0);   // (validSeg decides if it is real)
     if (lx > CELL_SIZE - E && this.cellSolid(gx + 1, gz) && gx < GRID_SIZE - 1) return id(gx + 1, gz, 1);
     if (lz < E && this.cellSolid(gx, gz - 1) && gz > 0) return id(gx, gz - 1, 2);
     if (lz > CELL_SIZE - E && this.cellSolid(gx, gz + 1) && gz < GRID_SIZE - 1) return id(gx, gz + 1, 3);
@@ -4805,10 +4813,18 @@ class NikitaGame {
     const gx = c % GRID_SIZE, gz = Math.floor(c / GRID_SIZE);
     for (let k = 0; k < 4; k++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + k, birth);
     for (let f = 0; f < 4; f++) {
-      const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
-      if (this.cellSolid(nx, nz)) continue;
+      if (!this.shaftFaceFramed(gx, gz, f)) continue;
       for (let j = 0; j < 4; j++) this.revealSeg(SHAFT_SEG_BASE + c * 32 + 4 + f * 4 + j, birth);
     }
+  }
+
+  shaftAlongX(gx, gz) { return !this.cellFullWall(gx - 1, gz) || !this.cellFullWall(gx + 1, gz); }
+
+  // A shaft face gets a rectangle if it is an opening (open floor beyond) or a dead end (rock beyond, along the tunnel).
+  shaftFaceFramed(gx, gz, f) {
+    const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
+    if (!this.cellSolid(nx, nz)) return true;
+    return this.cellFullWall(nx, nz) && (f < 2) === this.shaftAlongX(gx, gz);
   }
 
   addShaftSeg(seg, birth) {
@@ -4818,7 +4834,7 @@ class NikitaGame {
     const x0 = (gx - GRID_SIZE * 0.5) * C, z0 = (gz - GRID_SIZE * 0.5) * C;
     const yl = lo + e, yh = hi - e;
     // the tunnel runs along x when its x-neighbours are not solid rock
-    const alongX = !this.cellFullWall(gx - 1, gz) || !this.cellFullWall(gx + 1, gz);
+    const alongX = this.shaftAlongX(gx, gz);
     let A, B;
     if (k < 4) {
       const y = (k & 1) ? yh : yl, side = k < 2 ? e : C - e;
@@ -4827,7 +4843,9 @@ class NikitaGame {
     } else {
       const f = (k - 4) >> 2, j = (k - 4) & 3;
       const onX = f < 2;                                     // mouth plane perpendicular to x
-      const plane = onX ? (f === 0 ? x0 + C + e : x0 - e) : (f === 2 ? z0 + C + e : z0 - e);
+      const nx = gx + (f === 0 ? 1 : f === 1 ? -1 : 0), nz = gz + (f === 2 ? 1 : f === 3 ? -1 : 0);
+      const oe = this.cellSolid(nx, nz) ? -e : e;           // dead-end cap: inside the tunnel
+      const plane = onX ? (f === 0 ? x0 + C + oe : x0 - oe) : (f === 2 ? z0 + C + oe : z0 - oe);
       const pt = (w, y) => onX ? [plane, y, z0 + w] : [x0 + w, y, plane];
       if (j === 0) { A = pt(e, yl); B = pt(C - e, yl); }
       else if (j === 1) { A = pt(e, yh); B = pt(C - e, yh); }
@@ -7157,7 +7175,7 @@ class NikitaGame {
           c.fillStyle = 'rgba(255, 150, 20, 0.7)';
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (isShaft(v)) {
-          c.fillStyle = 'rgba(51, 221, 255, 0.65)';
+          c.fillStyle = 'rgba(0, 255, 136, 0.45)';
           c.fillRect(x * scale, z * scale, scale, scale);
         } else if (v === CELL_RUNWAY) {
           c.fillStyle = 'rgba(0, 255, 136, 0.16)';
