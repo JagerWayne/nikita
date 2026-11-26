@@ -33,6 +33,14 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
+## Landing from hover and new physics (v2.19)
+
+- **No LAND button.** Land from a hover: hover, then hold the stick down (S) onto a flat floor and the rocket touches down (dust puff, a thud, the nose bobs). On the ground the HOVER button (H) lifts off straight into a hover (dust blows out during the spool-up); raising the lever still lifts off into forward flight. The G key is gone. Ramps and the lift shaft still cannot be landed on.
+- **Braking dip.** Slowing down tips the nose forward on a springy pitch: a lever pull-back dips it a little, and engaging HOVER at speed brakes hard (retro-jet puffs ahead of the nose, an air-brake whoosh, a shudder, the field of view pulls in) and dips it up to about 15 degrees before it bobs back and settles.
+- **Wall bumps.** A gentle bump in hover (and every glancing deflection) rebounds a little, knocks the nose and roll away from the surface, spins the hull off the wall and throws sparks, shake and a thud.
+- **Also new.** Hard turns at speed rumble the view; below 14% fuel the engine coughs now and then (speed dip, nose drop, shudder).
+- **Lidar resolution upgrade.** Besides more rays (600 to 1,800) and scan rows (8 to 24), it now makes the lidar dots bigger (up to 1.6 times).
+
 ## Landing (v2.9–2.11)
 
 - **LAND button (v2.11, VTOL since v2.14).** Press LAND (G on a keyboard) and the rocket brakes to a hover, levels its nose and settles straight down onto the floor like a VTOL, then lands by itself. Press the button again to cancel; a landing also lapses after 24 s. Ramps and the lift shaft cannot be landed on (the landing cancels). A slow, gentle touch without a landing request just skims the floor without damage.
@@ -128,7 +136,7 @@ The facility is seen only through the rocket's lidar. The screen is near-black g
 | Upgrade | Level 0 | Level 10 | Cost per level |
 | --- | --- | --- | --- |
 | Range | 32 units | 80 units | 100 + 70 x level |
-| Resolution | 600 rays per frame | 1,800 | 100 + 70 x level |
+| Resolution | 600 rays per frame, 8 scan rows, normal dots | 1,800 rays, 24 rows, dots 1.6 times bigger | 100 + 70 x level |
 | Focus beam | 30% of rays in a 25 degree cone | 70% in a 45 degree cone | 100 + 70 x level |
 | Memory | 2 s glow, dim old dots, 3 sectors kept | 6 s glow, brighter old dots, 10 sectors | 100 + 70 x level |
 | Deep scan (3 levels) | off | 1: cracked walls visible from afar (and on the radar); 2: secret chambers outlined and their power-ups shown; 3: shaft interiors and power-ups shown | 400 + 300 x level |
