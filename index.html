@@ -4692,9 +4692,17 @@ class NikitaGame {
     if (m.fuel <= 0 || m.landed) return;
     if (!m.hover) this.pressHover();
     m.auto = true; m.landReq = false;
-    this.auto = { mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: new Set(), triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
+    const M = this.autoMemory();                // rooms already scanned in this sector carry over from rocket to rocket
+    this.auto = { mem: M, cov: M.cov, spots: M.spots, mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: M.tried, triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
       sx: m.pos.x, sz: m.pos.z, lost: 0, t0: this.gameClock, noMore: false, fire: false, aimObj: null, aimT: 0, pick: null };
     this.pushFeed(`AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+  }
+
+  // Exploration memory for the current sector (coverage of scanned rooms, spots already scanned or given up)
+  autoMemory() {
+    const key = (this.lidarKey || 'none') + '|' + this.nFloors;
+    if (!this._autoMem || this._autoMem.key !== key) this._autoMem = { key, cov: null, tried: new Set(), spots: 0, retried: false };
+    return this._autoMem;
   }
 
   autoStop(msg, keepPlay) {
@@ -4764,10 +4772,11 @@ class NikitaGame {
         if (path && path.length <= 16) { A.mode = 'PICKUP'; A.pick = byNode.get(path.length ? path[path.length - 1] : node); return path; }
       }
     }
-    // 2) explore first; hunt once the area is explored enough (85% scanned, nothing left to scan, 4 rockets used, rockets running low, hull hurt)
-    //    and the target is reachable on the fuel that is left (when nothing is left to scan, or from the 6th rocket on, try anyway)
-    const exploredEnough = this.scanPercent() >= 85 || A.noMore || this.fired >= 4 || this.ammo <= 10 || m.hull < 35;
-    if (huntPath && exploredEnough && (slack > 8 || A.noMore || this.fired >= 6)) { A.mode = 'HUNT'; return huntPath; }   // from the 6th rocket on, try even a far target
+    // 2) traverse the whole reachable map first: destroying the LAST primary target ends the sector, so that one waits until nothing
+    //    reachable is left to scan (or the scan reads 100%, rockets are nearly gone, the hull is badly hurt). Any other target in or next
+    //    to the current room is eliminated on the way (it does not end the sector).
+    const exploredEnough = this.scanPercent() >= 100 || A.noMore || (A.mem && A.mem.done) || this.ammo <= 6 || m.hull < 30;
+    if (huntPath && (exploredEnough || (active.length > 1 && huntPath.length <= 14 && slack > 5))) { A.mode = 'HUNT'; return huntPath; }
     return null;
   }
 
@@ -4782,34 +4791,108 @@ class NikitaGame {
     return { yaw: Math.max(-1, Math.min(1, ty * 2.8)), climb: Math.max(-1, Math.min(1, (tt.pos.y - m.pos.y) * 1.4)), speed: Math.abs(ty) < 0.5 ? Math.min(vmax, Math.max(2, td - 2.5)) : 0.5 };
   }
 
-  // The gunner: finds the best thing in sight to shoot, turns toward it, matches its height and holds the trigger while aligned.
-  // Mutates `out` ({yaw, climb, speed}) and sets A.fire.
-  autoGunner(m, dt, A, out) {
-    A.fire = false;
-    if (this.gunAmmo <= 0 || m.drop > 0) return;
-    const P = m.pos, hunting = A.mode === 'HUNT';
-    let best = null, bestScore = -1e9;
+  // ---- room-by-room exploring: go to the middle of the room, spin 360 degrees to scan the walls, move to the nearest opening
+  //      (the first spot the scan could not see past), scan again ----
+  // Mark every cell the lidar could see from the rocket's spot (a fan of horizontal rays) as covered
+  autoMarkSpot(m, A) {
+    const G = GRID_SIZE, GG = G * G, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(m.pos.y)));
+    if (!A.cov || A.cov.length !== GG * this.nFloors) A.cov = new Uint8Array(GG * this.nFloors);
+    const R = Math.min(26, this.lidarParams().range);
+    const c0 = this.cellAt(m.pos.x, m.pos.z);
+    if (c0 >= 0) A.cov[f * GG + c0] = 1;
+    for (let k = 0; k < 96; k++) {
+      const a = (k / 96) * Math.PI * 2, dx = Math.sin(a), dz = Math.cos(a);
+      for (let d = 1; d <= R; d += 1) {
+        const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
+        if (this.isGridSolid(x, z, m.pos.y)) break;
+        const c = this.cellAt(x, z);
+        if (c >= 0) A.cov[f * GG + c] = 1;
+      }
+    }
+    A.spots = (A.spots || 0) + 1;
+    if (A.mem) { A.mem.cov = A.cov; A.mem.spots = A.spots; }
+  }
+
+  // Free distance (in metres, up to 7) from a node's cell centre to the nearest wall: how "in the middle of a room" it is
+  autoClearance(i) {
+    const G = GRID_SIZE, GG = G * G, c = i % GG, f = (i / GG) | 0;
+    const x0 = gridToWorldX(c % G), z0 = gridToWorldZ((c / G) | 0), y = f * WALL_H + 2.0;
+    let best = 7;
+    for (let k = 0; k < 8; k++) {
+      const a = k * Math.PI / 4, dx = Math.sin(a), dz = Math.cos(a);
+      for (let d = 1; d < best; d += 1) if (this.isGridSolid(x0 + dx * d, z0 + dz * d, y)) { best = d; break; }
+    }
+    return best;
+  }
+
+  // The nearest opening: a walkable node the scans have not covered yet that touches a covered one. Returns a path or null.
+  autoFrontier(node, blocked, A) {
+    const G = GRID_SIZE, GG = G * G;
+    if (!A.cov || !A.spots) return [];                       // nothing scanned yet: scan right here first
+    const cov = A.cov;
+    const touchesCovered = (i) => {
+      const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
+      return (x > 0 && cov[i - 1]) || (x < G - 1 && cov[i + 1]) || (z > 0 && cov[i - G]) || (z < G - 1 && cov[i + G]);
+    };
+    return this.autoBfs(node, (i) => !cov[i] && !A.tried.has(i) && !blocked[i] && touchesCovered(i), blocked);
+  }
+
+  // Before spinning at a spot: the best-placed node within 3 steps (most room around it) if clearly better than here
+  autoCenterPath(node, blocked) {
+    const G = GRID_SIZE, GG = G * G;
+    if (this.navFor !== this.ramps) this.navLinksBuild();
+    const seen = new Map([[node, 0]]), q = [node];
+    let best = node, bestV = this.autoClearance(node);
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], dd = seen.get(i);
+      if (dd >= 3) continue;
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      const nb = [];
+      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
+      for (const n of nb) {
+        if (seen.has(n) || !this.navOk(n) || blocked[n] || isShaft(this.floors[(n / GG) | 0][n % GG])) continue;
+        seen.set(n, dd + 1); q.push(n);
+        const v = this.autoClearance(n) - 0.15 * (dd + 1);
+        if (v > bestV + 0.9) { bestV = v; best = n; }
+      }
+    }
+    if (best === node) return null;
+    return this.autoBfs(node, (i) => i === best, blocked);
+  }
+
+  // What the gunner may shoot: ONLY targets wearing the [ ] brackets (sentries and CIWS turrets that thermal sees, laser control
+  // boxes seen from up to 95 m), with a clear line and in gun range. Barrels, grates and primary targets are never shot.
+  autoCandidates(m, A) {
+    const P = m.pos, list = [];
     const consider = (obj, kind, x, y, z, minD, maxD, pri, ammoNeed) => {
       if (A.ignore.has(obj) || this.gunAmmo < ammoNeed) return;
       const dx = x - P.x, dy = y - P.y, dz = z - P.z, d = Math.hypot(dx, dy, dz);
       if (d < minD || d > maxD) return;
       if (!this.los3(P.x, P.y, P.z, x, y, z)) return;
       let ang = Math.atan2(-dx, -dz) - m.yaw; while (ang > Math.PI) ang -= Math.PI * 2; while (ang < -Math.PI) ang += Math.PI * 2;
-      const score = pri * 12 - d - Math.abs(ang) * 5;
-      if (score > bestScore) { bestScore = score; best = { obj, kind, x, y, z, d, ang, dy }; }
+      list.push({ obj, kind, x, y, z, d, ang, dy, pri, score: pri * 12 - d - Math.abs(ang) * 5 });
     };
-    for (const s of this.sentries) if (s.active && !s.dying) consider(s, 'sentry', s.pos.x, s.pos.y + 1.2, s.pos.z, 3, 24, s.alerted ? 7 : 5, 4);
-    for (const t of this.turrets) if (t.active) consider(t, 'turret', t.pos.x, t.pos.y, t.pos.z, 3, 26, 6, 8);
-    for (const l of this.lasers) if (!l.disabled && l.relayActive) consider(l, 'box', l.relayPos.x, l.relayPos.y, l.relayPos.z, 3, 20, 3, 6);
-    for (const b of this.barrels) if (b.active) consider(b, 'barrel', b.pos.x, b.pos.y, b.pos.z, 13, 26, 2, 12);   // far enough that the blast cannot reach the rocket
-    for (const g of this.grates) if (g.active) consider(g, 'grate', g.pos.x, g.pos.y, g.pos.z, 3, 18, 1, 24);
+    for (const s of this.sentries) if (s.active && !s.dying && s.thermalVis) consider(s, 'sentry', s.pos.x, s.pos.y + 1.2, s.pos.z, 3, 28, s.alerted ? 7 : 5, 4);
+    for (const t of this.turrets) if (t.active && t.mesh.userData._tv) consider(t, 'turret', t.pos.x, t.pos.y, t.pos.z, 3, 30, 6, 8);
+    for (const l of this.lasers) if (l.boxVis && !l.disabled && l.relayActive && l.lockRef && l.lockRef.active) consider(l, 'box', l.relayPos.x, l.relayPos.y, l.relayPos.z, 3, 36, 3, 6);
+    return list;
+  }
+
+  // The gunner: turns toward the best bracketed target, matches its height and holds the trigger while aligned.
+  // Mutates `out` ({yaw, climb, speed}) and sets A.fire.
+  autoGunner(m, dt, A, out) {
+    A.fire = false;
+    if (this.gunAmmo <= 0 || m.drop > 0) return;
+    const P = m.pos, hunting = A.mode === 'HUNT';
+    let best = null;
+    for (const c of this.autoCandidates(m, A)) if (!best || c.score > best.score) best = c;
     if (!best) { A.aimObj = null; A.aimT = 0; return; }
     if (A.aimObj !== best.obj) { A.aimObj = best.obj; A.aimT = 0; }
     A.aimT += dt;
     if (A.aimT > 7) { A.ignore.add(best.obj); A.aimObj = null; return; }        // cannot hit it (height, angle): give up on it
-    const important = best.kind === 'sentry' || best.kind === 'turret' || best.kind === 'box';
-    // turn toward it when it is roughly ahead (always for threats), and match its height
-    if (Math.abs(best.ang) < 0.7 || (important && best.d < 18)) {
+    const important = true;
+    // turn toward it when it is roughly ahead (threats always), and match its height
+    if (Math.abs(best.ang) < 0.7 || best.d < 20) {
       out.yaw = Math.max(-1, Math.min(1, best.ang * 3.2));
       out.speed = Math.min(out.speed, hunting ? 2.5 : 1.2);
     }
@@ -4817,8 +4900,8 @@ class NikitaGame {
     const aimY = Math.max(flo + 1.3, Math.min(ceil - 1.1, best.y));
     if (Math.abs(best.dy) > 0.5 || important) out.climb = Math.max(-1, Math.min(1, (aimY - P.y) * 1.6));
     const tol = best.kind === 'sentry' ? 1.1 : 0.6;
-    const dist = best.d, angTol = Math.atan2(best.kind === 'sentry' ? 0.6 : 0.7, Math.max(2, dist)) * 0.9;
-    if (Math.abs(best.ang) < angTol && Math.abs(aimY - P.y) < tol + 0.3 || (best.kind === 'sentry' && Math.abs(best.ang) < angTol)) A.fire = true;
+    const angTol = Math.atan2(best.kind === 'sentry' ? 0.6 : 0.7, Math.max(2, best.d)) * 0.9;
+    if ((Math.abs(best.ang) < angTol && Math.abs(aimY - P.y) < tol + 0.3) || (best.kind === 'sentry' && Math.abs(best.ang) < angTol)) A.fire = true;
   }
 
   // One frame of autopilot: returns { yaw, climb, speed } in stick units / m/s
@@ -4845,10 +4928,22 @@ class NikitaGame {
     const scanDone = this.scanPercent() >= 100;
     if (scanDone) A.noMore = true;
 
-    if (A.dwell > 0) {          // arrived: spin slowly so the scanner sweeps every side
-      A.dwell -= dt;
-      if (A.dwell <= 0) { A.tried.add(A.target); A.target = -1; A.path = null; }
-      return { yaw: 0.7, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
+    if (A.spin) {               // scanning: one full 360-degree turn on the spot, so the lidar sweeps every wall
+      let dy = m.yaw - A.spin.last; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
+      A.spin.acc += Math.abs(dy); A.spin.last = m.yaw; A.spin.t += dt;
+      if (A.spin.acc >= Math.PI * 2 + 0.1 || A.spin.t > 14) {
+        this.autoMarkSpot(m, A);
+        A.tried.add(A.target >= 0 ? A.target : node);
+        A.spin = null; A.target = -1; A.path = null; A.replanT = 0;
+        A.elim = 9;                                             // room scanned: first eliminate what is in it (up to 9 s), then the next room
+      }
+      return { yaw: 1, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
+    }
+
+    if (A.elim > 0) {            // eliminating: hold position while bracketed hostiles are in sight (the gunner turns and fires)
+      A.elim -= dt;
+      if (this.autoCandidates(m, A).length) return { yaw: 0, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
+      A.elim = 0;
     }
 
     A.replanT -= dt;
@@ -4880,9 +4975,15 @@ class NikitaGame {
               const n = this.autoSegNode(seg);
               if (n >= 0 && !A.tried.has(n)) cand.add(n);
             }
-            let p2 = this.autoBfs(node, (i) => cand.has(i), blocked);
+            let p2 = this.autoFrontier(node, blocked, A);            // room by room: the nearest opening the scans did not cover
+            if (!p2) p2 = this.autoBfs(node, (i) => cand.has(i), blocked);   // then any edge still unscanned
+            if (!p2 && A.mem && !A.mem.retried && A.tried.size) {   // before calling it done, retry every spot that was given up once
+              A.mem.retried = true; A.tried.clear();
+              p2 = this.autoFrontier(node, blocked, A) || this.autoBfs(node, (i) => cand.has(i), blocked);
+            }
+            if (p2) A.centered = false;
             if (!p2) {
-              A.noMore = true;
+              A.noMore = true; if (A.mem) A.mem.done = true;      // remembered for the sector: the next rocket hunts straight away
               if (this.targets.some((t) => t.active) && this.gameClock > (A.huntBlock || 0)) {                       // nothing left to scan: the next decision is a hunt
                 A.holdN = (A.holdN || 0) + 1;
                 if (A.holdN > 12) { this.autoStop(`AUTOPILOT DONE — SCAN ${this.scanPercent()}% · THE TARGET CANNOT BE REACHED FROM HERE`); return hold(); }
@@ -4931,7 +5032,20 @@ class NikitaGame {
         this.autoStop(`AUTOPILOT AT THE SEALED WALL — SCAN ${this.scanPercent()}% · BLAST IT OPEN (COSTS THIS ROCKET), THEN RELAUNCH`);
         return hold();
       }
-      A.dwell = 1.2; return hold();
+      if (!A.centered) {                                        // first the middle of the room (the best view of its walls)
+        A.centered = true;
+        const nodeNow = this.autoNode(m);
+        const cp = nodeNow >= 0 ? this.autoCenterPath(nodeNow, this.autoBlocked()) : null;
+        if (cp && cp.length) { A.target = cp[cp.length - 1]; A.path = cp; A.pi = 0; A.replanT = 2.0; return hold(); }
+      }
+      A.centered = false;
+      const nHere = this.autoNode(m);
+      if (nHere >= 0 && this.autoClearance(nHere) <= 2) {        // a corridor: no spin needed, the all-around lidar rays see both walls
+        this.autoMarkSpot(m, A); A.tried.add(A.target >= 0 ? A.target : nHere); A.target = -1; A.path = null; A.replanT = 0;
+        return hold();
+      }
+      A.spin = { acc: 0, last: m.yaw, t: 0 };                   // a room: one full 360-degree scan
+      return hold();
     }
 
     const wp = A.path[A.pi], [tx, tz] = wpAt(wp);
@@ -4963,8 +5077,9 @@ class NikitaGame {
         ds += sl; px = nx; pz = nz;
       }
     }
-    const fc = this.autoFwdClear(m, 18), vcap = A.mode === 'HUNT' ? 13 : 8;
-    let v = Math.min(vcap, 3 + Math.sqrt(2 * 9 * Math.max(0, ds - 1.5)), fc - 2.0);
+    const far = A.path.length - A.pi > 4;                         // transit to a far room: fly fast; close to the scan spot: slow
+    const fc = this.autoFwdClear(m, 22), vcap = (A.mode === 'HUNT' || far) ? 16 : 7;
+    let v = Math.min(vcap, 3 + Math.sqrt(2 * 11 * Math.max(0, ds - 1.5)), fc - 2.0);
     v = Math.max(0, v);
     v *= Math.max(0, Math.min(1, 1 - Math.abs(dYaw) / 1.1));
     if (v < 1.0 && Math.abs(dYaw) < 0.9 && fc > 3) v = 1.0;
@@ -6561,6 +6676,9 @@ class NikitaGame {
       const lx = Math.max(l.xMin, Math.min(l.xMax, o.x));
       const v = mark(l, see(lx, 3.5, l.z, 1) || see(l.relayPos.x, l.relayPos.y, l.relayPos.z));
       l.thermalVis = v;
+      // the control box is bracketed (and can be locked / shot) only when thermal itself sees the box: inside thermal range with a
+      // clear line (or through walls with penetration), like sentries and turrets. Seeing the beams alone is not enough.
+      l.boxVis = Boolean(l.lockRef && l.lockRef.active && !l.disabled && see(l.relayPos.x, l.relayPos.y, l.relayPos.z));
       for (const e of l.emitters) this.setThermalVis(e, v);
       this.setThermalVis(l.relayGroup, v);
     }
@@ -7842,7 +7960,7 @@ class NikitaGame {
     }
     for (let i = 0; i < this.lasers.length; i++) {
       const l = this.lasers[i];
-      if (l.thermalVis && l.lockRef.active) this._considerTarget('LASER BOX', l.lockRef, l.relayPos.x, l.relayPos.y, l.relayPos.z, 0, m, SWITCH_CONE_MULT);
+      if (l.boxVis && l.lockRef.active) this._considerTarget('LASER BOX', l.lockRef, l.relayPos.x, l.relayPos.y, l.relayPos.z, 0, m, SWITCH_CONE_MULT);
     }
     // Returns a reused object (no per-call allocation); copy it if you need to keep it.
     return this._bestCand.ref ? this._bestCand : null;
@@ -8103,7 +8221,7 @@ class NikitaGame {
     }
     if (m.hover && !m.landed) { m.hoverClimb = pitchInput; pitchInput = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
-    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1);
+    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1) * (m.auto && this.auto && this.auto.spin ? 2.0 : 1);   // the autopilot's scan spin turns twice as fast
     const targetYawRate = yawInput * agility;
     const targetPitchRate = pitchInput * agility * 0.85;
     const rateResp = m.hover ? (yawInput !== 0 ? 6.0 : 3.2) : (yawInput !== 0 ? 15.0 : 12.5);   // hover: the spin builds up and coasts
@@ -9088,7 +9206,7 @@ class NikitaGame {
       // [ ] brackets only on what thermal currently sees
       for (let i = 0; i < this.sentries.length; i++) if (this.sentries[i].thermalVis) renderLOSBracket(this.sentries[i], 'SENTRY', 1.25);
       for (let i = 0; i < this.turrets.length; i++) if (this.turrets[i].mesh.userData._tv) renderLOSBracket(this.turrets[i], 'CIWS', 0);
-      for (let i = 0; i < this.lasers.length; i++) { const l = this.lasers[i]; if (l.thermalVis && l.lockRef.active) renderLOSBracket(l.lockRef, 'LASER BOX', 0); }
+      for (let i = 0; i < this.lasers.length; i++) { const l = this.lasers[i]; if (l.boxVis && l.lockRef.active) renderLOSBracket(l.lockRef, 'LASER BOX', 0); }
 
       // "?" = heard something / suspicious, "!" = alerted (shown through walls: you know when you are loud)
       for (let i = 0; i < this.sentries.length; i++) {
