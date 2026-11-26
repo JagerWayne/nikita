@@ -8,7 +8,7 @@ If no name was given, take it from `<title>` or the README. If the app already h
 
 It must be installable on phones (home screen, full screen like a native app), work offline, and always update to the newest version without users clearing anything. It is hosted as static files on GitHub Pages, so there is no build step.
 
-Work through sections 1-12 (including 5b, libraries) in order, then do the checks in section 13 and report each result as pass / fail / not testable here.
+Work through sections 1-12 (including 2b icon, 5b libraries and 8b title screen) in order, then do the checks in section 13 and report each result as pass / fail / not testable here.
 
 ## 1. Ground rules
 - Served over HTTPS (GitHub Pages); localhost works for testing.
@@ -40,8 +40,17 @@ Work through sections 1-12 (including 5b, libraries) in order, then do the check
 }
 ```
 - `id`, `start_url` and `scope` are `./` so it works from a sub-folder and the install identity stays stable.
-- Use the app's real name, colours (background colour = loading-screen colour) and categories. Set `orientation` to `landscape` or `portrait` if the game only works in one.
-- Icons: create the PNGs in `icons/`: `icon-192.png`, `icon-512.png`, **maskable** 192/512 (artwork inside the central 80% safe zone on a full-bleed background), and `apple-touch-icon.png` (180x180, no transparency). If the app has no artwork, generate icons from its logo/title/colours (Python Pillow, or Playwright rendering an SVG). Look at the result.
+- Use the app's real name, colours (background colour = loading-screen colour) and categories. **Decide the orientation from how the game really plays** (read the code/CSS/canvas sizing). If it is landscape-only set `"orientation": "landscape"` (portrait-only: `"portrait"`, otherwise `"any"`), and follow section 8b (forced landscape).
+- **Icon (make a proper one, section 2b):** create the PNGs in `icons/`: `icon-192.png`, `icon-512.png`, **maskable** 192/512 (artwork inside the central 80% safe zone on a full-bleed background), and `apple-touch-icon.png` (180x180, no transparency). Keep the master `icons/icon.svg`.
+
+## 2b. Creating a proper icon
+If the game has no icon yet, or only a placeholder/low-res one, design one; don't just shrink a screenshot or print the title text.
+1. **Concept:** one bold, simple symbol that says what the game is (ship, character, ball, tile...) read from the game's art, theme and colours. No small text, no fine detail, no more than 3-4 colours. It must stay recognisable at 48x48.
+2. **Master file:** draw it as `icons/icon.svg` (1024x1024 viewBox) with a full-bleed background (gradient or solid, using the app's `background_color`/`theme_color` palette) and the symbol centred. Keep all important artwork inside the **central 80% (a circle of diameter 800)** so the same master works as maskable.
+3. **Export** with Playwright/Chromium (render the SVG on a page and screenshot with `omitBackground:false`) or Pillow/cairosvg to: `icon-512.png`, `icon-192.png`, `icon-maskable-512.png`, `icon-maskable-192.png` (full-bleed square, no rounded corners, no transparency), `apple-touch-icon.png` (180x180, opaque), and a 32x32 `favicon` PNG. Plain `any` icons may have rounded corners/transparent margins; maskable and Apple icons must not.
+4. **Look at it** (Read the PNGs): check it at 512, 192 and 48 px, and make a contact sheet showing the maskable icon cropped to a circle, a squircle and a rounded square. Redraw if anything is clipped or unreadable.
+5. The same artwork is used on the title screen (section 8b) and in the page's `<link rel="icon">`.
+6. If the user already supplied an icon/logo file, use it as the artwork (still produce all sizes and the safe-zone version), and say so.
 
 ## 3. `<head>` of `index.html`
 ```html
@@ -285,6 +294,38 @@ Add (or extend) a Settings / About panel reachable from the main menu, containin
 - **Delete save data** (section 9), if the app saves anything.
 - Make buttons at least 44x44 px and legible on phones; respect the safe-area insets.
 
+## 8b. Title screen, main menu and forced landscape
+The first screen after loading must be a clear **title screen**, not straight into gameplay. If the app already has a title/menu, restyle and extend it rather than adding a second one.
+
+**Layout (centred, readable on a phone in landscape, respects safe-area insets):**
+- The **icon** (same artwork as `icons/icon-192.png`), large, above or beside the title.
+- The **game name** in big type, using the game's own look/font.
+- The **version**, always from `window.APP_VERSION` ("v1.0"), small but clearly legible under the name.
+- The menu, as large touch-friendly buttons (>= 48 px tall), keyboard/gamepad focusable (arrow keys + Enter), with a visible focus state:
+
+| Button | Behaviour |
+|---|---|
+| **New** | Starts a fresh game and **deletes the old save**. If a save exists, first show the in-app confirm dialog ("Starting a new game deletes your saved progress. Continue?" Cancel / Start new). No dialog when there is no save. Only deletes the app's own keys (`SAVE_KEYS`, section 9). |
+| **Continue** | Loads the game from storage and resumes. **Disabled/greyed (or hidden) when there is no valid save.** Validate the saved data (try/catch, version/shape check); if it is corrupt, tell the player and offer New instead of crashing. If an older save format is found, migrate it. Optionally show a one-line summary (level/score/date) under the button. |
+| **Options** | Opens the options menu (sound/music volume, controls, graphics quality, Check for updates, Install, Delete save data, About/version; whatever the app really has). **Hide this button if the app has no options at all**, and say so in the report. Remember settings under the app's prefixed storage key. |
+| **Exit** | Saves the current state, stops audio/animation loops, then closes the app (see below). |
+
+- Pressing Escape / the Android back button in the game returns to this menu (use `history.pushState` + `popstate`, so back does not leave the app by accident), after autosaving.
+- Menu order is fixed: New, Continue, Options, Exit. If there is a save, give **Continue** the default focus; otherwise **New**.
+- Show the "Install app" button and the update banner here too when relevant, but never let them crowd the four main buttons.
+
+**Exit (be honest about browser limits):** a web page can only close a window it is allowed to close.
+1. Autosave, pause/stop audio, cancel `requestAnimationFrame` loops and timers.
+2. Call `window.close()`. This works in installed desktop PWA windows and in many installed Android PWAs.
+3. If the page is still open ~300 ms later (normal browser tab, iOS, some Android versions), show a full-screen "Thanks for playing" screen with the icon and a hint: "You can now close this app (swipe it away or press Home)", plus a **Back to menu** button. Never leave a dead, unresponsive screen.
+4. Never call `history.back()` repeatedly, navigate to `about:blank`, or unregister the service worker as a way of "exiting".
+
+**Forced landscape (only if the game is landscape-only; mirror this for portrait-only):**
+1. Manifest `"orientation": "landscape"` (section 2) makes the installed app open landscape on Android.
+2. In JS, after the first user tap (needed by browsers), try `screen.orientation.lock('landscape')` inside try/catch. It only works in fullscreen or an installed app, so call `document.documentElement.requestFullscreen()` first when not already standalone and the player taps Play/New/Continue (ignore failures; iOS does not support either).
+3. **Fallback that always works:** when the device is in portrait (`@media (orientation: portrait)` / `matchMedia`), show a full-screen overlay with a rotating-phone icon and "Please rotate your device to landscape". Pause the game and its audio while the overlay is up and resume when rotated. Do not simply rotate the canvas with CSS transforms unless the user asks for it.
+4. The title screen itself must look right in both orientations (the overlay covers portrait for landscape-only games).
+
 ## 9. Delete save data (only if the app stores anything)
 1. **Find every piece of persisted data**: grep for `localStorage`, `sessionStorage`, `indexedDB`, `document.cookie`, and `caches` used as data. List the keys found and what each holds (progress, settings, high scores...).
 2. If nothing is stored, **skip this section and say so in the report**; don't add a dead button.
@@ -342,6 +383,9 @@ Installed phones pick up the new version on the next launch (or immediately via 
 Use the pre-installed Playwright + Chromium and a local static server (`python3 -m http.server`). State what you could not test (real phones).
 - **Manifest:** loads, name/icons (incl. maskable) resolve, no errors; every icon file exists and has the declared size.
 - **Files list:** every entry in `APP_FILES` exists, and nothing the page loads is missing from it.
+- **Icon:** all icon files exist with the declared sizes; maskable icons are opaque and keep their artwork inside the central 80%; show the contact sheet (circle / squircle / rounded crops) and a 48 px render, and judge honestly that it is readable.
+- **Title screen:** screenshot at 844x390 (landscape phone) and 1280x720: icon, game name, version and the four buttons are all visible and unclipped (also with a notch inset). Test the flows: no save -> Continue disabled; play, save, reload -> Continue resumes the same state; New with a save -> confirm dialog, Cancel keeps it, confirm deletes only the app's keys and starts fresh; corrupt save (write junk to the key) -> no crash; Options opens and its settings persist; Exit saves, tries `window.close()` and falls back to the "Thanks for playing" screen with Back to menu; Escape/back returns to the menu.
+- **Orientation (landscape-only games):** at 390x844 (portrait) the rotate overlay appears and the game is paused; at 844x390 it disappears and the game resumes; the manifest says `landscape`.
 - **Libraries:** none loaded from a CDN or unpinned URL (grep for `cdn.`, `unpkg`, `@latest`); each vendored library is the latest stable at the time (show the version table from section 5b); `tools/check-deps` runs and reports nothing outdated; no console errors with the upgraded versions.
 - **Service worker:** `sw.js?v=<version>` activates; Cache Storage has exactly one `<prefix><version>` cache holding every file in `APP_FILES`.
 - **Offline test:** load once, go offline (`context.setOffline(true)`), reload: the app starts and plays.
