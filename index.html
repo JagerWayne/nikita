@@ -1581,6 +1581,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <label class="ov-check"><span>Auto-Level Pitch</span><input type="checkbox" id="ov-autolevel" checked /></label>
     <label class="ov-check"><span>Explore Map Overlay (radar)</span><input type="checkbox" id="ov-xmap" /></label>
     <label class="ov-check"><span>Autopilot Debug (telemetry)</span><input type="checkbox" id="ov-apdebug" /></label>
+    <label class="ov-check"><span>New Autopilot (beta)</span><input type="checkbox" id="ov-newpilot" /></label>
     <label class="ov-check"><span>Invert Pitch Y-Axis</span><input type="checkbox" id="ov-invert-pitch" /></label>
     <label class="ov-check"><span>Live FPS / Draw Calls</span><input type="checkbox" id="ov-fps" /></label>
   </div>
@@ -2716,6 +2717,246 @@ class Autopilot {
     return this.t;
   }
 
+
+  // =====================================================================================================
+  // STEP 2: waypoints (A* over explored tiles + string-pulled legs) and guidance (look-ahead pursuit)
+  // =====================================================================================================
+  engage() {
+    this.active = true; this.done = false; this.plan = null; this.scan = null; this.replanT = 0;
+    this.tried = this.tried && this._triedKey === this.g.lidarKey ? this.tried : new Set(); this._triedKey = this.g.lidarKey;
+    this.stuck = { t: 0, x: 0, z: 0 }; this.cmd = null; this.why = 'ENGAGED';
+    this.gun = { ignore: new Set(), aimObj: null, aimT: 0, mode: 'EXPLORE', path: null, pi: 0 };
+  }
+
+  flyable(v) { return v === XV.OPEN || v === XV.RAMP || v === XV.SH_TOP || v === XV.SH_MID || v === XV.SH_BOT || v === XV.HOLE || v === XV.HAZ; }
+
+  // Hazard layers, refreshed every 2 s. hard: never route through (turbines, bulkheads, live laser grids);
+  // soft: allowed at a cost (fuel barrels only explode when hit, grates are passable beside)
+  hazards() {
+    const g = this.g, now = g.gameClock;
+    if (this._hz && now - this._hzT < 2) return this._hz;
+    const G = GRID_SIZE, GG = G * G, hard = new Uint8Array(GG * g.nFloors), soft = new Uint8Array(GG * g.nFloors);
+    const disc = (L, x, z, r, f) => {
+      const g0 = worldToGridX(x - r - 2), g1 = worldToGridX(x + r + 2), z0 = worldToGridZ(z - r - 2), z1 = worldToGridZ(z + r + 2);
+      for (let gz = Math.max(0, z0); gz <= Math.min(G - 1, z1); gz++) for (let gx = Math.max(0, g0); gx <= Math.min(G - 1, g1); gx++)
+        if (Math.hypot(gridToWorldX(gx) - x, gridToWorldZ(gz) - z) < r + CELL_SIZE * 0.5) L[f * GG + gz * G + gx] = 1;
+    };
+    for (const tb of g.turbines) disc(hard, tb.pos.x, tb.pos.z, 3.2, 0);
+    for (const b of g.bulkheads) disc(hard, b.x, b.z, 3.0, 0);
+    for (const l of g.lasers) { if (l.disabled) continue; for (let x = l.xMin - 1; x <= l.xMax + 1; x += CELL_SIZE * 0.5) disc(hard, x, l.z, 1.2, 0); }
+    for (const tg of g.targets) if (tg.active) disc(hard, tg.pos.x, tg.pos.z, 0.3, Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tg.pos.y))));   // primary targets: flying into one detonates the warhead
+    for (const b of g.barrels) if (b.active) disc(soft, b.pos.x, b.pos.z, 0.6, Math.min(g.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
+    for (const gr of g.grates) if (gr.active) disc(soft, gr.pos.x, gr.pos.z, 0.6, 0);
+    this._hz = { hard, soft }; this._hzT = now;
+    return this._hz;
+  }
+
+  tileCenter(i) {
+    const G = GRID_SIZE, GG = G * G, c = i % GG;
+    return { x: gridToWorldX(c % G), z: gridToWorldZ((c / G) | 0), f: (i / GG) | 0 };
+  }
+
+  // Multi-goal A* (Dijkstra with a heap) from `start` to the frontier: explored, flyable tiles that touch unexplored ones.
+  // Step costs: 1 straight, 1.41 diagonal (only when both side tiles are flyable), +0.35 next to a wall, +2.5 next to a hazard,
+  // floor links (ramp ends) 2. Among the cheapest frontiers it prefers the one ahead of the nose.
+  planFrontier(start) {
+    const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, N = GG * g.nFloors, t = this.t;
+    if (!X || start < 0) return null;
+    if (g.navFor !== g.ramps) g.navLinksBuild();
+    const HZ = this.hazards(), haz = HZ.hard, soft = HZ.soft;
+    const ok = (i) => this.flyable(X[i]) && g.navOk(i) && !haz[i];
+    const unknownN = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]); };
+    const nearWall = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx < 0 || zz < 0 || xx >= G || zz >= G) return true; const v = X[i + dz * G + dx]; if (v === XV.SOLID || v === XV.CRACK) return true; } return false; };
+    const nearHaz = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx >= 0 && zz >= 0 && xx < G && zz < G && haz[i + dz * G + dx]) return true; } return false; };
+    const dist = new Float32Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+    // binary heap of [cost, node]
+    const H = []; const push = (c, n) => { H.push([c, n]); let k = H.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (H[p][0] <= H[k][0]) break; [H[p], H[k]] = [H[k], H[p]]; k = p; } };
+    const pop = () => { const top = H[0], last = H.pop(); if (H.length) { H[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < H.length && H[l][0] < H[m][0]) m = l; if (r < H.length && H[r][0] < H[m][0]) m = r; if (m === k) break; [H[m], H[k]] = [H[k], H[m]]; k = m; } } return top; };
+    dist[start] = 0; push(0, start);
+    let bestD = -1; const found = [];
+    while (H.length) {
+      const [d, i] = pop();
+      if (d > dist[i]) continue;
+      if (bestD >= 0 && d > bestD + 5) break;
+      if (i !== start && unknownN(i) && !this.tried.has(i)) { found.push(i); if (bestD < 0) bestD = d; }
+      const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
+      const step = (n, base) => { if (!ok(n)) return; const nd = d + base + (nearWall(n) ? 0.35 : 0) + (nearHaz(n) ? 2.5 : 0) + (soft[n] ? 3 : 0); if (nd < dist[n]) { dist[n] = nd; prev[n] = i; push(nd, n); } };
+      const L = x > 0, R = x < G - 1, U = z > 0, D = z < G - 1;
+      if (L) step(i - 1, 1); if (R) step(i + 1, 1); if (U) step(i - G, 1); if (D) step(i + G, 1);
+      if (L && U && ok(i - 1) && ok(i - G)) step(i - G - 1, 1.414); if (R && U && ok(i + 1) && ok(i - G)) step(i - G + 1, 1.414);
+      if (L && D && ok(i - 1) && ok(i + G)) step(i + G - 1, 1.414); if (R && D && ok(i + 1) && ok(i + G)) step(i + G + 1, 1.414);
+      const extra = g.navLinks.get(i);
+      if (extra) for (const n of extra) step(n, 2);
+      if (f0 < 0) break;
+    }
+    if (!found.length) return null;
+    let best = found[0], bestS = Infinity;
+    for (const i of found) {
+      const p = this.tileCenter(i);
+      let a = Math.atan2(-(p.x - t.x), -(p.z - t.z)) - t.yaw; while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2;
+      const sc = dist[i] + Math.abs(a) * 2.5;
+      if (sc < bestS) { bestS = sc; best = i; }
+    }
+    const tiles = [];
+    for (let i = best; i !== start && i >= 0; i = prev[i]) tiles.push(i);
+    tiles.reverse();
+    return { goal: best, tiles };
+  }
+
+  // Is the straight segment a->b (same floor) clear: every sample over a flyable, hazard-free tile, with 0.55 m side clearance
+  segClear(ax, az, bx, bz, f, y) {
+    const g = this.g, X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, haz = this.hazards().hard;
+    const len = Math.hypot(bx - ax, bz - az); if (len < 0.01) return true;
+    const ux = (bx - ax) / len, uz = (bz - az) / len, px = -uz * 0.55, pz = ux * 0.55;
+    for (let d = 0; d <= len; d += 0.5) {
+      const x = ax + ux * d, z = az + uz * d;
+      const c = g.cellAt(x, z); if (c < 0) return false;
+      const i = f * GG + c;
+      if (!this.flyable(X[i]) || (haz && haz[i])) return false;
+      if (g.isGridSolid(x + px, z + pz, y) || g.isGridSolid(x - px, z - pz, y)) return false;
+    }
+    return true;
+  }
+
+  // Tiles -> waypoints: string-pulled straight legs. Floor changes and shaft tiles are always kept as waypoints.
+  // Each waypoint carries a target altitude and a speed limit from the turn it makes.
+  smooth(tiles) {
+    const g = this.g, t = this.t, X = g.xgrid, GG = GRID_SIZE * GRID_SIZE;
+    const pts = tiles.map((i) => { const p = this.tileCenter(i); return { x: p.x, z: p.z, f: p.f, i, alt: g.autoNodeAlt(i), keep: X[i] === XV.SH_TOP || X[i] === XV.SH_MID || X[i] === XV.SH_BOT || X[i] === XV.RAMP }; });
+    const wps = [];
+    let ax = t.x, az = t.z, af = t.floor, k = 0;
+    while (k < pts.length) {
+      let j = k;
+      while (j + 1 < pts.length && pts[j + 1].f === af && !pts[j].keep && !pts[j + 1].keep && this.segClear(ax, az, pts[j + 1].x, pts[j + 1].z, af, t.y)) j++;
+      wps.push(pts[j]);
+      ax = pts[j].x; az = pts[j].z; af = pts[j].f; k = j + 1;
+    }
+    const vc = t.cruise;
+    for (let n = 0; n < wps.length; n++) {
+      const w = wps[n];
+      if (n === wps.length - 1) { w.vmax = 1.5; continue; }
+      const a = n === 0 ? { x: t.x, z: t.z } : wps[n - 1], b = wps[n + 1];
+      const h1 = Math.atan2(w.x - a.x, w.z - a.z), h2 = Math.atan2(b.x - w.x, b.z - w.z);
+      let th = Math.abs(h2 - h1); if (th > Math.PI) th = Math.PI * 2 - th;
+      w.vmax = Math.max(2, Math.min(vc, 2 + 12 * Math.pow(1 - th / Math.PI, 3)));
+      if (w.keep) w.vmax = Math.min(w.vmax, 3);
+    }
+    return wps;
+  }
+
+  newPlan() {
+    const t = this.t, g = this.g;
+    if (g.xgrid && t.node >= 0) { const v = g.xCellVal(t.floor, t.node % (GRID_SIZE * GRID_SIZE)); if (g.xgrid[t.node] !== v) { g.xgrid[t.node] = v; g.xgridDirty = true; } }
+    const p = this.planFrontier(t.node);
+    if (!p) {
+      const X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, G = GRID_SIZE, i = t.node;
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      const unknownHere = X && ((x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]));
+      if (unknownHere && !this.tried.has(i)) { this.startScan(i); return; }
+      this.plan = null; this.done = true; this.why = 'EXPLORED - HANDING OVER';
+      return;
+    }
+    if (!p.tiles.length) { this.startScan(p.goal); return; }
+    this.plan = { goal: p.goal, tiles: p.tiles, wps: this.smooth(p.tiles), k: 0, t0: t.time };
+    g.xroute = p.tiles.slice();
+    this.why = 'ROUTE TO FRONTIER';
+  }
+
+  startScan(goal) {
+    this.plan = null;
+    const n = this.t.node;
+    if (n >= 0 && this.g.autoClearance(n) > 2 && this.g.autoUnknownNear(n) >= 6) { this.scan = { acc: 0, last: this.t.yaw, t: 0, goal }; this.why = 'SCAN 360'; }
+    else { this.tried.add(goal); this.replanT = 0; this.why = 'NO SCAN NEEDED'; }
+  }
+
+  // Look-ahead point on the waypoint polyline, `L` metres ahead of the rocket's projection onto it
+  carrot(L) {
+    const t = this.t, P = this.plan, wps = P.wps;
+    let px = t.x, pz = t.z, left = L;
+    for (let n = P.k; n < wps.length; n++) {
+      const w = wps[n], dx = w.x - px, dz = w.z - pz, d = Math.hypot(dx, dz);
+      if (d >= left || n === wps.length - 1) { const k = d > 0 ? Math.min(1, left / d) : 0; return { x: px + dx * k, z: pz + dz * k, n }; }
+      left -= d; px = w.x; pz = w.z;
+    }
+    const w = wps[wps.length - 1]; return { x: w.x, z: w.z, n: wps.length - 1 };
+  }
+
+  // One frame of the new autopilot -> { yaw, climb, speed } (stick units / m/s), same interface as before
+  steer(dt) {
+    const g = this.g, m = g.missile, t = this.t || this.sense(dt);
+    if (!t) return { yaw: 0, climb: 0, speed: 0 };
+    this._hazT = (this._hazT || 0) - dt;
+    if (this._hazT <= 0) { this._hazT = 2; g.xHazRefresh(); }
+    const wrap = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+    let out = { yaw: 0, climb: 0, speed: 0 };
+    // --- 360 scan where unexplored tiles are still around
+    if (this.scan) {
+      const S = this.scan; S.acc += Math.abs(wrap(t.yaw - S.last)); S.last = t.yaw; S.t += dt;
+      out = { yaw: 1, climb: Math.max(-1, Math.min(1, (g.autoNodeAlt(t.node) - t.y) * 1.4)), speed: 0 };
+      if (S.acc >= Math.PI * 2 + 0.1 || S.t > 10) { this.tried.add(S.goal); this.scan = null; this.replanT = 0; }
+      return this.fire(dt, out);
+    }
+    // --- (re)plan: no plan, every 1.5 s if the route is no longer valid, or when stuck
+    this.replanT -= dt;
+    if (!this.plan || this.replanT <= 0) {
+      let valid = !!this.plan;
+      if (valid) {
+        const X = g.xgrid, haz = this.hazards().hard;
+        const gi = this.plan.goal, gc = gi % (GRID_SIZE * GRID_SIZE), G = GRID_SIZE, gx = gc % G, gz = (gc / G) | 0;
+        const stillFrontier = (gx > 0 && !X[gi - 1]) || (gx < G - 1 && !X[gi + 1]) || (gz > 0 && !X[gi - G]) || (gz < G - 1 && !X[gi + G]);
+        if (!stillFrontier) valid = false;                               // the goal got explored on the way: pick the next one
+        for (const i of this.plan.tiles) if (!this.flyable(X[i]) || (haz && haz[i])) { valid = false; break; }
+      }
+      this.replanT = 1.5;
+      if (!valid) { this.newPlan(); if (this.done) return out; if (this.scan || !this.plan) return this.fire(dt, out); }
+    }
+    const P = this.plan, wps = P.wps;
+    // --- progress along the legs: a waypoint is reached when close, or passed (beyond its perpendicular)
+    while (P.k < wps.length) {
+      const w = wps[P.k], d = Math.hypot(w.x - t.x, w.z - t.z);
+      const nx = P.k + 1 < wps.length ? wps[P.k + 1] : null;
+      const passed = nx && ((t.x - w.x) * (nx.x - w.x) + (t.z - w.z) * (nx.z - w.z)) > 0 && d < 3;
+      if (d < 1.2 || passed) P.k++; else break;
+    }
+    if (P.k >= wps.length) { this.plan = null; this.startScan(P.goal); return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
+    // --- stuck: under 0.8 m of progress in 3 s
+    this.stuck.t += dt;
+    if (this.stuck.t > 3) { if (Math.hypot(t.x - this.stuck.x, t.z - this.stuck.z) < 0.8) { this.tried.add(P.goal); this.plan = null; this.why = 'STUCK - NEW GOAL'; } this.stuck = { t: 0, x: t.x, z: t.z }; if (!this.plan) return out; }
+    // --- guidance: chase a look-ahead point; heading and altitude PD
+    const L = Math.max(2.5, Math.min(9, 0.6 * t.speed + 2));
+    const cp = this.carrot(L), w = wps[P.k];
+    const err = wrap(Math.atan2(-(cp.x - t.x), -(cp.z - t.z)) - t.yaw);
+    let yaw = 2.4 * err - 0.35 * t.yawRate;
+    const altT = w.alt;
+    const climb = Math.max(-1, Math.min(1, 1.4 * (altT - t.y) - 0.25 * t.vSpeed));
+    // --- speed: can we still slow to each coming waypoint's limit with our measured braking? also the free distance ahead
+    const a = Math.min(9, 0.5 * t.brakeMax);
+    let v = t.cruise, along = Math.hypot(w.x - t.x, w.z - t.z);
+    for (let n = P.k; n < Math.min(wps.length, P.k + 4); n++) {
+      if (n > P.k) along += Math.hypot(wps[n].x - wps[n - 1].x, wps[n].z - wps[n - 1].z);
+      v = Math.min(v, Math.sqrt(wps[n].vmax * wps[n].vmax + 2 * a * Math.max(0, along - 0.8)));
+    }
+    if (t.fan) v = Math.min(v, Math.sqrt(2 * a * Math.max(0, t.fan[2] - 1.8)));
+    v *= Math.max(0.15, Math.min(1, 1 - Math.abs(err) / 1.0));
+    if (w.keep && Math.abs(altT - t.y) > 0.5 && Math.hypot(w.x - t.x, w.z - t.z) < 4) v = Math.min(v, 0.5);   // line up with a tunnel mouth first
+    // --- safety: keep off the side walls
+    if (t.probe.l < 0.8) yaw -= 0.5 * (0.8 - t.probe.l) / 0.8;
+    if (t.probe.r < 0.8) yaw += 0.5 * (0.8 - t.probe.r) / 0.8;
+    out = { yaw: Math.max(-1, Math.min(1, yaw)), climb, speed: Math.max(0, v) };
+    this.cmd = { err, carrot: cp, v, L };
+    g.xroute = P.tiles;
+    return this.fire(dt, out);
+  }
+
+  // Step 2: the previous gunner still runs on top (fire control is rebuilt in step 3)
+  fire(dt, out) {
+    const g = this.g, m = g.missile, G = this.gun;
+    G.path = this.plan ? this.plan.wps : null; G.pi = this.plan ? this.plan.k : 0;
+    g.autoGunner(m, dt, G, out);
+    g.gunHeld = G.fire;
+    return out;
+  }
+
   // Debug panel text (Dev Override: Autopilot Debug)
   debugText() {
     const t = this.t;
@@ -2732,7 +2973,8 @@ class Autopilot {
       `FAN ${this.FAN.map((d, i) => `${d}:${f0(t.fan[i])}`).join(' ')}`,
       `FUEL ${f0(t.fuel)}%  BURN ${t.burn.toFixed(2)}%/s  RANGE ${f0(t.rangeSec)}s ${f0(t.rangeM)}m  @CRUISE ${f0(t.rangeCruiseM)}m`,
       `HULL ${f0(t.hull)}  AMMO ${t.ammo}  ROCKETS ${t.rockets}  ROUTE ${t.route}`,
-      `CONTACTS ${t.contacts.length} (THREATS ${t.threats}): ${c}`
+      `CONTACTS ${t.contacts.length} (THREATS ${t.threats}): ${c}`,
+      this.active ? `NEW PILOT: ${this.why}${this.plan ? `  GOAL ${this.tileCenter(this.plan.goal).x.toFixed(0)},${this.tileCenter(this.plan.goal).z.toFixed(0)}  TILES ${this.plan.tiles.length}  LEG ${this.plan.k + 1}/${this.plan.wps.length}` : ''}${this.cmd ? `  ERR ${Math.round(this.cmd.err * 180 / Math.PI)}deg  VDES ${this.cmd.v.toFixed(1)}  LOOK ${this.cmd.L.toFixed(1)}m` : ''}${this.scan ? '  SCANNING' : ''}` : 'NEW PILOT: off (legacy autopilot)'
     ].join('\n');
   }
 }
@@ -4808,6 +5050,7 @@ class NikitaGame {
     if (m.fuel <= 0 || m.landed) return;
     if (!m.hover) this.pressHover();
     m.auto = true; m.landReq = false;
+    if (this.cfg.newPilot && this.pilot) this.pilot.engage(); else if (this.pilot) this.pilot.active = false;
     const M = this.autoMemory();                // rooms already scanned in this sector carry over from rocket to rocket
     this.auto = { mem: M, cov: M.cov, spots: M.spots, mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: M.tried, triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
       sx: m.pos.x, sz: m.pos.z, lost: 0, t0: this.gameClock, noMore: false, fire: false, aimObj: null, aimT: 0, pick: null };
@@ -4852,6 +5095,7 @@ class NikitaGame {
     const m = this.missile;
     if (!keepPlay) this.autoPlay = false;
     this.gunHeld = false;
+    if (this.pilot) this.pilot.active = false;
     if (!m.auto) return;
     m.auto = false; m.autoSpeed = 0;
     if (msg) this.pushFeed(msg, 'amber');
@@ -6490,6 +6734,16 @@ class NikitaGame {
     if (this.xroute && this.xroute.length) {
       ctx.fillStyle = COL[XV.ROUTE];
       for (const i of this.xroute) { if (((i / GG) | 0) !== curF) continue; const c = i % GG; ctx.fillRect((c % G) * sc + sc * 0.2, ((c / G) | 0) * sc + sc * 0.2, sc * 0.6, sc * 0.6); }
+    }
+    // the new autopilot's smoothed legs (white) and look-ahead point (cyan)
+    const PL = this.pilot && this.pilot.active && this.pilot.plan;
+    if (PL) {
+      const toX = (x) => (x / CELL_SIZE + G * 0.5) * sc, toZ = (z) => (z / CELL_SIZE + G * 0.5) * sc;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(toX(this.missile.pos.x), toZ(this.missile.pos.z));
+      for (let n = PL.k; n < PL.wps.length; n++) ctx.lineTo(toX(PL.wps[n].x), toZ(PL.wps[n].z));
+      ctx.stroke();
+      const cmd = this.pilot.cmd;
+      if (cmd && cmd.carrot) { ctx.fillStyle = '#00e5ff'; ctx.beginPath(); ctx.arc(toX(cmd.carrot.x), toZ(cmd.carrot.z), sc * 0.6, 0, Math.PI * 2); ctx.fill(); }
     }
     // Nikita: position and heading
     const m = this.missile, px = (m.pos.x / CELL_SIZE + G * 0.5) * sc, pz = (m.pos.z / CELL_SIZE + G * 0.5) * sc;
@@ -8535,7 +8789,8 @@ class NikitaGame {
       if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTOPILOT STOPPED', m.fuel <= 0);   // an engine-out does not end the autopilot: it relaunches
       else if (manual) this.autoStop('AUTOPILOT OFF — MANUAL CONTROL');
       else {
-        const a = this.autoSteer(m, dt);
+        const useNew = this.cfg.newPilot && this.pilot && this.pilot.active && !this.pilot.done;   // beta: the rewritten autopilot; after exploring, the legacy one hunts
+        const a = useNew ? this.pilot.steer(dt) : this.autoSteer(m, dt);
         yawInput = a.yaw; pitchInput = a.climb; mouseYaw = 0; m.autoSpeed = a.speed;
         this.manualTargetLock = false; this.homingLocked = false;
       }
@@ -10786,6 +11041,7 @@ class NikitaGame {
       if (pauseOv) pauseOv.checked = false;
     });
     document.getElementById('ov-inf-fuel').addEventListener('change', (e) => this.cfg.infFuel = e.target.checked);
+    document.getElementById('ov-newpilot').addEventListener('change', (e) => { this.cfg.newPilot = e.target.checked; if (this.missile.auto) { if (e.target.checked) this.pilot.engage(); else this.pilot.active = false; } });
     document.getElementById('ov-apdebug').addEventListener('change', (e) => { this.cfg.apDebug = e.target.checked; const el = document.getElementById('ap-debug'); if (el) el.style.display = e.target.checked ? 'block' : 'none'; });
     document.getElementById('ov-xmap').addEventListener('change', (e) => { this.cfg.xmapOverlay = e.target.checked; this.xgridDirty = true; this.radarDirty = true; });
     document.getElementById('ov-god-mode').addEventListener('change', (e) => this.cfg.godMode = e.target.checked);
