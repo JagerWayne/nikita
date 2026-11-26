@@ -9700,6 +9700,29 @@ function refreshOfflineCache() {
 }
 window.addEventListener('load', () => setTimeout(refreshOfflineCache, 1500));
 
+// Stale-copy guard: ask the server which version is current (cache-busted); if this page is older, offer a reload.
+async function checkForNewVersion() {
+  if (!/^https?:$/.test(location.protocol) || !navigator.onLine) return;
+  try {
+    const r = await fetch('js/boot/version.js?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = /APP_VERSION\s*=\s*'([^']+)'/.exec(await r.text());
+    if (!m || m[1] === NIKITA_VERSION || document.getElementById('nk-update')) return;
+    const bar = document.createElement('button');
+    bar.id = 'nk-update';
+    bar.textContent = 'NEW VERSION ' + m[1] + ' — TAP TO RELOAD';
+    bar.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:99999;padding:10px 16px;font:bold 12px monospace;letter-spacing:.08em;background:#00ff88;color:#02120a;border:0;border-radius:6px;box-shadow:0 0 14px rgba(0,255,136,.6)';
+    bar.addEventListener('click', async () => {
+      try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map((g) => g.unregister())); } catch (_) {}
+      try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (_) {}
+      location.replace(location.pathname + '?u=' + encodeURIComponent(m[1]));
+    });
+    document.body.appendChild(bar);
+  } catch (_) {}
+}
+window.addEventListener('load', () => setTimeout(checkForNewVersion, 2500));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
+
 let deferredInstallPrompt = null;
 const installBtn = document.getElementById('btn-install');
 const installHelp = document.getElementById('install-help');

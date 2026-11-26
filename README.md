@@ -19,6 +19,8 @@ The game is a PWA. Open the Pages link, then:
 
 It then launches full-screen from the home screen and works offline after the first load. Every launch checks for a new version and updates itself automatically.
 
+**Stale copies (v2.14.1):** if a phone is showing an older copy, a green NEW VERSION banner appears at the top a few seconds after the page loads; tap it to wipe the cache and reload. The menu title shows the version in use.
+
 **Releasing an update:**
 1. Change the files.
 2. Add any new static file to `js/boot/files.js`.
