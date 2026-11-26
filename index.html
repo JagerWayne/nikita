@@ -1578,6 +1578,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <label class="ov-check"><span>X-Ray Wireframe Walls</span><input type="checkbox" id="ov-xray" /></label>
     <label class="ov-check"><span>Homing Auto-Pilot</span><input type="checkbox" id="ov-homing" /></label>
     <label class="ov-check"><span>Auto-Level Pitch</span><input type="checkbox" id="ov-autolevel" checked /></label>
+    <label class="ov-check"><span>Explore Map Overlay (radar)</span><input type="checkbox" id="ov-xmap" /></label>
     <label class="ov-check"><span>Invert Pitch Y-Axis</span><input type="checkbox" id="ov-invert-pitch" /></label>
     <label class="ov-check"><span>Live FPS / Draw Calls</span><input type="checkbox" id="ov-fps" /></label>
   </div>
@@ -1795,7 +1796,10 @@ const SPEED_STEP = 0.5;
 const CRUISE_THROTTLE = 0.378;
 const UPG_MAX_LEVEL = 10;
 const SAVE_KEY = 'nikita-save-v1';
-const AUTO_MEM_KEY = 'nikita.autoMem';   // the autopilot's explored-map memory per sector
+const AUTO_MEM_KEY = 'nikita.autoMem';   // the autopilot's explored-map memory per sector (older format)
+const XMAP_KEY = 'nikita.xmap';          // the plotted explore map per sector
+// Explore map values: one cell per map tile, per floor, plotted only from what the lidar has actually revealed
+const XV = { UNK: 0, SOLID: 1, SH_TOP: 2, SH_MID: 3, SH_BOT: 4, OPEN: 5, RAMP: 6, HOLE: 7, HAZ: 8, ROUTE: 9, CRACK: 10 };
 
 const SPEED_MODES = {
   1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, plumeXZ: 0.68, plumeY: 0.58, inertia: 13.5, rollMult: 0.42, badgeClass: 'tier-1' },
@@ -4869,16 +4873,56 @@ class NikitaGame {
     return best;
   }
 
-  // The nearest opening: a walkable node the scans have not covered yet that touches a covered one. Returns a path or null.
+  // The next exploring goal from the explore map: an explored, flyable tile that touches an unexplored (0) tile. Routes only over
+  // explored tiles. Among the nearest ones it prefers what lies ahead of the nose, so it does not turn around for nothing.
   autoFrontier(node, blocked, A) {
-    const G = GRID_SIZE, GG = G * G;
-    if (!A.cov || !A.spots) return [];                       // nothing scanned yet: scan right here first
-    const cov = A.cov;
-    const touchesCovered = (i) => {
-      const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
-      return (x > 0 && cov[i - 1]) || (x < G - 1 && cov[i + 1]) || (z > 0 && cov[i - G]) || (z < G - 1 && cov[i + G]);
+    const G = GRID_SIZE, GG = G * G, X = this.xgrid, m = this.missile;
+    if (!X) return [];
+    if (this.navFor !== this.ramps) this.navLinksBuild();
+    const fly = (i) => { const v = X[i]; return v === XV.OPEN || v === XV.RAMP || v === XV.SH_TOP || v === XV.SH_MID || v === XV.SH_BOT || v === XV.HOLE; };
+    const touchesUnknown = (i) => {
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]);
     };
-    return this.autoBfs(node, (i) => !cov[i] && !A.tried.has(i) && !blocked[i] && touchesCovered(i), blocked);
+    const dist = new Int32Array(GG * this.nFloors).fill(-1), prev = new Int32Array(GG * this.nFloors).fill(-1);
+    dist[node] = 0;
+    const q = [node];
+    let bestD = -1;
+    const found = [];
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], d = dist[i];
+      if (bestD >= 0 && d > bestD + 4) break;
+      if (i !== node && touchesUnknown(i) && !A.tried.has(i)) { found.push(i); if (bestD < 0) bestD = d; }
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      const nb = [];
+      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
+      const extra = this.navLinks.get(i);
+      if (extra) nb.push(...extra);
+      for (const n of nb) if (dist[n] < 0 && fly(n) && this.navOk(n) && !blocked[n]) { dist[n] = d + 1; prev[n] = i; q.push(n); }
+    }
+    if (!found.length) {
+      if ((!X[node] || touchesUnknown(node)) && !A.tried.has(node)) return [];   // nothing plotted around yet: scan right here first
+      return null;
+    }
+    let best = found[0], bestS = 1e9;
+    for (const i of found) {
+      const c = i % GG, tx = gridToWorldX(c % G), tz = gridToWorldZ((c / G) | 0);
+      let ang = Math.atan2(-(tx - m.pos.x), -(tz - m.pos.z)) - m.yaw; while (ang > Math.PI) ang -= Math.PI * 2; while (ang < -Math.PI) ang += Math.PI * 2;
+      const sc = dist[i] + Math.abs(ang) * 2.5;                   // a turn of 90 degrees costs about 4 tiles of travel
+      if (sc < bestS) { bestS = sc; best = i; }
+    }
+    const path = [];
+    for (let i = best; i !== node && i >= 0; i = prev[i]) path.push(i);
+    return path.reverse();
+  }
+
+  // Unexplored tiles left around a node (radius 4, same floor): worth a 360 scan only if there are several
+  autoUnknownNear(i) {
+    const G = GRID_SIZE, GG = G * G, X = this.xgrid, c = i % GG, f0 = i - c, x0 = c % G, z0 = (c / G) | 0;
+    if (!X) return 99;
+    let n = 0;
+    for (let z = Math.max(0, z0 - 4); z <= Math.min(G - 1, z0 + 4); z++) for (let x = Math.max(0, x0 - 4); x <= Math.min(G - 1, x0 + 4); x++) if (!X[f0 + z * G + x] && this.navOk(f0 + z * G + x)) n++;
+    return n;
   }
 
   // Before spinning at a spot: the best-placed node within 3 steps (most room around it) if clearly better than here
@@ -4961,8 +5005,10 @@ class NikitaGame {
     }
     A.lost = 0;
     A.passT = (A.passT || 0) - dt;
-    if (A.passT <= 0) { A.passT = 0.5; this.autoMarkPassing(m, A); }
+    if (A.passT <= 0) { A.passT = 2; this.xHazRefresh(); }
+    if (this.xgrid) { const xi = node, xv = this.xCellVal((xi / GG) | 0, xi % GG); if (this.xgrid[xi] !== xv) { this.xgrid[xi] = xv; this.xgridDirty = true; } }
     const out = this.autoDrive(m, dt, A, node);
+    this.xroute = A.path ? A.path.slice(A.pi) : null;           // the plotted route (9 on the explore map)
     this.autoGunner(m, dt, A, out);
     this.gunHeld = A.fire;
     return out;
@@ -5087,7 +5133,7 @@ class NikitaGame {
       }
       A.centered = false;
       const nHere = this.autoNode(m);
-      if (nHere >= 0 && this.autoClearance(nHere) <= 2) {        // a corridor: no spin needed, the all-around lidar rays see both walls
+      if (nHere >= 0 && (this.autoClearance(nHere) <= 2 || this.autoUnknownNear(nHere) < 6)) {   // a corridor, or little left unexplored here: no spin
         this.autoMarkSpot(m, A); A.tried.add(A.target >= 0 ? A.target : nHere); A.target = -1; A.path = null; A.replanT = 0;
         return hold();
       }
@@ -5125,7 +5171,7 @@ class NikitaGame {
       }
     }
     const far = A.path.length - A.pi > 4;                         // transit to a far room: fly fast; close to the scan spot: slow
-    const fc = this.autoFwdClear(m, 22), vcap = (A.mode === 'HUNT' || far) ? 16 : 7;
+    const fc = this.autoFwdClear(m, 22), vcap = A.mode === 'HUNT' ? 16 : (far ? this.throttleSpeed(CRUISE_THROTTLE) : 7);   // transit at cruise: the most economical thrust
     let v = Math.min(vcap, 3 + Math.sqrt(2 * 11 * Math.max(0, ds - 1.5)), fc - 2.0);
     v = Math.max(0, v);
     v *= Math.max(0, Math.min(1, 1 - Math.abs(dYaw) / 1.1));
@@ -6232,6 +6278,109 @@ class NikitaGame {
 
   // Cast one ray through the grid in 3D. Per cell column: wall faces on entry, then shaft slabs, ramps,
   // floor/ceiling slabs (a ray passes a slab only where it is open above a ramp).
+  // ---- explore map (XV values per tile per floor) ----
+  // The value a tile gets once the lidar reaches it (from what is really there)
+  xCellVal(f, c) {
+    const v = this.floors[f][c];
+    if (v === CELL_WALL) return XV.SOLID;
+    if (v === CELL_CRACKED) return XV.CRACK;
+    if (isShaft(v)) return v === CELL_SHAFT_LOW ? XV.SH_BOT : (v === CELL_SHAFT_HIGH ? XV.SH_TOP : XV.SH_MID);
+    if (v === CELL_RAMP) return XV.RAMP;
+    if (v === CELL_VOID || (this.liftCells && this.liftCells.has(c))) return XV.HOLE;
+    if (this._xHaz && this._xHaz[f * GRID_SIZE * GRID_SIZE + c]) return XV.HAZ;
+    return XV.OPEN;
+  }
+
+  // Tiles holding a live hazard (turbines, bulkheads, live laser grids, barrels, grates); refreshed every couple of seconds
+  xHazRefresh() {
+    const B = this.autoBlocked(), X = this.xgrid;
+    this._xHaz = B;
+    if (!X) return;
+    for (let i = 0; i < X.length; i++) {
+      if (X[i] === XV.OPEN && B[i]) { X[i] = XV.HAZ; this.xgridDirty = true; }
+      else if (X[i] === XV.HAZ && !B[i]) { X[i] = XV.OPEN; this.xgridDirty = true; }
+    }
+  }
+
+  // A new sector: load its plotted map from the device, or start empty
+  xgridBegin(key) {
+    const n = GRID_SIZE * GRID_SIZE * this.nFloors;
+    this.xgrid = new Uint8Array(n); this.xgridKey = key; this.xgridDirty = true; this._xHaz = null; this.xroute = null;
+    try {
+      const all = JSON.parse(localStorage.getItem(XMAP_KEY) || '{}'), e = all[key + '|' + this.nFloors];
+      if (e && typeof e === 'string') {
+        const bin = atob(e);
+        for (let i = 0; i < bin.length && i * 2 < n; i++) { const b = bin.charCodeAt(i); this.xgrid[i * 2] = b & 15; if (i * 2 + 1 < n) this.xgrid[i * 2 + 1] = b >> 4; }
+      }
+    } catch (_) {}
+  }
+
+  // Save it (two tiles per byte, the last 6 sectors kept)
+  xgridSave() {
+    if (!this.xgrid || !this.xgridKey) return;
+    try {
+      let bin = '';
+      const X = this.xgrid;
+      for (let i = 0; i < X.length; i += 2) bin += String.fromCharCode((X[i] & 15) | ((X[i + 1] || 0) << 4));
+      const all = JSON.parse(localStorage.getItem(XMAP_KEY) || '{}'), k = this.xgridKey + '|' + this.nFloors;
+      delete all[k]; all[k] = btoa(bin);
+      const keys = Object.keys(all);
+      while (keys.length > 6) delete all[keys.shift()];
+      localStorage.setItem(XMAP_KEY, JSON.stringify(all));
+    } catch (_) {}
+  }
+
+  // Debug: the map as text, one floor (0-9 as digits, 10 as X; the current route drawn as 9)
+  xmapDump(f) {
+    const G = GRID_SIZE, GG = G * G, X = this.xgrid;
+    if (!X) return '';
+    if (f === undefined) f = this.floorOfY(this.missile.pos.y);
+    const route = new Set(this.xroute || []);
+    let out = '';
+    for (let z = 0; z < G; z++) {
+      for (let x = 0; x < G; x++) { const i = f * GG + z * G + x; const v = route.has(i) ? XV.ROUTE : X[i]; out += v === 10 ? 'X' : String(v); }
+      out += '\n';
+    }
+    return out;
+  }
+
+  // Cheat overlay (Dev Override): the explore map in the radar's corner. Floors stacked: current floor 100%, others 5%.
+  renderXmapRadar() {
+    const ctx = this.radarCtx, size = this.radarCanvas.width, G = GRID_SIZE, GG = G * G, sc = size / G, X = this.xgrid;
+    const curF = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
+    const COL = ['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00'];
+    if (!this._xLayer) { this._xLayer = document.createElement('canvas'); this._xLayer.width = size; this._xLayer.height = size; }
+    const now = performance.now();
+    if (now - (this._xHazT || 0) > 2000) { this._xHazT = now; this.xHazRefresh(); }
+    if (X && (this.xgridDirty || this._xLayerF !== curF) && now - (this._xLayerT || 0) > 250) {     // redraw the tiles only when the map changed
+      this._xLayerT = now; this.xgridDirty = false; this._xLayerF = curF;
+      const lc = this._xLayer.getContext('2d');
+      lc.clearRect(0, 0, size, size);
+      lc.fillStyle = '#020604'; lc.fillRect(0, 0, size, size);
+      const order = [];
+      for (let f = 0; f < this.nFloors; f++) if (f !== curF) order.push(f);
+      order.push(curF);
+      for (const f of order) {
+        lc.globalAlpha = f === curF ? 1 : 0.05;
+        for (let i = 0; i < GG; i++) { const v = X[f * GG + i]; if (!v) continue; lc.fillStyle = COL[v]; lc.fillRect((i % G) * sc, ((i / G) | 0) * sc, sc, sc); }
+      }
+      lc.globalAlpha = 1;
+    }
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(this._xLayer, 0, 0);
+    // the route (9) on the current floor
+    if (this.xroute && this.xroute.length) {
+      ctx.fillStyle = COL[XV.ROUTE];
+      for (const i of this.xroute) { if (((i / GG) | 0) !== curF) continue; const c = i % GG; ctx.fillRect((c % G) * sc + sc * 0.2, ((c / G) | 0) * sc + sc * 0.2, sc * 0.6, sc * 0.6); }
+    }
+    // Nikita: position and heading
+    const m = this.missile, px = (m.pos.x / CELL_SIZE + G * 0.5) * sc, pz = (m.pos.z / CELL_SIZE + G * 0.5) * sc;
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px, pz); ctx.lineTo(px - Math.sin(m.yaw) * sc * 2.5, pz - Math.cos(m.yaw) * sc * 2.5); ctx.stroke();
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(px, pz, sc * 0.7, 0, Math.PI * 2); ctx.fill();
+    ctx.font = 'bold 14px monospace'; ctx.fillStyle = '#ffdd55'; ctx.fillText('XMAP F' + (curF + 1) + '/' + this.nFloors, 6, 16);
+  }
+
   castRay(ox, oy, oz, dx, dy, dz, range) {
     const G = GRID_SIZE, GG = G * G, H = WALL_H, NF = this.nFloors;
     let gx = worldToGridX(ox), gz = worldToGridZ(oz);
@@ -6249,6 +6398,8 @@ class NikitaGame {
       const tExit = Math.min(tMaxX, tMaxZ), t1 = Math.min(tExit, range);
       const yE = oy + dy * tEnter;
       let fc = this.floorOfY(yE);
+      const XG = this.xgrid;
+      if (XG) { const xi = fc * GG + c, xv = this.xCellVal(fc, c); if (XG[xi] !== xv) { XG[xi] = xv; this.xgridDirty = true; } }   // plot every tile the ray reaches
       if (tEnter > 0) {
         const v = this.floors[fc][c];
         if (v === CELL_WALL || v === CELL_CRACKED) {
@@ -6759,6 +6910,7 @@ class NikitaGame {
     const keep = this.lidarParams(true).keep;
     while (this.lidarMemory.size > keep) this.lidarMemory.delete(this.lidarMemory.keys().next().value);
     this.idbPut(this.lidarKey, rec, keep);
+    this.xgridSave();
   }
 
   lidarLoad(rec) {
@@ -6789,6 +6941,7 @@ class NikitaGame {
     this.lidarSnapshot();
     this.clearDots();
     this.lidarKey = key;
+    this.xgridBegin(key);
     const mem = this.lidarMemory.get(key);
     if (mem) { this.lidarLoad(mem); return; }
     this.idbGet(key).then((rec) => { if (rec && this.lidarKey === key && rec.idx) this.lidarLoad({ idx: new Uint32Array(rec.idx), cls: new Uint8Array(rec.cls), seg: rec.seg ? new Uint32Array(rec.seg) : null, seen: rec.seen ? new Uint8Array(rec.seen) : null }); }).catch(() => {});
@@ -7028,7 +7181,8 @@ class NikitaGame {
 
   // Erase the saved campaign (credits, upgrades, best scores, resume point, scan maps) but keep the settings; no reload.
   wipeSave() {
-    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(AUTO_MEM_KEY); } catch (_) {}
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(AUTO_MEM_KEY); localStorage.removeItem(XMAP_KEY); } catch (_) {}
+    this.xgrid = null; this.xgridKey = null;
     this._autoMem = null;
     this.credits = 0; this.sectorBest = {}; this.contLvl = 0; this.contSeed = '';
     for (const k of Object.keys(this.upg)) this.upg[k] = 0;
@@ -9458,6 +9612,7 @@ class NikitaGame {
     if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'RESPAWNING') return;
     this._radarTick = (this._radarTick + 1) | 0;
     if ((this._radarTick & 1) === 1) return; // ~30 fps is plenty for the minimap
+    if (this.cfg.xmapOverlay) { this.renderXmapRadar(); return; }        // Dev Override: explore map instead of the radar
     const ctx = this.radarCtx;
     const size = this.radarCanvas.width;
     const scale = size / GRID_SIZE;
@@ -9837,7 +9992,7 @@ class NikitaGame {
   // it does not work, a "game closed" screen replaces the game.
   // Wipe credits, upgrades, every saved lidar map and preferences on this device, then restart fresh.
   deleteSavedData() {
-    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); localStorage.removeItem(AUTO_MEM_KEY); } catch (_) {}
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); localStorage.removeItem(AUTO_MEM_KEY); localStorage.removeItem(XMAP_KEY); } catch (_) {}
     this.lidarKey = null;
     this.lidarMemory.clear();
     const done = () => location.reload();
@@ -10513,6 +10668,7 @@ class NikitaGame {
       if (pauseOv) pauseOv.checked = false;
     });
     document.getElementById('ov-inf-fuel').addEventListener('change', (e) => this.cfg.infFuel = e.target.checked);
+    document.getElementById('ov-xmap').addEventListener('change', (e) => { this.cfg.xmapOverlay = e.target.checked; this.xgridDirty = true; this.radarDirty = true; });
     document.getElementById('ov-god-mode').addEventListener('change', (e) => this.cfg.godMode = e.target.checked);
     document.getElementById('ov-inf-boost').addEventListener('change', (e) => this.cfg.infBoost = e.target.checked);
     document.getElementById('ov-homing').addEventListener('change', (e) => this.cfg.homing = e.target.checked);
