@@ -1610,8 +1610,7 @@ const LAND_TAKEOFF = 0.14;             // raise the lever past this to lift off 
 const TAKEOFF_SPOOL = 0.45;            // seconds the engine spools up on the ground before the rocket rises
 const TAKEOFF_RISE = 0.85;             // seconds to climb off the floor and pitch up
 const TAKEOFF_HEIGHT = 1.7;            // hover height reached before pulling away
-const LAND_ARM_SPEED = 8.0;            // while a landing is armed the rocket eases down to this speed
-const LAND_ARM_TIME = 14;              // an armed landing request lapses after this many seconds
+const LAND_ARM_TIME = 24;              // an armed landing request lapses after this many seconds
 const PROBE_RANGE = 12;               // collision markers read walls, floor and roof out to this distance
 const FUZE_RANGE = 5.0;                // proximity fuze: the warhead goes off this close (centre to centre) to a primary target with a clear line
 const LAND_LEAN = 0.34;                // a landed rocket settles leaning onto one fin (~7 deg camera tilt)
@@ -1821,10 +1820,9 @@ class AudioEngine {
     this.ctx = null;
     this.master = null;
     this.noiseBuffer = null;
-    this.engineOsc = null;
-    this.engineGain = null;
-    this.engineNoiseGain = null;
-    this.engineFilter = null;
+    this.brownBuffer = null;
+    this.eng = null;
+    this.engLevel = 0;
     this.initialized = false;
     this.muted = false;
     this.sonarTimer = 0;
@@ -1840,49 +1838,24 @@ class AudioEngine {
     this.ctx = new AudioCtx();
 
     const comp = this.ctx.createDynamicsCompressor();
-    comp.threshold.value = -14;
-    comp.ratio.value = 6;
+    comp.threshold.value = -16;
+    comp.ratio.value = 5;
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0.0 : 0.55;
+    this.master.gain.value = this.muted ? 0.0 : 0.5;
     this.master.connect(comp);
     comp.connect(this.ctx.destination);
 
-    const len = this.ctx.sampleRate * 2;
-    this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = this.noiseBuffer.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const sr = this.ctx.sampleRate;
+    this.noiseBuffer = this.ctx.createBuffer(1, sr * 2, sr);
+    const w = this.noiseBuffer.getChannelData(0);
+    for (let i = 0; i < w.length; i++) w[i] = Math.random() * 2 - 1;
+    // brown noise (integrated white noise): the deep, soft body of a rocket motor's rumble
+    this.brownBuffer = this.ctx.createBuffer(1, sr * 4, sr);
+    const br = this.brownBuffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < br.length; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; br[i] = last * 3.5; }
 
-    this.engineOsc = this.ctx.createOscillator();
-    this.engineOsc.type = 'sawtooth';
-    this.engineOsc.frequency.value = 80;
-
-    this.engineFilter = this.ctx.createBiquadFilter();
-    this.engineFilter.type = 'bandpass';
-    this.engineFilter.frequency.value = 420;
-    this.engineFilter.Q.value = 1.4;
-
-    this.engineGain = this.ctx.createGain();
-    this.engineGain.gain.value = 0.0;
-
-    this.engineOsc.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain);
-    this.engineGain.connect(this.master);
-    this.engineOsc.start();
-
-    const noiseSrc = this.ctx.createBufferSource();
-    noiseSrc.buffer = this.noiseBuffer;
-    noiseSrc.loop = true;
-    const noiseFilter = this.ctx.createBiquadFilter();
-    noiseFilter.type = 'bandpass';
-    noiseFilter.frequency.value = 900;
-    noiseFilter.Q.value = 0.8;
-    this.engineNoiseFilter = noiseFilter;
-    this.engineNoiseGain = this.ctx.createGain();
-    this.engineNoiseGain.gain.value = 0.0;
-    noiseSrc.connect(noiseFilter);
-    noiseFilter.connect(this.engineNoiseGain);
-    this.engineNoiseGain.connect(this.master);
-    noiseSrc.start();
+    this.buildEngine();
 
     try {
       const silentBuf = this.ctx.createBuffer(1, 1, 22050);
@@ -1895,197 +1868,148 @@ class AudioEngine {
     this.initialized = true;
   }
 
+  // Rocket motor: four layers, all driven from updateEngine()
+  //  rumble  - brown noise through a low-pass, amplitude-modulated at the combustion "chuff" rate
+  //  roar    - white noise through a sweeping band-pass (the exhaust jet)
+  //  hiss    - high-passed noise (supersonic edge, only at speed)
+  //  chamber - low sines for the chamber resonance
+  buildEngine() {
+    const c = this.ctx;
+    const loopSrc = (buf, rate, offset) => {
+      const src = c.createBufferSource();
+      src.buffer = buf; src.loop = true; src.playbackRate.value = rate;
+      src.start(0, offset);
+      return src;
+    };
+    const E = {};
+    E.rumbleF = c.createBiquadFilter(); E.rumbleF.type = 'lowpass'; E.rumbleF.frequency.value = 120; E.rumbleF.Q.value = 0.7;
+    E.rumbleG = c.createGain(); E.rumbleG.gain.value = 0;
+    E.amG = c.createGain(); E.amG.gain.value = 1;
+    loopSrc(this.brownBuffer, 1, 0).connect(E.rumbleF);
+    E.rumbleF.connect(E.amG); E.amG.connect(E.rumbleG); E.rumbleG.connect(this.master);
+    E.lfo = c.createOscillator(); E.lfo.type = 'sine'; E.lfo.frequency.value = 20;
+    E.lfoDepth = c.createGain(); E.lfoDepth.gain.value = 0.18;
+    E.lfo.connect(E.lfoDepth); E.lfoDepth.connect(E.amG.gain); E.lfo.start();
+
+    E.roarF = c.createBiquadFilter(); E.roarF.type = 'bandpass'; E.roarF.frequency.value = 700; E.roarF.Q.value = 0.6;
+    E.roarLP = c.createBiquadFilter(); E.roarLP.type = 'lowpass'; E.roarLP.frequency.value = 3200;
+    E.roarG = c.createGain(); E.roarG.gain.value = 0;
+    loopSrc(this.noiseBuffer, 1, 0.31).connect(E.roarF);
+    E.roarF.connect(E.roarLP); E.roarLP.connect(E.roarG); E.roarG.connect(this.master);
+
+    E.hissF = c.createBiquadFilter(); E.hissF.type = 'highpass'; E.hissF.frequency.value = 3600;
+    E.hissG = c.createGain(); E.hissG.gain.value = 0;
+    loopSrc(this.noiseBuffer, 1.13, 0.77).connect(E.hissF);
+    E.hissF.connect(E.hissG); E.hissG.connect(this.master);
+
+    E.toneA = c.createOscillator(); E.toneA.type = 'sine'; E.toneA.frequency.value = 58;
+    E.toneB = c.createOscillator(); E.toneB.type = 'sine'; E.toneB.frequency.value = 87;
+    E.toneG = c.createGain(); E.toneG.gain.value = 0;
+    E.toneA.connect(E.toneG); E.toneB.connect(E.toneG); E.toneG.connect(this.master);
+    E.toneA.start(); E.toneB.start();
+    this.eng = E;
+  }
+
   setMuted(m) {
     this.muted = Boolean(m);
     if (this.initialized && this.master && this.ctx) {
-      this.master.gain.setTargetAtTime(this.muted ? 0.0 : 0.55, this.ctx.currentTime, 0.03);
+      this.master.gain.setTargetAtTime(this.muted ? 0.0 : 0.5, this.ctx.currentTime, 0.03);
     }
   }
 
   updateEngine(active, speedMode, speedNorm, hasFuel) {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
+    if (!this.initialized || !this.eng) return;
+    const E = this.eng, t = this.ctx.currentTime;
     if (!active || !hasFuel) {
-      this.engineGain.gain.setTargetAtTime(0.0, t, 0.08);
-      this.engineNoiseGain.gain.setTargetAtTime(0.0, t, 0.08);
+      // motor shutting down: everything decays, the roar first
+      this.engLevel *= 0.9;
+      E.rumbleG.gain.setTargetAtTime(0, t, 0.25);
+      E.roarG.gain.setTargetAtTime(0, t, 0.12);
+      E.hissG.gain.setTargetAtTime(0, t, 0.1);
+      E.toneG.gain.setTargetAtTime(0, t, 0.2);
       return;
     }
-    let freq = 95, fCut = 480, nCut = 900, oVol = 0.08, nVol = 0.07;
-    if (speedMode === 1) {
-      freq = 54; fCut = 220; nCut = 420; oVol = 0.045; nVol = 0.025;
-    } else if (speedMode === 2) {
-      freq = 98 + speedNorm * 22; fCut = 520; nCut = 950; oVol = 0.075; nVol = 0.065;
-    } else {
-      freq = 165 + speedNorm * 45; fCut = 1150; nCut = 2100; oVol = 0.11; nVol = 0.15;
-    }
-    this.engineOsc.frequency.setTargetAtTime(freq, t, 0.06);
-    this.engineFilter.frequency.setTargetAtTime(fCut, t, 0.06);
-    this.engineNoiseFilter.frequency.setTargetAtTime(nCut, t, 0.06);
-    this.engineGain.gain.setTargetAtTime(oVol, t, 0.06);
-    this.engineNoiseGain.gain.setTargetAtTime(nVol, t, 0.06);
+    // thrust level spools up and down slowly, like a real motor
+    const L0 = Math.max(0, Math.min(1, speedNorm));
+    this.engLevel += (L0 - this.engLevel) * 0.06;
+    const L = this.engLevel;
+    const crackle = 1 + (Math.random() - 0.5) * (0.22 + 0.3 * L);      // combustion roughness
+    E.rumbleF.frequency.setTargetAtTime(95 + 320 * L, t, 0.12);
+    E.rumbleG.gain.setTargetAtTime((0.16 + 0.30 * L) * crackle, t, 0.04);
+    E.lfo.frequency.setTargetAtTime(15 + 24 * L, t, 0.2);
+    E.lfoDepth.gain.setTargetAtTime(0.16 + 0.1 * L, t, 0.2);
+    E.roarF.frequency.setTargetAtTime(420 + 2300 * L * L + 200 * L, t, 0.1);
+    E.roarLP.frequency.setTargetAtTime(1800 + 3800 * L, t, 0.1);
+    E.roarG.gain.setTargetAtTime((0.025 + 0.20 * Math.pow(L, 1.25)) * (1 + (Math.random() - 0.5) * 0.35), t, 0.03);
+    E.hissG.gain.setTargetAtTime(0.045 * L * L * (speedMode === 3 ? 1.5 : 1), t, 0.1);
+    E.toneA.frequency.setTargetAtTime(52 + 46 * L, t, 0.2);
+    E.toneB.frequency.setTargetAtTime(78 + 70 * L, t, 0.2);
+    E.toneG.gain.setTargetAtTime(0.025 + 0.035 * L, t, 0.2);
+  }
+
+  // Soft sine voice: attack ramp (no clicks), exponential release. Pitch can glide from f0 to f1.
+  tone(f0, f1, start, dur, vol, attack = 0.012) {
+    if (!this.initialized) return;
+    const c = this.ctx, t = c.currentTime + start;
+    const osc = c.createOscillator(), g = c.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f0, t);
+    if (f1 && f1 !== f0) osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + dur + 0.03);
   }
 
   playSpeedShift(tier) {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'triangle';
-    const base = tier === 1 ? 340 : (tier === 2 ? 540 : 880);
-    osc.frequency.setValueAtTime(base * 0.75, t);
-    osc.frequency.exponentialRampToValueAtTime(base, t + 0.07);
-    g.gain.setValueAtTime(0.14, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
-    osc.connect(g); g.connect(this.master);
-    osc.start(t); osc.stop(t + 0.1);
+    const base = tier === 1 ? 300 : (tier === 2 ? 420 : 600);
+    this.tone(base * 0.8, base, 0, 0.12, 0.045);
   }
 
   playLockTone() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(1180, t);
-    osc.frequency.setValueAtTime(1560, t + 0.045);
-    g.gain.setValueAtTime(0.11, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
-    osc.connect(g); g.connect(this.master);
-    osc.start(t); osc.stop(t + 0.12);
+    this.tone(880, 880, 0, 0.07, 0.04);
+    this.tone(1175, 1175, 0.06, 0.1, 0.04);
   }
 
   playSonarPing(proximity01) {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'sine';
-    const freq = 760 + proximity01 * 540;
-    osc.frequency.setValueAtTime(freq, t);
-    g.gain.setValueAtTime(0.06 + proximity01 * 0.08, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-    osc.connect(g); g.connect(this.master);
-    osc.start(t); osc.stop(t + 0.09);
+    this.tone(640 + proximity01 * 420, 0, 0, 0.14, 0.018 + proximity01 * 0.03, 0.01);
   }
 
   playAlertStinger() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const freqs = [880, 1244.5, 1661.2];
-    for (let i = 0; i < freqs.length; i++) {
-      const osc = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(freqs[i], t);
-      osc.frequency.exponentialRampToValueAtTime(freqs[i] * 1.04, t + 0.12);
-      g.gain.setValueAtTime(0.14, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.42);
-      osc.connect(g); g.connect(this.master);
-      osc.start(t); osc.stop(t + 0.44);
-    }
+    this.tone(660, 0, 0, 0.18, 0.05);
+    this.tone(830, 0, 0.12, 0.2, 0.05);
+    this.tone(990, 0, 0.24, 0.3, 0.05);
   }
 
   playGunshot() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const flt = this.ctx.createBiquadFilter();
-    flt.type = 'bandpass';
-    flt.frequency.setValueAtTime(1600, t);
-    flt.frequency.exponentialRampToValueAtTime(320, t + 0.07);
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.18, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-    src.connect(flt); flt.connect(g); g.connect(this.master);
-    src.start(t); src.stop(t + 0.09);
+    this.tone(520, 150, 0, 0.07, 0.045, 0.004);
+    this.tone(260, 80, 0, 0.09, 0.03, 0.004);
   }
 
   playScrape() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const flt = this.ctx.createBiquadFilter();
-    flt.type = 'bandpass';
-    flt.frequency.setValueAtTime(2400, t);
-    flt.Q.value = 4.0;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.24, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    src.connect(flt); flt.connect(g); g.connect(this.master);
-    src.start(t); src.stop(t + 0.2);
+    this.tone(330, 130, 0, 0.2, 0.06, 0.006);
+    this.tone(497, 190, 0, 0.17, 0.035, 0.006);
   }
 
   playExplosion(power = 1.0) {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const dur = 0.65 + power * 0.45;
-    const sub = this.ctx.createOscillator();
-    const subG = this.ctx.createGain();
-    sub.type = 'sine';
-    sub.frequency.setValueAtTime(115, t);
-    sub.frequency.exponentialRampToValueAtTime(26, t + dur * 0.7);
-    subG.gain.setValueAtTime(Math.min(0.6, 0.36 * power), t);
-    subG.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    sub.connect(subG); subG.connect(this.master);
-    sub.start(t); sub.stop(t + dur + 0.05);
-
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.setValueAtTime(1400, t);
-    lp.frequency.exponentialRampToValueAtTime(140, t + dur);
-    const nG = this.ctx.createGain();
-    nG.gain.setValueAtTime(Math.min(0.55, 0.34 * power), t);
-    nG.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(lp); lp.connect(nG); nG.connect(this.master);
-    src.start(t); src.stop(t + dur + 0.05);
+    const dur = 0.7 + power * 0.5;
+    this.tone(95, 26, 0, dur, Math.min(0.34, 0.2 * power), 0.01);
+    this.tone(58, 22, 0.02, dur * 1.1, Math.min(0.26, 0.15 * power), 0.015);
+    this.tone(190, 55, 0, dur * 0.55, Math.min(0.16, 0.09 * power), 0.008);
+    this.tone(310, 90, 0.01, dur * 0.3, Math.min(0.08, 0.05 * power), 0.006);
   }
 
   playLaserArm() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(460, t);
-    osc.frequency.exponentialRampToValueAtTime(980, t + 0.16);
-    g.gain.setValueAtTime(0.065, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    osc.connect(g); g.connect(this.master);
-    osc.start(t); osc.stop(t + 0.19);
+    this.tone(460, 900, 0, 0.2, 0.035, 0.02);
   }
 
   playLaserDown() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(720, t);
-    osc.frequency.exponentialRampToValueAtTime(110, t + 0.34);
-    g.gain.setValueAtTime(0.14, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.36);
-    osc.connect(g); g.connect(this.master);
-    osc.start(t); osc.stop(t + 0.38);
+    this.tone(700, 120, 0, 0.36, 0.045, 0.01);
   }
 
   playTargetChime() {
-    if (!this.initialized) return;
-    const t = this.ctx.currentTime;
-    const notes = [523.25, 659.25, 1046.5];
-    notes.forEach((f, idx) => {
-      const osc = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(f, t + idx * 0.07);
-      g.gain.setValueAtTime(0.14, t + idx * 0.07);
-      g.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.07 + 0.32);
-      osc.connect(g); g.connect(this.master);
-      osc.start(t + idx * 0.07); osc.stop(t + idx * 0.07 + 0.35);
-    });
+    [523.25, 659.25, 1046.5].forEach((f, i) => this.tone(f, f, i * 0.08, 0.4, 0.05, 0.015));
   }
 }
 
@@ -4368,6 +4292,65 @@ class NikitaGame {
     P.d = Math.min(PROBE_RANGE, Math.max(0, m.pos.y - this._sf - MISSILE_RADIUS));
   }
 
+  // Extra flight physics: gusts, surface cushions, low-speed sag, acceleration pitch, and recoil/shock kicks (m.kickP / m.kickY
+  // are visual-and-aim nudges that decay). Everything is small so steering stays predictable.
+  applyRocketFX(m, dt, hasFuel) {
+    const spd = m.vel.length();
+    const sfw = Math.min(1, spd / Math.max(1, this.maxSpeed()));
+    const t = this.gameClock;
+    const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);
+    const tight = m.wallProximity || 0;                      // 0 in open halls, up to 1 right beside a wall
+
+    // 1) buffeting: smooth gusts grow with speed and in tight passages
+    if (hasFuel) {
+      const gAmp = (0.25 + 1.6 * sfw + 1.4 * tight * sfw) * dt;
+      const gx = Math.sin(t * 2.9 + 0.4) + 0.7 * Math.sin(t * 5.3 + 2.0);
+      const gy = Math.sin(t * 3.7 + 1.1) + 0.7 * Math.sin(t * 6.1 + 0.3);
+      m.vel.x += rx * gx * gAmp; m.vel.z += rz * gx * gAmp; m.vel.y += gy * gAmp * 0.6;
+      m.kickY = (m.kickY || 0) + gx * 0.0012 * sfw;
+    }
+
+    // 2) air cushion: a fast rocket is pushed away from walls, floor and roof it flies close to
+    const P = m.probe;
+    if (P && spd > 5 && hasFuel) {
+      const push = (d, lim) => (d < lim ? ((lim - d) / lim) * 3.2 * sfw * dt : 0);
+      const l = push(P.l, 1.7), r = push(P.r, 1.7);
+      m.vel.x += rx * (l - r); m.vel.z += rz * (l - r);
+      m.vel.y += push(P.d, 1.4) * (m.landReq ? 0 : 1) - push(P.u, 1.4);
+    }
+
+    // 3) low-speed sag: below crawl speed the nose droops and the rocket sinks a little (not while landing)
+    if (!m.landReq && spd < 9 && hasFuel) {
+      const sag = 1 - spd / 9;
+      m.vel.y -= sag * 1.6 * dt;
+      m.kickP = (m.kickP || 0) - sag * 0.12 * dt;
+    }
+
+    // 4) acceleration pitch: speeding up lifts the nose, braking dips it
+    const acc = (m.currentSpeed - (m._spd0 === undefined ? m.currentSpeed : m._spd0)) / Math.max(dt, 1e-3);
+    m._spd0 = m.currentSpeed;
+    const kickTarget = Math.max(-0.045, Math.min(0.045, acc * 0.003));
+
+    // 5) kicks relax toward the acceleration pitch / zero
+    m.kickP = (m.kickP || 0) + (kickTarget - (m.kickP || 0)) * Math.min(1, dt * 5);
+    m.kickY = (m.kickY || 0) * Math.exp(-dt * 6);
+    m.kickP = Math.max(-0.18, Math.min(0.18, m.kickP));
+    m.kickY = Math.max(-0.12, Math.min(0.12, m.kickY));
+  }
+
+  // Impulse from a shockwave or recoil; dir must be a unit vector pointing the way the rocket is shoved
+  shoveRocket(dir, mag, pitchKick = 0, yawKick = 0) {
+    const m = this.missile;
+    m.vel.addScaledVector(dir, mag);
+    m.kickP = (m.kickP || 0) + pitchKick;
+    m.kickY = (m.kickY || 0) + yawKick;
+  }
+
+  // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
+  fuzeNear(p, x, y, z, dist) {
+    return this.fuzeMode !== 'det' && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
+  }
+
   // LAND button: arms or cancels a landing; on the ground it lifts off (or aborts a lift-off)
   pressLand() {
     const m = this.missile;
@@ -4383,7 +4366,7 @@ class NikitaGame {
     }
     m.landReq = !m.landReq;
     m.landReqT = 0;
-    this.pushFeed(m.landReq ? 'LANDING ARMED — EASE ONTO A FLAT SURFACE' : 'LANDING CANCELLED', m.landReq ? 'cyan' : 'amber');
+    this.pushFeed(m.landReq ? 'LANDING — BRAKING TO HOVER' : 'LANDING CANCELLED', m.landReq ? 'cyan' : 'amber');
   }
 
   // Is the slab at y = k*WALL_H (between floors k-1 and k) open at (x, z)? Only above a ramp.
@@ -4771,6 +4754,7 @@ class NikitaGame {
     this.grid[bw.gz * GRID_SIZE + bw.gx] = CELL_FLOOR;
     for (const ci of bw.chamber) this.secretHidden.delete(ci);
     this.forgetCell(bw.gx, bw.gz);
+    this._edgeTotal = null;
     this.totalOpen += 1 + bw.chamber.length;
     this.radarDirty = true;
     this.awardPoints(POINTS_BONUS.wall, 'WALL BREACH', true);
@@ -5255,6 +5239,35 @@ class NikitaGame {
     const ix = Math.floor((x + VOX_HALF) / VOX), iz = Math.floor((z + VOX_HALF) / VOX), iy = Math.floor(y / VOX);
     if (ix < 0 || iz < 0 || iy < 0 || ix >= VOX_N || iz >= VOX_N || iy >= VOX_Y) return -1;
     return ix + VOX_N * (iz + VOX_N * iy);
+  }
+
+  // Scan completion = every real edge in the sector (wall seams, corners, shaft outlines, ramps, opening rims, lift beams),
+  // secret chambers included, has been outlined. Counted once per sector (and again after a wall is breached).
+  edgeTotal() {
+    if (this._edgeTotal) return this._edgeTotal;
+    const G = GRID_SIZE, GG = G * G;
+    let n = 0;
+    for (let fl = 0; fl < this.nFloors; fl++) {
+      const grid = this.floors[fl];
+      for (let c = 0; c < GG; c++) {
+        const v = grid[c];
+        if (v !== CELL_WALL && v !== CELL_CRACKED && !isShaft(v)) continue;
+        for (let q = 0; q < 16; q++) if (this.validSeg(fl * FLOOR_SEG + c * 16 + q)) n++;
+      }
+    }
+    for (let c = 0; c < GG; c++) {
+      if (!isShaft(this.grid[c])) continue;
+      for (let k = 0; k < 20; k++) if (this.validSeg(SHAFT_SEG_BASE + c * 32 + k)) n++;
+    }
+    n += this.ramps.length * 8 + this.lifts.length * 4;
+    for (let F = 1; F < this.nFloors; F++) for (let c = 0; c < GG; c++) if (this.floors[F][c] === CELL_VOID) for (let side = 0; side < 4; side++) if (this.validRim(RIM_BASE + (F * GG + c) * 4 + side)) n++;
+    return (this._edgeTotal = Math.max(1, n));
+  }
+
+  scanPercent() {
+    const total = this.edgeTotal();
+    const seen = Math.min(total, this.revealedSeg.size);
+    return seen >= total ? 100 : Math.min(99, Math.floor((seen / total) * 100));
   }
 
   markSeen(x, z, y = 0) {
@@ -5764,7 +5777,7 @@ class NikitaGame {
     if (this.lidarThermalT <= 0) { this.lidarThermalT = 0.05; this.updateThermal(o, P); }
     if (this.radarSoftDirty && (this._radarRebuildT = (this._radarRebuildT || 0) - dt) <= 0) { this._radarRebuildT = 0.25; this.radarSoftDirty = false; this.radarDirty = true; }
     const badge = document.getElementById('cam-mode-badge');
-    if (badge) this.cText(badge, `LIDAR ${Math.round(P.range)}m · THERMAL ${Math.round(P.thermal)}m\nSCAN ${Math.min(100, Math.round((this.seenOpen / this.totalOpen) * 100))}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
+    if (badge) this.cText(badge, `LIDAR ${Math.round(P.range)}m · THERMAL ${Math.round(P.thermal)}m\nSCAN ${this.scanPercent()}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
   }
 
   // Deep scan 2-3: outline secret chambers (and shafts at 3) that lie within scan range, plus reveal their power-ups.
@@ -5908,6 +5921,7 @@ class NikitaGame {
 
   // Called when a sector starts. Same sector + seed (retry / replay) keeps its map; otherwise load or start blank.
   lidarBegin(key) {
+    this._edgeTotal = null;
     this._deepDone = new Set();
     if (key === this.lidarKey) return;
     this.lidarSnapshot();
@@ -6173,6 +6187,9 @@ class NikitaGame {
     b.pos.copy(m.pos).addScaledVector(_v1, 1.1);
     b.vel.copy(_v1).multiplyScalar(GUN_SPEED + (m.currentSpeed || 0));
     this.gunAmmo--;
+    _v2.copy(_v1).negate();
+    this.shoveRocket(_v2, 0.45, 0.014, (Math.random() - 0.5) * 0.012);   // recoil: shoves the rocket back and kicks the nose
+    this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.025);
     this.gunNoiseT = 0.35;
     if ((this.gunAmmo & 1) === 0) this.audio.playGunshot();
     const el = document.getElementById('hud-gun');
@@ -6407,7 +6424,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6525,7 +6542,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -6729,6 +6746,21 @@ class NikitaGame {
 
     this.syncBarrelInstances();
     this.updateHUDText();
+
+    // shockwave: a blast just outside the lethal radius still shoves the rocket away
+    if (rk.active && !rocketCaught && this.state === 'PLAYING') {
+      const dRk = rk.pos.distanceTo(epicenter);
+      const reach = radius * 2.0;
+      if (dRk > radius && dRk < reach) {
+        const fall = 1 - (dRk - radius) / (reach - radius);
+        const wall = this.los3(epicenter.x, epicenter.y, epicenter.z, rk.pos.x, rk.pos.y, rk.pos.z) ? 1 : 0.35;
+        _v6.copy(rk.pos).sub(epicenter).normalize();
+        this.shoveRocket(_v6, 9 * power * fall * wall, (Math.random() - 0.5) * 0.2 * fall, (Math.random() - 0.5) * 0.2 * fall);
+        rk.roll += (Math.random() - 0.5) * 1.4 * fall;
+        this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.4 * fall * wall);
+        if (fall > 0.35) this.pushFeed('SHOCKWAVE', 'amber');
+      }
+    }
 
     if (rocketCaught && rk.active) this.detonateMissile(rk.pos.clone(), 'CAUGHT IN BLAST RADIUS');
   }
@@ -7295,8 +7327,8 @@ class NikitaGame {
     const sfw = Math.min(1, m.vel.length() / this.maxSpeed());
     const steer = Math.min(1.5, Math.abs(m.yawRate) + Math.abs(m.pitchRate));
     const wamp = 0.0015 + 0.0035 * sfw + 0.006 * steer + (m.drop > 0 ? 0.01 : 0) + (m.fuelOut >= 0 ? 0.008 : 0);
-    m.wobY = wamp * (Math.sin(wt * 9.1) + 0.6 * Math.sin(wt * 15.7 + 1.3));
-    m.wobP = wamp * 0.8 * (Math.sin(wt * 10.3 + 0.7) + 0.6 * Math.sin(wt * 17.9 + 2.1));
+    m.wobY = wamp * (Math.sin(wt * 9.1) + 0.6 * Math.sin(wt * 15.7 + 1.3)) + (m.kickY || 0);
+    m.wobP = wamp * 0.8 * (Math.sin(wt * 10.3 + 0.7) + 0.6 * Math.sin(wt * 17.9 + 2.1)) + (m.kickP || 0);
     _e1.set(m.pitch + m.wobP, m.yaw + m.wobY, 0, 'YXZ');
     _v1.copy(_fwd).applyEuler(_e1).normalize();
 
@@ -7375,9 +7407,9 @@ class NikitaGame {
       if (m.landReq) {
         m.landReqT = (m.landReqT || 0) + dt;
         if (!hasFuel || m.landReqT > LAND_ARM_TIME) { m.landReq = false; this.pushFeed('LANDING CANCELLED', 'amber'); }
-        else targetSpeed = Math.min(targetSpeed, LAND_ARM_SPEED);
+        else targetSpeed = 0;                        // VTOL landing: brake to a hover, then settle straight down
       }
-      m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
+      m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? (m.landReq ? 3.4 : 6.0) : 1.2));
 
       _v2.copy(_v1).multiplyScalar(m.currentSpeed);
       const gravDrop = hasFuel ? 0.35 : 7.5;
@@ -7386,7 +7418,24 @@ class NikitaGame {
       let inertia = profile.inertia;
       if (m.burnT > 0) { m.burnT -= dt; inertia *= 2.6; m.currentSpeed = Math.max(m.currentSpeed, 14); }
       m.vel.lerp(_v2, Math.min(1, dt * inertia));
+
+      if (m.landReq) {
+        // VTOL landing: level the nose, kill the forward speed, then sink at a rate that eases off near the floor
+        m.pitch += (0 - m.pitch) * Math.min(1, dt * 2.0);
+        this.localSurf(m.pos.x, m.pos.y, m.pos.z);
+        if (this._gRamp || m.inLift) {
+          m.landReq = false;
+          this.pushFeed(this._gRamp ? 'LANDING CANCELLED — CANNOT LAND ON A RAMP' : 'LANDING CANCELLED — LIFT SHAFT', 'amber');
+        } else {
+          const alt = m.pos.y - MISSILE_RADIUS - this._sf;
+          const settle = m.currentSpeed < 5 ? -Math.max(0.6, Math.min(3.0, alt * 1.15)) : 0;
+          m.vel.y += (settle - m.vel.y) * Math.min(1, dt * 4.0);
+        }
+      }
     }
+
+    if (m.drop <= 0 && !m.flipping && !m.landed) this.applyRocketFX(m, dt, hasFuel);
+    else { m.kickP = (m.kickP || 0) * Math.exp(-dt * 6); m.kickY = (m.kickY || 0) * Math.exp(-dt * 6); }
 
     // 3) 4-Substep Swept Collision Pass
     const subDt = dt / SUBSTEPS;
@@ -7423,7 +7472,7 @@ class NikitaGame {
           return;
         }
         // proximity fuze: close enough to a primary target (and not behind a wall) -> burst automatically
-        if (this.fuzeMode !== 'det' && tDist < FUZE_RANGE && m.drop <= 0 && this.los3(_v3.x, _v3.y, _v3.z, t.pos.x, t.pos.y, t.pos.z)) {
+        if (this.fuzeNear(_v3, t.pos.x, t.pos.y, t.pos.z, tDist)) {
           m.pos.copy(_v3);
           this._proxBurst = true;
           this.detonateMissile(_v3, `PROXIMITY FUZE: ${t.name}`, t, null);
@@ -7438,6 +7487,11 @@ class NikitaGame {
           const dx = _v3.x - s.pos.x;
           const dz = _v3.z - s.pos.z;
           const horizDistSq = dx * dx + dz * dz;
+          if (horizDistSq < FUZE_RANGE * FUZE_RANGE && this.fuzeNear(_v3, s.pos.x, s.pos.y + 1.2, s.pos.z, Math.hypot(dx, _v3.y - (s.pos.y + 1.2), dz))) {
+            m.pos.copy(_v3);
+            this.detonateMissile(_v3, 'PROXIMITY FUZE: SENTRY');
+            return;
+          }
           if (horizDistSq <= (0.72 + MISSILE_RADIUS) * (0.72 + MISSILE_RADIUS) && _v3.y >= s.pos.y + 0.05 && _v3.y <= s.pos.y + 2.25) {
             m.pos.copy(_v3);
             this.hitStopTimer = 0.04;
@@ -7531,8 +7585,13 @@ class NikitaGame {
 
         for (const tu of this.turrets) {
           if (!tu.active) continue;
-          if (_v3.distanceTo(tu.pos) < 1.1) {
+          const tuD = _v3.distanceTo(tu.pos);
+          if (tuD < 1.1) {
             this.detonateMissile(_v3, 'DIRECT HIT: CIWS TURRET');
+            return;
+          }
+          if (this.fuzeNear(_v3, tu.pos.x, tu.pos.y - 0.6, tu.pos.z, tuD)) {
+            this.detonateMissile(_v3, 'PROXIMITY FUZE: CIWS TURRET');
             return;
           }
         }
@@ -7619,6 +7678,8 @@ class NikitaGame {
             if (flatLen > 0.01) m.yaw = Math.atan2(-m.vel.x, -m.vel.z);
             m.pitch = Math.max(-1.0, Math.min(1.0, Math.atan2(m.vel.y, Math.max(0.01, flatLen))));
             m.hull = Math.max(0, m.hull - 22 * this.hullDmgMult());
+            m.roll += (Math.random() < 0.5 ? -1 : 1) * (0.7 + Math.random() * 0.5);      // scrape: the hull is knocked into a roll
+            m.kickP = (m.kickP || 0) + (Math.random() - 0.5) * 0.12;
             this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.28);
             this.audio.playScrape();
             this.pushFeed(`GLANCING DEFLECTION (-22% HULL)`, 'amber');
@@ -9474,12 +9535,8 @@ class NikitaGame {
         const alt = m.pos.y - MISSILE_RADIUS - this._sf;
         if (m.landReq) {
           armed = true; lbl = 'CANCEL';
-          if (this._gRamp) { txt = '▼ LANDING ARMED — RAMPS CAN\'T BE LANDED ON'; cls = 'warn'; }
-          else if (m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH) { txt = `▼ TOO STEEP — LEVEL OFF  ${alt.toFixed(1)}m`; cls = 'warn'; }
-          else if (m.currentSpeed > LAND_SPEED) txt = '▼ LANDING ARMED — SLOWING', cls = 'ok';
-          else txt = `▼ LANDING ARMED — EASE DOWN  ${alt.toFixed(1)}m`, cls = 'ok';
-        } else if (!this._gRamp && alt < 6) {
-          txt = `▼ LAND AVAILABLE  ${alt.toFixed(1)}m`; cls = 'ok';
+          if (m.currentSpeed > 2) { txt = '▼ LANDING — BRAKING'; cls = 'ok'; }
+          else { txt = `▼ LANDING — DESCENDING  ${alt.toFixed(1)}m`; cls = 'ok'; }
         }
       }
     }
