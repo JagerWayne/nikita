@@ -90,6 +90,14 @@ self.APP_FILES = [
 - Scan the project and **verify the list is complete** (nothing the app loads is missing) and that every listed file exists. Do both with a small script and report any mismatch.
 - If the app is one big `index.html` with inline CSS/JS, the list is just the page, manifest, icons and any vendor/asset files.
 
+### File sizes for the progress bar (`js/boot/sizes.js`, generated)
+The update progress bar counts **bytes**, so the worker needs each file's size before downloading. A tiny release script writes them (no build step for the app itself, just run it before deploying):
+```js
+self.APP_SIZES = { "index.html": 48210, "js/main.js": 120344, "vendor/three-0.x.0/three.module.min.js": 712345 /* ... */ };
+```
+- Create `tools/make-sizes.mjs` (Node, no dependencies): read `js/boot/files.js`, `stat` every listed file, write `js/boot/sizes.js` with raw (uncompressed) byte sizes, and **fail loudly** if a listed file is missing. Add `js/boot/sizes.js` itself to `APP_FILES`.
+- Run it on every release after the last file change (section 12). The worker tolerates a missing/outdated entry (see section 6), but the bar is only accurate when sizes are current.
+
 ## 5b. Third-party libraries: latest versions, hosted locally
 Find every external library the app uses (three.js, Phaser, Howler, matter.js, etc.: `<script src>`, `import ... from 'https://...'`, importmaps, CDN links) and make sure each one is **current and works offline**.
 1. **Look up the real latest stable version at run time**; never rely on memory. Use `npm view <package> version` (or `curl https://registry.npmjs.org/<package>/latest`) and the library's release notes / migration guide. Skip pre-release tags (`alpha`, `beta`, `rc`, `next`).
@@ -111,25 +119,54 @@ Find every external library the app uses (three.js, Phaser, Howler, matter.js, e
 const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev';
 const PREFIX = 'my-app-';
 const CACHE = PREFIX + VERSION;
-importScripts('./js/boot/files.js');
+importScripts('./js/boot/files.js', './js/boot/sizes.js');
 const PRECACHE = ['./'].concat(self.APP_FILES || []);
 
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    const total = PRECACHE.length;
-    let done = 0, failed = 0;
+    const sizes = self.APP_SIZES || {};
+    const FALLBACK = 50 * 1024;                               // guess for a file whose size is unknown
+    const size = {};                                          // url -> expected bytes
+    PRECACHE.forEach(u => { size[u] = sizes[u] || FALLBACK; });
+    let total = PRECACHE.reduce((n, u) => n + size[u], 0);
+    let loaded = 0, files = 0, failed = 0, last = 0;
     const report = async (final) => {                         // tell every open page how far the download is
+      const now = Date.now();
+      if (!final && now - last < 100) return;                 // at most ~10 messages a second
+      last = now;
       const pages = await self.clients.matchAll({ includeUncontrolled: true });
-      pages.forEach(p => p.postMessage({ type: 'progress', version: VERSION, done, total, failed, final: !!final }));
+      pages.forEach(p => p.postMessage({ type: 'progress', version: VERSION, loaded, total: Math.max(total, loaded), files, count: PRECACHE.length, failed, final: !!final }));
     };
-    await report();
-    // fresh copies (skip the HTTP cache), in parallel; one missing file must not block the install
-    await Promise.all(PRECACHE.map(url =>
-      cache.add(new Request(url, { cache: 'reload' }))
-        .catch(() => { failed++; })
-        .then(() => { done++; return report(); })
-    ));
+    async function grab(url) {                                // download one file, counting bytes as they arrive
+      const res = await fetch(new Request(url, { cache: 'reload' }));
+      if (!res.ok) throw new Error(res.status);
+      let got = 0;
+      const parts = [];
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parts.push(value); got += value.length; loaded += value.length;
+          if (got > size[url]) { total += got - size[url]; size[url] = got; }   // size list was outdated: grow the total, never exceed 100%
+          await report();
+        }
+      } else { const b = await res.blob(); parts.push(b); got = b.size; loaded += got; }
+      if (got < size[url]) total -= size[url] - got;          // file was smaller than listed: shrink the total
+      await cache.put(url, new Response(new Blob(parts), { status: res.status, headers: res.headers }));
+    }
+    await report(false);
+    const queue = PRECACHE.slice();
+    // a few files at a time; one missing file must not block the install
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (queue.length) {
+        const url = queue.shift();
+        try { await grab(url); } catch (e) { failed++; loaded += size[url]; }   // count it as "handled" so the bar still reaches 100%
+        files++;
+        await report();
+      }
+    }));
     await report(true);
     // NOTE: no skipWaiting() here, see "update flow" below
   })());
@@ -230,13 +267,14 @@ function applyUpdate() {
   else location.reload();
 }
 
-/* ---- progress bar: the new worker reports how many files it has downloaded ---- */
+/* ---- progress bar: the new worker reports how many BYTES it has downloaded ---- */
+function formatBytes(n) { return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', e => {
     const d = e.data;
     if (!d || d.type !== 'progress') return;
-    const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
-    setProgress(pct, 'Updating to v' + d.version + '... ' + pct + '% (' + d.done + '/' + d.total + ' files)');
+    const pct = d.final ? 100 : Math.min(99, Math.floor(d.loaded / Math.max(1, d.total) * 100));   // 100% only when truly finished
+    setProgress(pct, 'Updating to v' + d.version + '... ' + pct + '% (' + formatBytes(d.loaded) + ' / ' + formatBytes(d.total) + ')');
     if (d.final && d.failed) setUpdateStatus(d.failed + ' file(s) could not be downloaded. Check your connection and try again.');
   });
 }
@@ -256,9 +294,9 @@ async function installVersion(v) {
 ```
 
 ### Progress bar UI (required, shown for every update)
-- A bar with a **percentage and a file count** ("Updating to v1.3... 42% (20/48 files)") that fills from 0 to 100%. Use a `<progress>`-style element or a div with `width: X%` and `role="progressbar"` + `aria-valuenow`; animate smoothly; make it large enough to read on a phone (>= 12 px tall).
+- A bar with a **percentage and the bytes downloaded** ("Updating to v1.3... 42% (1.2 MB / 2.9 MB)") that fills from 0 to 100%. Use a `<progress>`-style element or a div with `width: X%` and `role="progressbar"` + `aria-valuenow`; animate smoothly; make it large enough to read on a phone (>= 12 px tall).
 - Show it in a modal layer over the whole app (not only inside Settings) so it is visible whether the update was started from the banner, the Check for updates button or a silent check. Block input during the final "Installing..." step; keep a **Cancel** only before the download starts.
-- It reflects **every file in `APP_FILES`** (the count comes from the worker), so 100% means everything is cached and the app can run fully offline.
+- It is **byte-based and covers every file in `APP_FILES`** (sizes come from `js/boot/sizes.js`, the worker counts the bytes as they stream in), so a big audio file moves the bar proportionally and 100% means everything is cached and the app can run fully offline. The bar never goes backwards and never shows 100% before the worker reports `final`.
 - On finish: show 100% for a moment, then reload into the new version. On failure (`failed > 0`, offline, worker `redundant`): hide the bar, keep the old version running, show the error and a **Retry** button. Never reload into a half-downloaded version.
 - Also use the same bar on the very first visit ("Downloading for offline play... 63%") so the player knows when offline mode is ready, but do not block the app then; show it as a small non-blocking strip.
 
@@ -373,7 +411,7 @@ document.getElementById('btn-install').addEventListener('click', async () => {
 
 ## 12. Releasing an update (document in README)
 1. Change the files.
-2. Add any new file to `js/boot/files.js`. Run `tools/check-deps` and upgrade outdated libraries in `vendor/` (new versioned file name, update `APP_FILES` and `vendor/README.md`).
+2. Add any new file to `js/boot/files.js`, then run `node tools/make-sizes.mjs` to refresh `js/boot/sizes.js`. Run `tools/check-deps` and upgrade outdated libraries in `vendor/` (new versioned file name, update `APP_FILES` and `vendor/README.md`).
 3. Bump `APP_VERSION` (the only number to change).
 4. Commit and push; GitHub Pages deploys in about 1 minute.
 
@@ -390,7 +428,7 @@ Use the pre-installed Playwright + Chromium and a local static server (`python3 
 - **Service worker:** `sw.js?v=<version>` activates; Cache Storage has exactly one `<prefix><version>` cache holding every file in `APP_FILES`.
 - **Offline test:** load once, go offline (`context.setOffline(true)`), reload: the app starts and plays.
 - **Update test:** bump the version -> reload -> new worker waits, banner appears, "Update now" activates it; old cache deleted, only the new one remains; the UI shows the new version.
-- **Progress bar:** during an update (and the first-visit download) the bar goes 0 -> 100% monotonically, the file count matches `APP_FILES.length` (+1 for `./`), it is visible on a phone-size viewport (390x844), and an offline/failed download (block one file with `page.route`) hides the bar, shows Retry and does not reload. Screenshot it mid-way (throttle the network or delay responses so the intermediate state can be captured).
+- **Progress bar:** during an update (and the first-visit download) the bar goes 0 -> 100% monotonically, the total bytes match the sum of the real file sizes (within the `./` page copy), `js/boot/sizes.js` matches the files on disk (run `tools/make-sizes.mjs` and confirm no diff), a deliberately wrong size entry still ends at exactly 100%, it is visible on a phone-size viewport (390x844), and an offline/failed download (block one file with `page.route`) hides the bar, shows Retry and does not reload. Screenshot it mid-way (throttle the network or delay responses so the intermediate state can be captured).
 - **Check for updates button:** shows "latest" when equal, "available" when the server version differs (simulate by changing `version.js`), and "offline" when offline.
 - **Version display:** the Settings/About text and the corner label equal `APP_VERSION`.
 - **Delete save:** create a save, press Delete -> Cancel keeps it, Delete wipes only the app's keys (add a foreign key first to prove it survives), the app resets cleanly, and offline still works afterwards.
