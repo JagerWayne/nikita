@@ -2722,10 +2722,12 @@ class Autopilot {
   // STEP 2: waypoints (A* over explored tiles + string-pulled legs) and guidance (look-ahead pursuit)
   // =====================================================================================================
   engage() {
-    this.active = true; this.done = false; this.plan = null; this.scan = null; this.replanT = 0;
+    this.active = true; this.done = false; this.plan = null; this.scan = null; this.replanT = 0; this.failN = 0; this.engagedAt = this.g.gameClock;
     this.tried = this.tried && this._triedKey === this.g.lidarKey ? this.tried : new Set(); this._triedKey = this.g.lidarKey;
     this.stuck = { t: 0, x: 0, z: 0 }; this.cmd = null; this.why = 'ENGAGED';
     this.gun = { ignore: new Set(), aimObj: null, aimT: 0, mode: 'EXPLORE', path: null, pi: 0 };
+    this.fc = null; this.tracks = new Map(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
+    if (this._boxKey !== this.g.lidarKey) { this.boxTried = new Set(); this._boxKey = this.g.lidarKey; }
   }
 
   flyable(v) { return v === XV.OPEN || v === XV.RAMP || v === XV.SH_TOP || v === XV.SH_MID || v === XV.SH_BOT || v === XV.HOLE || v === XV.HAZ; }
@@ -2741,7 +2743,10 @@ class Autopilot {
       for (let gz = Math.max(0, z0); gz <= Math.min(G - 1, z1); gz++) for (let gx = Math.max(0, g0); gx <= Math.min(G - 1, g1); gx++)
         if (Math.hypot(gridToWorldX(gx) - x, gridToWorldZ(gz) - z) < r + CELL_SIZE * 0.5) L[f * GG + gz * G + gx] = 1;
     };
-    for (const tb of g.turbines) disc(hard, tb.pos.x, tb.pos.z, 3.2, 0);
+    for (const tb of g.turbines) {                                       // a turbine is a thin fan: only the tiles its blades sweep
+      const gz = worldToGridZ(tb.pos.z);
+      for (let gx = 0; gx < G; gx++) if (Math.abs(gridToWorldX(gx) - tb.pos.x) < tb.radius + MISSILE_RADIUS + CELL_SIZE * 0.5 && gz >= 0 && gz < G) hard[gz * G + gx] = 1;
+    }
     for (const b of g.bulkheads) disc(hard, b.x, b.z, 3.0, 0);
     for (const l of g.lasers) { if (l.disabled) continue; for (let x = l.xMin - 1; x <= l.xMax + 1; x += CELL_SIZE * 0.5) disc(hard, x, l.z, 1.2, 0); }
     for (const tg of g.targets) if (tg.active) disc(hard, tg.pos.x, tg.pos.z, 0.3, Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tg.pos.y))));   // primary targets: flying into one detonates the warhead
@@ -2768,7 +2773,7 @@ class Autopilot {
     const unknownN = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]); };
     const nearWall = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx < 0 || zz < 0 || xx >= G || zz >= G) return true; const v = X[i + dz * G + dx]; if (v === XV.SOLID || v === XV.CRACK) return true; } return false; };
     const nearHaz = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx >= 0 && zz >= 0 && xx < G && zz < G && haz[i + dz * G + dx]) return true; } return false; };
-    const dist = new Float32Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+    const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
     // binary heap of [cost, node]
     const H = []; const push = (c, n) => { H.push([c, n]); let k = H.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (H[p][0] <= H[k][0]) break; [H[p], H[k]] = [H[k], H[p]]; k = p; } };
     const pop = () => { const top = H[0], last = H.pop(); if (H.length) { H[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < H.length && H[l][0] < H[m][0]) m = l; if (r < H.length && H[r][0] < H[m][0]) m = r; if (m === k) break; [H[m], H[k]] = [H[k], H[m]]; k = m; } } return top; };
@@ -2847,12 +2852,23 @@ class Autopilot {
   newPlan() {
     const t = this.t, g = this.g;
     if (g.xgrid && t.node >= 0) { const v = g.xCellVal(t.floor, t.node % (GRID_SIZE * GRID_SIZE)); if (g.xgrid[t.node] !== v) { g.xgrid[t.node] = v; g.xgridDirty = true; } }
+    if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }   // between floors / over a hole: try again shortly
     const p = this.planFrontier(t.node);
+    if (p) this.failN = 0;
     if (!p) {
+      const lp = this.planLaserBox(t.node);                             // only live laser grids left in the way: shoot a switch box
+      if (lp) {
+        this.boxGoal = lp.laser; this.boxLaser = lp.laser;
+        if (!lp.tiles.length) { this.boxWait = { t: 0 }; this.plan = null; this.why = 'SHOOTING A LASER SWITCH BOX'; return; }
+        this.plan = { goal: lp.goal, tiles: lp.tiles, wps: this.smooth(lp.tiles), k: 0, t0: t.time, laser: lp.laser };
+        g.xroute = lp.tiles.slice(); this.why = 'TO A LASER SWITCH BOX'; return;
+      }
       const X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, G = GRID_SIZE, i = t.node;
       const c = i % GG, x = c % G, z = (c / G) | 0;
       const unknownHere = X && ((x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]));
       if (unknownHere && !this.tried.has(i)) { this.startScan(i); return; }
+      if (t.time - (this.engagedAt || 0) > 4) this.failN = (this.failN || 0) + 1;   // only call it explored after 3 failed plans in a row (never in the first seconds)
+      if (this.failN < 3) { this.plan = null; this.replanT = 1.0; this.why = 'NO FRONTIER - RETRYING'; return; }
       this.plan = null; this.done = true; this.why = 'EXPLORED - HANDING OVER';
       return;
     }
@@ -2889,6 +2905,18 @@ class Autopilot {
     if (this._hazT <= 0) { this._hazT = 2; g.xHazRefresh(); }
     const wrap = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
     let out = { yaw: 0, climb: 0, speed: 0 };
+    // --- at a laser switch box: face it until fire control has shot it (or 8 s)
+    if (this.boxWait) {
+      const L = this.boxLaser; this.boxWait.t += dt;
+      if (!L || L.disabled || this.boxWait.t > 8) {
+        if (L && !L.disabled) { (this.boxTried || (this.boxTried = new Set())).add(L); }
+        this.boxWait = null; this.boxGoal = null; this.boxLaser = null; this._hz = null; this.replanT = 0; this.why = L && L.disabled ? 'LASER GRID DOWN' : 'SWITCH BOX NOT HIT';
+      } else {
+        const brg = wrap(Math.atan2(-(L.relayPos.x - t.x), -(L.relayPos.z - t.z)) - t.yaw);
+        out = { yaw: Math.max(-1, Math.min(1, 3 * brg - 0.35 * t.yawRate)), climb: Math.max(-1, Math.min(1, 1.4 * (Math.min(t.y + t.ceil - 0.8, L.relayPos.y) - t.y))), speed: 0 };
+        return this.fire(dt, out);
+      }
+    }
     // --- 360 scan where unexplored tiles are still around
     if (this.scan) {
       const S = this.scan; S.acc += Math.abs(wrap(t.yaw - S.last)); S.last = t.yaw; S.t += dt;
@@ -2918,7 +2946,11 @@ class Autopilot {
       const passed = nx && ((t.x - w.x) * (nx.x - w.x) + (t.z - w.z) * (nx.z - w.z)) > 0 && d < 3;
       if (d < 1.2 || passed) P.k++; else break;
     }
-    if (P.k >= wps.length) { this.plan = null; this.startScan(P.goal); return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
+    if (P.k >= wps.length) {
+      this.plan = null;
+      if (P.laser) { this.boxWait = { t: 0 }; this.why = 'SHOOTING A LASER SWITCH BOX'; return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
+      this.startScan(P.goal); return this.fire(dt, { yaw: 0, climb: 0, speed: 0 });
+    }
     // --- stuck: under 0.8 m of progress in 3 s
     this.stuck.t += dt;
     if (this.stuck.t > 3) { if (Math.hypot(t.x - this.stuck.x, t.z - this.stuck.z) < 0.8) { this.tried.add(P.goal); this.plan = null; this.why = 'STUCK - NEW GOAL'; } this.stuck = { t: 0, x: t.x, z: t.z }; if (!this.plan) return out; }
@@ -2948,14 +2980,126 @@ class Autopilot {
     return this.fire(dt, out);
   }
 
-  // Step 2: the previous gunner still runs on top (fire control is rebuilt in step 3)
-  fire(dt, out) {
-    const g = this.g, m = g.missile, G = this.gun;
-    G.path = this.plan ? this.plan.wps : null; G.pi = this.plan ? this.plan.k : 0;
-    g.autoGunner(m, dt, G, out);
-    g.gunHeld = G.fire;
+  // After a hand-over: look again every 5 s; if new frontier appeared (a grid went down, a door opened), take back control
+  recheck(dt) {
+    this._reT = (this._reT || 0) - dt;
+    if (this._reT > 0 || !this.t || this.t.node < 0) return;
+    this._reT = 5;
+    const p = this.planFrontier(this.t.node);
+    if (p && p.tiles.length) { this.done = false; this.failN = 0; this.plan = null; this.replanT = 0; this.why = 'NEW FRONTIER - RESUMING'; }
+  }
+
+  // Fire control on top of the flight commands (step 3)
+  fire(dt, out) { return this.fireControl(dt, out); }
+
+  // =====================================================================================================
+  // STEP 3: target acquisition and fire control (bracketed contacts only: sentries, CIWS turrets, laser switch boxes)
+  // =====================================================================================================
+  // Tracks: one per bracketed contact, with a smoothed velocity estimate and a lock that confirms after 6 frames in view
+  updateTracks(dt) {
+    const t = this.t, now = t.time;
+    if (!this.tracks) this.tracks = new Map();
+    for (const c of t.contacts) {
+      let k = this.tracks.get(c.obj);
+      if (!k) { k = { obj: c.obj, kind: c.kind, x: c.x, y: c.y, z: c.z, vx: 0, vz: 0, seen: 0, first: now }; this.tracks.set(c.obj, k); }
+      const a = Math.min(1, dt * 6);
+      if (dt > 0) { k.vx += ((c.x - k.x) / dt - k.vx) * a; k.vz += ((c.z - k.z) / dt - k.vz) * a; }
+      k.x = c.x; k.y = c.y; k.z = c.z; k.d = c.d; k.threat = c.threat; k.last = now; k.seen++;
+    }
+    for (const [o, k] of this.tracks) if (now - k.last > 1.5 || (o.active === false) || (o.dying) || (k.kind === 'LASER BOX' && o.disabled)) this.tracks.delete(o);
+  }
+
+  // Would a bullet fired now pass close to a fuel barrel that is near enough to us for its blast (9 m) to reach us?
+  barrelInLine(tx, ty, tz) {
+    const t = this.t, g = this.g, dx = tx - t.x, dy = ty - t.y, dz = tz - t.z, L = Math.hypot(dx, dy, dz) || 1;
+    for (const b of g.barrels) {
+      if (!b.active) continue;
+      const bx = b.pos.x - t.x, by = b.pos.y - t.y, bz = b.pos.z - t.z;
+      const along = (bx * dx + by * dy + bz * dz) / L;
+      if (along < 0 || along > L + 1) continue;
+      const off = Math.hypot(bx - dx / L * along, by - dy / L * along, bz - dz / L * along);
+      if (off < 1.4 && Math.hypot(bx, by, bz) < 11.5) return true;
+    }
+    return false;
+  }
+
+  // Choose the target, compute the lead, steer onto it and pull the trigger only when the predicted miss is inside the hit area.
+  // Mutates `out` ({yaw, climb, speed}) while engaging.
+  fireControl(dt, out) {
+    const g = this.g, t = this.t, wrap = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+    this.updateTracks(dt);
+    if (!this.ignoreUntil) this.ignoreUntil = new Map();
+    const F = this.fc || (this.fc = { tgt: null, since: 0, burst: 0, pause: 0 });
+    g.gunHeld = false; this.shot = null;
+    if (g.gunAmmo <= 0 || g.missile.drop > 0) { F.tgt = null; return out; }
+    const SPEC = { 'CIWS': { pri: 8, range: 30, hitR: 1.0, vert: 0.8, need: GUN_HITS.turret }, 'SENTRY': { pri: 5, range: 28, hitR: 0.7, vert: 0.95, need: GUN_HITS.sentry }, 'LASER BOX': { pri: 4, range: 36, hitR: 0.75, vert: 0.6, need: GUN_HITS.box } };
+    // pick: confirmed locks only, in range, not given up; threats and blocking laser boxes first, then closest / most in front
+    let best = null, bestS = -1e9;
+    for (const k of this.tracks.values()) {
+      const sp = SPEC[k.kind]; if (!sp || k.seen < 6 || k.d > sp.range) continue;
+      if ((this.ignoreUntil.get(k.obj) || 0) > t.time) continue;
+      if (k.kind !== 'CIWS' && !k.threat && g.gunAmmo <= 4) continue;           // keep a few rounds for threats
+      let brg = wrap(Math.atan2(-(k.x - t.x), -(k.z - t.z)) - t.yaw);
+      let pri = sp.pri + (k.kind === 'SENTRY' && k.threat ? 2 : 0) + (k.kind === 'LASER BOX' && this.boxGoal === k.obj ? 6 : 0);
+      const sc = pri * 10 - k.d * 0.4 - Math.abs(brg) * 3 + (F.tgt === k ? 6 : 0);  // stick with the current target (no flip-flop)
+      if (sc > bestS) { bestS = sc; best = k; }
+    }
+    if (!best) { F.tgt = null; return out; }
+    if (F.tgt !== best) { F.tgt = best; F.since = t.time; F.burst = 0; F.pause = 0; }
+    if (t.time - F.since > 6) { this.ignoreUntil.set(best.obj, t.time + 20); F.tgt = null; return out; }   // no kill in 6 s: give up for 20 s
+    const sp = SPEC[best.kind];
+    // lead: bullet time of flight at 120 m/s plus our own speed; aim at where a moving sentry will be
+    const tof = best.d / (GUN_SPEED + t.speed);
+    const ax = best.x + best.vx * tof, az = best.z + best.vz * tof;
+    const yawErr = wrap(Math.atan2(-(ax - t.x), -(az - t.z)) - t.yaw);
+    // altitude: the gun fires level from the nose, so match the target's hit height (within the room's floor / ceiling)
+    const aimY = Math.max(t.y - t.agl + 1.0, Math.min(t.y + t.ceil - 0.8, best.y));
+    // steer onto the lead point; slow right down while engaging
+    out.yaw = Math.max(-1, Math.min(1, 3.0 * yawErr - 0.35 * t.yawRate));
+    out.climb = Math.max(-1, Math.min(1, 1.6 * (aimY - t.y) - 0.25 * t.vSpeed));
+    out.speed = Math.min(out.speed, 1.5);
+    // predicted miss at the target: sideways (from the heading error) and vertical (level shot vs hit window)
+    const latMiss = Math.abs(Math.sin(yawErr)) * best.d, vertMiss = Math.abs(t.y - best.y);
+    const clearShot = g.los3(t.x, t.y, t.z, best.x, best.y, best.z) && !this.barrelInLine(best.x, best.y, best.z);
+    const onTarget = latMiss < sp.hitR * 0.8 && vertMiss < sp.vert;
+    // bursts: as many rounds as the target needs plus two, then a short pause to re-aim
+    F.pause = Math.max(0, F.pause - dt);
+    let fire = false;
+    if (onTarget && clearShot && F.pause <= 0) { fire = true; F.burst += dt * GUN_RATE; if (F.burst >= sp.need + 2) { F.burst = 0; F.pause = 0.15; } }
+    g.gunHeld = fire;
+    this.shot = { kind: best.kind, d: best.d, lead: Math.hypot(ax - best.x, az - best.z), latMiss, vertMiss, onTarget, clearShot, fire, lockFrames: best.seen };
     return out;
   }
+
+  // When live laser grids are all that blocks the rest of the map: go where thermal can see a grid's switch box (it gets its
+  // brackets there) so fire control can shoot it. Returns a plan or null.
+  planLaserBox(start) {
+    const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, P = g.lidarParams(), reach = Math.max(8, P.thermal * 0.8);
+    const live = g.lasers.filter((l) => !l.disabled && l.relayActive && l.lockRef && l.lockRef.active && (this.boxTried || new Set()).has(l) === false);
+    if (!live.length || !X) return null;
+    // only grids we have already seen: some tile of their row is explored
+    const seen = live.filter((l) => { const c = g.cellAt(l.relayPos.x, l.relayPos.z); return c >= 0 && (X[c] || X[c + 1] || X[c - 1] || X[c + G] || X[c - G]); });
+    if (!seen.length) return null;
+    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && g.navOk(i) && !HZ.hard[i];
+    const dist = new Int32Array(GG * g.nFloors).fill(-1), prev = new Int32Array(GG * g.nFloors).fill(-1), q = [start];
+    dist[start] = 0;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], c = i % GG, f = (i / GG) | 0, p = this.tileCenter(i), y = f * WALL_H + 2.2;
+      for (const l of seen) {
+        const d = Math.hypot(l.relayPos.x - p.x, l.relayPos.z - p.z);
+        if (f === 0 && d < reach && d > 3 && g.los3(p.x, y, p.z, l.relayPos.x, l.relayPos.y, l.relayPos.z)) {
+          const tiles = []; for (let k = i; k !== start && k >= 0; k = prev[k]) tiles.push(k);
+          return { goal: i, tiles: tiles.reverse(), laser: l };
+        }
+      }
+      const x = c % G, z = (c / G) | 0, nb = [];
+      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
+      const extra = g.navLinks && g.navLinks.get(i); if (extra) nb.push(...extra);
+      for (const n of nb) if (dist[n] < 0 && ok(n)) { dist[n] = dist[i] + 1; prev[n] = i; q.push(n); }
+    }
+    return null;
+  }
+
 
   // Debug panel text (Dev Override: Autopilot Debug)
   debugText() {
@@ -2974,6 +3118,7 @@ class Autopilot {
       `FUEL ${f0(t.fuel)}%  BURN ${t.burn.toFixed(2)}%/s  RANGE ${f0(t.rangeSec)}s ${f0(t.rangeM)}m  @CRUISE ${f0(t.rangeCruiseM)}m`,
       `HULL ${f0(t.hull)}  AMMO ${t.ammo}  ROCKETS ${t.rockets}  ROUTE ${t.route}`,
       `CONTACTS ${t.contacts.length} (THREATS ${t.threats}): ${c}`,
+      this.active && this.shot ? `FIRE: ${this.shot.kind} ${this.shot.d.toFixed(0)}m LOCK ${this.shot.lockFrames}f LEAD ${this.shot.lead.toFixed(1)}m MISS ${this.shot.latMiss.toFixed(2)}/${this.shot.vertMiss.toFixed(2)}${this.shot.onTarget ? ' ON' : ''}${this.shot.clearShot ? '' : ' BLOCKED'}${this.shot.fire ? ' FIRING' : ''}` : 'FIRE: no target',
       this.active ? `NEW PILOT: ${this.why}${this.plan ? `  GOAL ${this.tileCenter(this.plan.goal).x.toFixed(0)},${this.tileCenter(this.plan.goal).z.toFixed(0)}  TILES ${this.plan.tiles.length}  LEG ${this.plan.k + 1}/${this.plan.wps.length}` : ''}${this.cmd ? `  ERR ${Math.round(this.cmd.err * 180 / Math.PI)}deg  VDES ${this.cmd.v.toFixed(1)}  LOOK ${this.cmd.L.toFixed(1)}m` : ''}${this.scan ? '  SCANNING' : ''}` : 'NEW PILOT: off (legacy autopilot)'
     ].join('\n');
   }
@@ -5092,6 +5237,7 @@ class NikitaGame {
   }
 
   autoStop(msg, keepPlay) {
+    if (this.cfg.newPilot && this.pilot && this.pilot.active && /AUTOPILOT DONE/.test(msg || '')) { this.pilot.done = false; this.pilot.failN = 0; this.pilot.replanT = 0; return; }   // beta: the new pilot keeps looking
     const m = this.missile;
     if (!keepPlay) this.autoPlay = false;
     this.gunHeld = false;
@@ -5110,6 +5256,7 @@ class NikitaGame {
         if (this._apDbgT <= 0) { this._apDbgT = 0.2; const el = document.getElementById('ap-debug'); if (el) el.textContent = this.pilot.debugText(); }
       }
     }
+    if (this.cfg.newPilot && this.pilot && this.pilot.active && this.pilot.done && this.missile.auto) this.pilot.recheck(dt);
     if (!this.autoPlay) return;
     const m = this.missile, st = this.state;
     if (st === 'CLEAR' || st === 'FAILED' || st === 'BRIEFING') { this.autoPlay = false; return; }
