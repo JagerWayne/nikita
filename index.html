@@ -4750,7 +4750,7 @@ class NikitaGame {
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, nz = z + dz; if (nx >= 0 && nz >= 0 && nx < G && nz < G) goals.add(f0 + nz * G + nx); }
       }
       huntPath = this.autoBfs(node, (i) => goals.has(i), blocked);
-      if (huntPath) huntCost = huntPath.length * CELL_SIZE / 5.0 * 2.2;
+      if (huntPath) huntCost = huntPath.length * CELL_SIZE / 4.5 * 2.0;      // about 1.8% fuel per cell at the autopilot's real average pace
     }
     const slack = m.fuel - huntCost;                               // fuel left over once the target is reached
     // 1) a useful pickup close by (only with plenty of spare fuel)
@@ -4764,8 +4764,10 @@ class NikitaGame {
         if (path && path.length <= 16) { A.mode = 'PICKUP'; A.pick = byNode.get(path.length ? path[path.length - 1] : node); return path; }
       }
     }
-    // 2) hunt the primary targets as soon as the fuel is just enough to reach one (or the scan is mostly done, the hull is hurt, time is up)
-    if (huntPath && (slack < 30 || this.scanPercent() >= 85 || A.noMore || m.hull < 45 || this.gameClock - A.t0 > 100)) { A.mode = 'HUNT'; return huntPath; }
+    // 2) explore first; hunt once the area is explored enough (85% scanned, nothing left to scan, 4 rockets used, rockets running low, hull hurt)
+    //    and the target is reachable on the fuel that is left (when nothing is left to scan, or from the 6th rocket on, try anyway)
+    const exploredEnough = this.scanPercent() >= 85 || A.noMore || this.fired >= 4 || this.ammo <= 10 || m.hull < 35;
+    if (huntPath && exploredEnough && (slack > 8 || A.noMore || this.fired >= 6)) { A.mode = 'HUNT'; return huntPath; }   // from the 6th rocket on, try even a far target
     return null;
   }
 
@@ -4861,7 +4863,7 @@ class NikitaGame {
         const before = A.mode;
         const cp = this.autoChoose(m, node, blocked, A);
         if (cp) {
-          A.target = cp.length ? cp[cp.length - 1] : node; A.path = cp; A.pi = 0;
+          A.target = cp.length ? cp[cp.length - 1] : node; A.path = cp; A.pi = 0; A.holdN = 0;
           if (before !== A.mode) this.pushFeed(A.mode === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS' : 'AUTOPILOT: GOING FOR A PICKUP', 'cyan');
         } else {
           A.mode = 'EXPLORE';
@@ -4881,7 +4883,11 @@ class NikitaGame {
             let p2 = this.autoBfs(node, (i) => cand.has(i), blocked);
             if (!p2) {
               A.noMore = true;
-              if (this.targets.some((t) => t.active) && this.gameClock > (A.huntBlock || 0)) { A.replanT = 0.2; return hold(); }   // nothing left to scan: the next decision is a hunt
+              if (this.targets.some((t) => t.active) && this.gameClock > (A.huntBlock || 0)) {                       // nothing left to scan: the next decision is a hunt
+                A.holdN = (A.holdN || 0) + 1;
+                if (A.holdN > 12) { this.autoStop(`AUTOPILOT DONE — SCAN ${this.scanPercent()}% · THE TARGET CANNOT BE REACHED FROM HERE`); return hold(); }
+                A.replanT = 0.2; return hold();
+              }
               // everything reachable is done. A sealed secret chamber? Go and hover at its cracked wall.
               const sec = this.breakables.filter((b) => b.active);
               const near = new Set();
@@ -4938,19 +4944,33 @@ class NikitaGame {
     if (A.stuckT > 3) {
       if (Math.hypot(m.pos.x - A.sx, m.pos.z - A.sz) < 0.6) { if (A.mode === 'EXPLORE') A.tried.add(A.target); else if (A.pick) A.triedPick.add(A.pick); A.target = -1; A.path = null; }
       A.stuckT = 0; A.sx = m.pos.x; A.sz = m.pos.z;
+      if (!A.path) return hold();                              // gave this goal up: choose a new one next frame
     }
     const wAlt = this.autoNodeAlt(wp);
     const nearShaft = (f0, i) => f0 === 0 && isShaft(this.floors[0][i % GG]);
-    // lining up with a tunnel mouth (or leaving one): get to the right height before moving on
-    const align = (nearShaft((wp / GG) | 0, wp) || nearShaft((node / GG) | 0, node)) && Math.abs(wAlt - m.pos.y) > 0.5;
+    // lining up with a tunnel mouth: get to the right height before moving in
+    const align = nearShaft((wp / GG) | 0, wp) && !nearShaft((node / GG) | 0, node) && Math.abs(wAlt - m.pos.y) > 0.5;   // only when entering a tunnel (leaving one, the slab stops a descent)
 
-    // speed: as fast as the free distance ahead allows (stopping room), slower in turns and close to walls
-    const fc = this.autoFwdClear(m, 14), vmax = A.mode === 'HUNT' ? 7 : 6;
-    let v = Math.max(0, Math.min(vmax, fc - 2.0));
+    // speed: as fast as the straight run before the next turn and the free distance ahead allow (a flight burns ~2% fuel a second at any
+    // speed, so faster is farther), slower in turns and close to walls
+    let ds = Math.hypot(tx - m.pos.x, tz - m.pos.z);                 // length of the straight stretch of the route ahead
+    {
+      let px = tx, pz = tz, dirx = tx - m.pos.x, dirz = tz - m.pos.z;
+      const l0 = Math.hypot(dirx, dirz) || 1; dirx /= l0; dirz /= l0;
+      for (let k = A.pi + 1; k < A.path.length && ds < 40; k++) {
+        const [nx, nz] = wpAt(A.path[k]), sx = nx - px, sz = nz - pz, sl = Math.hypot(sx, sz) || 1;
+        if ((sx / sl) * dirx + (sz / sl) * dirz < 0.8) break;       // the route turns here
+        ds += sl; px = nx; pz = nz;
+      }
+    }
+    const fc = this.autoFwdClear(m, 18), vcap = A.mode === 'HUNT' ? 13 : 8;
+    let v = Math.min(vcap, 3 + Math.sqrt(2 * 9 * Math.max(0, ds - 1.5)), fc - 2.0);
+    v = Math.max(0, v);
     v *= Math.max(0, Math.min(1, 1 - Math.abs(dYaw) / 1.1));
     if (v < 1.0 && Math.abs(dYaw) < 0.9 && fc > 3) v = 1.0;
     const Pr = m.probe;
-    if (Pr && (Pr.l < 1.1 || Pr.r < 1.1)) v = Math.min(v, 2.5);
+    if (Pr) { const gap = Math.min(Pr.l, Pr.r); if (gap < 1.4) v = Math.min(v, 2.5 + Math.max(0, gap - 0.8) * 8); }
+    const vmax = vcap;
     let out = { yaw: Math.max(-1, Math.min(1, dYaw * 2.5)), climb: Math.max(-1, Math.min(1, (wAlt - m.pos.y) * 1.4)), speed: align ? 0 : v };
 
     // hunting: with a clear line to a primary target, go straight at it (the proximity fuze fires at 5 units)
