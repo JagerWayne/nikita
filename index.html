@@ -1406,6 +1406,7 @@ window.addEventListener('unhandledrejection', function (e) {
 </div>
 
 <!-- Side-Mounted Soliton Top-Down Tactical Radar (20% Transparency) -->
+<pre id="ap-debug" style="display:none;position:fixed;left:max(8px,env(safe-area-inset-left));bottom:max(8px,env(safe-area-inset-bottom));z-index:60;margin:0;padding:6px 8px;max-width:min(560px,70vw);font:10px/1.35 monospace;color:#b7ffd9;background:rgba(2,10,6,0.82);border:1px solid rgba(0,255,136,0.45);border-radius:4px;pointer-events:none;white-space:pre-wrap"></pre>
 <div id="radar-container">
   <div id="radar-header">
     <span>SOLITON 64x64</span>
@@ -1579,6 +1580,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <label class="ov-check"><span>Homing Auto-Pilot</span><input type="checkbox" id="ov-homing" /></label>
     <label class="ov-check"><span>Auto-Level Pitch</span><input type="checkbox" id="ov-autolevel" checked /></label>
     <label class="ov-check"><span>Explore Map Overlay (radar)</span><input type="checkbox" id="ov-xmap" /></label>
+    <label class="ov-check"><span>Autopilot Debug (telemetry)</span><input type="checkbox" id="ov-apdebug" /></label>
     <label class="ov-check"><span>Invert Pitch Y-Axis</span><input type="checkbox" id="ov-invert-pitch" /></label>
     <label class="ov-check"><span>Live FPS / Draw Calls</span><input type="checkbox" id="ov-fps" /></label>
   </div>
@@ -2627,6 +2629,114 @@ function worldToGridZ(wz) { return Math.floor(wz / CELL_SIZE + GRID_SIZE * 0.5);
 /* ==========================================================================
    6. MAIN GAME CONTROLLER
    ========================================================================== */
+/* ==========================================================================
+   AUTOPILOT (rewrite, v2.24+). Layers, each with one job:
+     1. telemetry      (sense)     -> this.t: one snapshot of the flight state per frame      [step 1: done]
+     2. world model    (map/tracks)-> explore map (game.xgrid) + contact tracks               [step 3]
+     3. waypoints      (plan)      -> A* over explored tiles, smoothed legs with alt/speed    [step 2]
+     4. guidance       (fly)       -> look-ahead pursuit, PD heading/altitude, braking speed  [step 2]
+     5. fire control   (shoot)     -> bracketed contacts only, lead, bursts, lock-on runs     [step 3]
+   plus a mission planner on top                                                              [step 4]
+   ========================================================================== */
+class Autopilot {
+  constructor(game) {
+    this.g = game;
+    this.t = null;                         // latest telemetry snapshot
+    this.brakeMax = 6;                     // measured: strongest deceleration seen (m/s^2), starts conservative
+    this.turnMax = 1.2;                    // measured: fastest yaw rate seen (rad/s)
+    this._prevSpd = 0; this._accEma = 0; this._fanT = 0; this._fan = null;
+    this.FAN = [-60, -30, 0, 30, 60];      // forward clearance fan (degrees off the nose)
+  }
+
+  // Free distance along a horizontal direction from the rocket (grid march, 0.5 m steps)
+  clearAlong(x, y, z, yaw, max) {
+    const g = this.g, dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+    for (let d = 0.5; d <= max; d += 0.5) if (g.isGridSolid(x + dx * d, z + dz * d, y)) return d - 0.5;
+    return max;
+  }
+
+  // ---- layer 1: telemetry. Called every frame while a rocket flies (manual or auto). ----
+  sense(dt) {
+    const g = this.g, m = g.missile;
+    if (!m || !m.active || g.state !== 'PLAYING' || dt <= 0) { this.t = null; return null; }
+    const v = m.vel, speed = v.length(), hSpeed = Math.hypot(v.x, v.z);
+    // acceleration along the flight path (smoothed) and the measured braking / turning limits
+    const acc = (speed - this._prevSpd) / dt; this._prevSpd = speed;
+    this._accEma += (acc - this._accEma) * Math.min(1, dt * 8);
+    if (m.drop <= 0 && !m.landed && this._accEma < -this.brakeMax && this._accEma > -60) this.brakeMax = -this._accEma;
+    if (Math.abs(m.yawRate) > this.turnMax && Math.abs(m.yawRate) < 8) this.turnMax = Math.abs(m.yawRate);
+    // surroundings: floor / ceiling at the rocket, side and vertical probes, forward fan (10 Hz)
+    g.localSurf(m.pos.x, m.pos.y, m.pos.z);
+    const floorY = g._sf, ceilY = g._sc;
+    const P = m.probe || { l: 99, r: 99, u: 99, d: 99 };
+    this._fanT -= dt;
+    if (this._fanT <= 0 || !this._fan) {
+      this._fanT = 0.1;
+      this._fan = this.FAN.map((deg) => this.clearAlong(m.pos.x, m.pos.y, m.pos.z, m.yaw + deg * Math.PI / 180, 30));
+    }
+    // fuel: the game's own burn model (%/s) -> range left now and at cruise speed (the most economical)
+    const vc = g.throttleSpeed(CRUISE_THROTTLE), vr = speed / Math.max(1, vc);
+    const turn = Math.min(1, (Math.abs(m.yawRate) + Math.abs(m.pitchRate)) / 2.5);
+    const burn = g.cfg.infFuel ? 0 : (m.fuelBurn || 0);
+    const shape = 0.5 + 0.5 * vr * vr + 0.3 * turn;
+    const burnCruise = burn > 0 ? burn / shape * 1.0 : 0;                 // same model at v = cruise, flying straight
+    const rangeSec = burn > 0 ? m.fuel / burn : Infinity;
+    // contacts: only what wears the [ ] brackets
+    const contacts = [];
+    const addC = (kind, obj, x, y, z, threat) => {
+      const dx = x - m.pos.x, dy = y - m.pos.y, dz = z - m.pos.z, d = Math.hypot(dx, dy, dz);
+      let brg = Math.atan2(-dx, -dz) - m.yaw; while (brg > Math.PI) brg -= Math.PI * 2; while (brg < -Math.PI) brg += Math.PI * 2;
+      contacts.push({ kind, obj, x, y, z, d, brg, dy, threat });
+    };
+    for (const s of g.sentries) if (s.active && !s.dying && s.thermalVis) addC('SENTRY', s, s.pos.x, s.pos.y + 1.2, s.pos.z, !!s.alerted);
+    for (const tu of g.turrets) if (tu.active && tu.mesh.userData._tv) addC('CIWS', tu, tu.pos.x, tu.pos.y, tu.pos.z, true);
+    for (const l of g.lasers) if (l.boxVis && l.lockRef && l.lockRef.active) addC('LASER BOX', l, l.relayPos.x, l.relayPos.y, l.relayPos.z, false);
+    contacts.sort((a, b) => a.d - b.d);
+    const node = g.autoNode(m);
+    this.t = {
+      time: g.gameClock,
+      x: m.pos.x, y: m.pos.y, z: m.pos.z, vx: v.x, vy: v.y, vz: v.z,
+      speed, hSpeed, vSpeed: v.y, acc: this._accEma,
+      yaw: m.yaw, pitch: m.pitch, yawRate: m.yawRate,
+      heading: ((-m.yaw * 180 / Math.PI) % 360 + 360) % 360,
+      floor: Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(m.pos.y))), node,
+      tileX: node >= 0 ? (node % (GRID_SIZE * GRID_SIZE)) % GRID_SIZE : -1, tileZ: node >= 0 ? ((node % (GRID_SIZE * GRID_SIZE)) / GRID_SIZE) | 0 : -1,
+      agl: m.pos.y - floorY - MISSILE_RADIUS, ceil: ceilY - m.pos.y - MISSILE_RADIUS,
+      probe: { l: P.l, r: P.r, u: P.u, d: P.d }, fan: this._fan,
+      brakeMax: this.brakeMax, turnMax: this.turnMax,
+      stopDist: speed * speed / (2 * Math.max(1, this.brakeMax)),        // distance needed to stop from this speed
+      fuel: m.fuel, burn, burnCruise, cruise: vc, rangeSec,
+      rangeM: rangeSec === Infinity ? Infinity : rangeSec * speed,
+      rangeCruiseM: burnCruise > 0 ? (m.fuel / burnCruise) * vc : Infinity,
+      hull: m.hull, ammo: g.gunAmmo, rockets: g.ammo, hover: !!m.hover, landed: !!m.landed,
+      contacts, threats: contacts.filter((c) => c.threat).length,
+      mode: m.auto && g.auto ? g.auto.mode : (g.autoPlay ? 'WAIT' : 'MANUAL'),
+      route: g.xroute ? g.xroute.length : 0
+    };
+    return this.t;
+  }
+
+  // Debug panel text (Dev Override: Autopilot Debug)
+  debugText() {
+    const t = this.t;
+    if (!t) return 'AUTOPILOT DEBUG\nno rocket in flight';
+    const f1 = (v) => (v === Infinity ? 'inf' : v.toFixed(1)), f0 = (v) => (v === Infinity ? 'inf' : Math.round(v));
+    const c = t.contacts.slice(0, 3).map((k) => `${k.kind} ${f0(k.d)}m ${f0(k.brg * 180 / Math.PI)}deg${k.threat ? ' !' : ''}`).join(' | ') || '-';
+    return [
+      `AUTOPILOT DEBUG   ${t.mode}${t.hover ? ' HOVER' : ''}${t.landed ? ' LANDED' : ''}`,
+      `POS ${f1(t.x)} ${f1(t.y)} ${f1(t.z)}  F${t.floor + 1} TILE ${t.tileX},${t.tileZ}`,
+      `AGL ${f1(t.agl)}  CEIL ${f1(t.ceil)}  HDG ${f0(t.heading)}  PITCH ${f0(t.pitch * 180 / Math.PI)}`,
+      `SPD ${f1(t.speed)} (H ${f1(t.hSpeed)} V ${f1(t.vSpeed)})  ACC ${f1(t.acc)}  YAWR ${f1(t.yawRate)}`,
+      `BRAKE MAX ${f1(t.brakeMax)} m/s2  TURN MAX ${f1(t.turnMax)} rad/s  STOP ${f1(t.stopDist)} m`,
+      `PROBE L ${f1(t.probe.l)} R ${f1(t.probe.r)} U ${f1(t.probe.u)} D ${f1(t.probe.d)}`,
+      `FAN ${this.FAN.map((d, i) => `${d}:${f0(t.fan[i])}`).join(' ')}`,
+      `FUEL ${f0(t.fuel)}%  BURN ${t.burn.toFixed(2)}%/s  RANGE ${f0(t.rangeSec)}s ${f0(t.rangeM)}m  @CRUISE ${f0(t.rangeCruiseM)}m`,
+      `HULL ${f0(t.hull)}  AMMO ${t.ammo}  ROCKETS ${t.rockets}  ROUTE ${t.route}`,
+      `CONTACTS ${t.contacts.length} (THREATS ${t.threats}): ${c}`
+    ].join('\n');
+  }
+}
+
 class NikitaGame {
   constructor() {
     this.canvas = document.getElementById('game-canvas');
@@ -2775,6 +2885,7 @@ class NikitaGame {
     this.gunAmmo = GUN_CAP_MIN;
     this.gunHeld = false;
     this.autoPlay = false;     // the autopilot keeps playing across rockets while this is on
+    this.pilot = new Autopilot(this);   // the rewritten autopilot (step 1: telemetry)
     this.fuzeMode = 'prox';      // proximity fuze armed by default; the DET button toggles hold-to-detonate
     this.gunCool = 0;
     this.gunNoiseT = 0;
@@ -4748,6 +4859,13 @@ class NikitaGame {
 
   // Runs every frame: keeps the autopilot going between rockets (launches the next one, re-engages after the launch drop)
   autoPlayTick(dt) {
+    if (this.pilot) {
+      this.pilot.sense(dt);                                    // flight telemetry, every frame
+      if (this.cfg.apDebug) {
+        this._apDbgT = (this._apDbgT || 0) - dt;
+        if (this._apDbgT <= 0) { this._apDbgT = 0.2; const el = document.getElementById('ap-debug'); if (el) el.textContent = this.pilot.debugText(); }
+      }
+    }
     if (!this.autoPlay) return;
     const m = this.missile, st = this.state;
     if (st === 'CLEAR' || st === 'FAILED' || st === 'BRIEFING') { this.autoPlay = false; return; }
@@ -10668,6 +10786,7 @@ class NikitaGame {
       if (pauseOv) pauseOv.checked = false;
     });
     document.getElementById('ov-inf-fuel').addEventListener('change', (e) => this.cfg.infFuel = e.target.checked);
+    document.getElementById('ov-apdebug').addEventListener('change', (e) => { this.cfg.apDebug = e.target.checked; const el = document.getElementById('ap-debug'); if (el) el.style.display = e.target.checked ? 'block' : 'none'; });
     document.getElementById('ov-xmap').addEventListener('change', (e) => { this.cfg.xmapOverlay = e.target.checked; this.xgridDirty = true; this.radarDirty = true; });
     document.getElementById('ov-god-mode').addEventListener('change', (e) => this.cfg.godMode = e.target.checked);
     document.getElementById('ov-inf-boost').addEventListener('change', (e) => this.cfg.infBoost = e.target.checked);

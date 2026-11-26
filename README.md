@@ -56,6 +56,12 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **HOVER button (H on a keyboard).** Toggles hover mode in flight (lift off first). The lever drops to 0 so the rocket stops and holds its place; there is no gravity sag. The stick (or W/S) now climbs and descends at up to 2.6 m/s while the nose stays level, left/right (A/D) rotate on the spot, and the lever runs from 0 to 4 m/s (the readout shows tenths) along the heading. Press again to return to forward flight at your previous lever setting.
 - **Gentle contact.** While hovering below about 5.5 m/s, touching a wall, floor or roof just stops you against it with no damage. Hover is quiet to sentries, uses no boost, and burns 30% more fuel than idle flight. The LAND button still works from hover (it settles straight down). The engine sound holds a steady lift note.
 
+## Autopilot rewrite (v2.24+)
+
+The autopilot is being rewritten from scratch in layers, one release per step: 1) flight telemetry, 2) waypoint planning (A* over explored tiles, smoothed legs) and guidance (look-ahead pursuit, measured braking), 3) target acquisition and fire control (bracketed contacts, tracking, lead, lock-on warhead runs), 4) mission planner, 5) tuning and removal of the old code. Until step 2 lands the previous autopilot keeps flying.
+
+- **Step 1 (v2.24): telemetry.** Every frame the new `Autopilot` class takes one snapshot of the flight: position, tile and floor, velocity (horizontal / vertical), acceleration, heading, pitch, yaw rate, height above the floor and room to the ceiling, side / up / down probes and a forward clearance fan (-60 to +60 degrees, up to 30 m), the measured braking and turning limits (strongest deceleration and fastest yaw rate actually seen) with the stopping distance at the current speed, fuel, burn rate and range left (now and at cruise speed), hull, ammo, rockets, and the bracketed contacts with distance, bearing and threat flag. DEV OVERRIDE (~) has "Autopilot Debug (telemetry)" to show it as a live panel.
+
 ## Full autopilot (v2.20)
 
 The AUTO button (V on a keyboard) is now a full autopilot that plays the sector for you. Press it in the READY state and it launches the rocket itself; press it in flight and it takes over. It re-engages after every launch and relaunches after a lost rocket, an engine-out or a kill, until the sector is cleared, you run out of rockets, or you press AUTO again. Moving the stick takes over at once.
