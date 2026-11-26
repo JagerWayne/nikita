@@ -2672,6 +2672,8 @@ class Autopilot {
     if (this._fanT <= 0 || !this._fan) {
       this._fanT = 0.1;
       this._fan = this.FAN.map((deg) => this.clearAlong(m.pos.x, m.pos.y, m.pos.z, m.yaw + deg * Math.PI / 180, 30));
+      { const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);             // straight ahead: centre and both hull edges (+/- 0.6 m)
+        this._fanW = Math.min(this._fan[2], this.clearAlong(m.pos.x + rx * 0.6, m.pos.y, m.pos.z + rz * 0.6, m.yaw, 30), this.clearAlong(m.pos.x - rx * 0.6, m.pos.y, m.pos.z - rz * 0.6, m.yaw, 30)); }
     }
     // fuel: the game's own burn model (%/s) -> range left now and at cruise speed (the most economical)
     const vc = g.throttleSpeed(CRUISE_THROTTLE), vr = speed / Math.max(1, vc);
@@ -2692,6 +2694,9 @@ class Autopilot {
     for (const l of g.lasers) if (l.boxVis && l.lockRef && l.lockRef.active) addC('LASER BOX', l, l.relayPos.x, l.relayPos.y, l.relayPos.z, false);
     contacts.sort((a, b) => a.d - b.d);
     for (const pk of g.pickups) if (pk.active && pk.mesh.userData._tv) pk._seen = true;
+    if (this._ktKey !== g.lidarKey) { this.knownTurrets = new Set(); this._ktKey = g.lidarKey; }
+    { const range = 26 + Math.min(14, (g.difficultyTier - 1) * 0.7);
+      for (const tu of g.turrets) if (tu.active && !this.knownTurrets.has(tu) && (tu.mesh.userData._tv || (tu.pos.distanceTo(m.pos) < range && g.los3(tu.pos.x, tu.pos.y, tu.pos.z, m.pos.x, m.pos.y, m.pos.z)))) { this.knownTurrets.add(tu); this._hz = null; } }
     let node = -1;
     { const c0 = g.cellAt(m.pos.x, m.pos.z), f0 = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(m.pos.y))); if (c0 >= 0 && this.navOk2(f0 * GRID_SIZE * GRID_SIZE + c0)) node = f0 * GRID_SIZE * GRID_SIZE + c0; else node = g.autoNode(m); }
     this.t = {
@@ -2703,7 +2708,7 @@ class Autopilot {
       floor: Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(m.pos.y))), node,
       tileX: node >= 0 ? (node % (GRID_SIZE * GRID_SIZE)) % GRID_SIZE : -1, tileZ: node >= 0 ? ((node % (GRID_SIZE * GRID_SIZE)) / GRID_SIZE) | 0 : -1,
       agl: m.pos.y - floorY - MISSILE_RADIUS, ceil: ceilY - m.pos.y - MISSILE_RADIUS,
-      probe: { l: P.l, r: P.r, u: P.u, d: P.d }, fan: this._fan,
+      probe: { l: P.l, r: P.r, u: P.u, d: P.d }, fan: this._fan, fanW: this._fanW === undefined ? (this._fan ? this._fan[2] : 30) : this._fanW,
       brakeMax: this.brakeMax, turnMax: this.turnMax,
       stopDist: speed * speed / (2 * Math.max(1, this.brakeMax)),        // distance needed to stop from this speed
       fuel: m.fuel, burn, burnCruise, cruise: vc, rangeSec,
@@ -2754,7 +2759,28 @@ class Autopilot {
     for (const tg of g.targets) if (tg.active) disc(hard, tg.pos.x, tg.pos.z, 0.3, Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tg.pos.y))));   // primary targets: flying into one detonates the warhead
     for (const b of g.barrels) if (b.active) disc(soft, b.pos.x, b.pos.z, 0.6, Math.min(g.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
     for (const gr of g.grates) if (gr.active) disc(soft, gr.pos.x, gr.pos.z, 0.6, 0);
-    this._hz = { hard, soft, gate }; this._hzT = now;
+    // holes / atriums with a live CIWS turret overhead (within 12 m): climbing through means being shot from straight above,
+    // where a level-nosed hover can neither aim the gun nor lock on. Routes go up the ramps instead.
+    const noClimb = new Set();
+    const live = g.turrets.filter((tu) => tu.active);
+    if (live.length) for (const [i] of this.vlinks()) {
+      const c = i % GG, x = gridToWorldX(c % G), z = gridToWorldZ((c / G) | 0);
+      for (const tu of live) if (Math.hypot(tu.pos.x - x, tu.pos.z - z) < 12) { noClimb.add(i); break; }
+    }
+    const danger = new Uint8Array(GG * g.nFloors), X = g.xgrid;
+    if (X && this.knownTurrets && this.knownTurrets.size) {
+      const range = 26 + Math.min(14, (g.difficultyTier - 1) * 0.7), cr = Math.ceil(range / CELL_SIZE);
+      for (const tu of this.knownTurrets) {
+        if (!tu.active) continue;
+        const tf = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tu.pos.y))), tgx = worldToGridX(tu.pos.x), tgz = worldToGridZ(tu.pos.z);
+        for (let f = Math.max(0, tf - 1); f <= Math.min(g.nFloors - 1, tf); f++) for (let gz = Math.max(0, tgz - cr); gz <= Math.min(G - 1, tgz + cr); gz++) for (let gx = Math.max(0, tgx - cr); gx <= Math.min(G - 1, tgx + cr); gx++) {
+          const i = f * GG + gz * G + gx; if (!X[i] || danger[i]) continue;
+          const x = gridToWorldX(gx), z = gridToWorldZ(gz), y = f * WALL_H + 2.2;
+          if (Math.hypot(tu.pos.x - x, tu.pos.y - y, tu.pos.z - z) < range && g.los3(tu.pos.x, tu.pos.y, tu.pos.z, x, y, z)) danger[i] = 1;
+        }
+      }
+    }
+    this._hz = { hard, soft, gate, noClimb, danger }; this._hzT = now;
     return this._hz;
   }
 
@@ -2782,7 +2808,10 @@ class Autopilot {
     return L;
   }
   links(i) {
-    const a = this.g.navLinks && this.g.navLinks.get(i), b = this.vlinks().get(i);
+    const a = this.g.navLinks && this.g.navLinks.get(i);
+    let b = this.vlinks().get(i);
+    const nc = this.hazards().noClimb;
+    if (b && nc.size) { if (nc.has(i)) b = null; else { b = b.filter((j) => !nc.has(j)); if (!b.length) b = null; } }   // no climbing under a live turret
     return a && b ? a.concat(b) : (a || b);
   }
 
@@ -2816,7 +2845,15 @@ class Autopilot {
     if (g.navFor !== g.ramps) g.navLinksBuild();
     const HZ = this.hazards(), haz = HZ.hard, soft = HZ.soft;
     const ok = (i) => this.flyable(X[i]) && this.navOk2(i) && !haz[i];
-    const unknownN = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]); };
+    const unknownN = (i) => {
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      if ((x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G])) return true;
+      const L = this.links(i); if (L) for (const j of L) if (!X[j]) return true;       // a ramp top / hole whose other end is still unknown
+      return false;
+    };
+    // floors barely explored compared with the best-known floor get a bonus, so upper floors are not left for last
+    const perF = []; let maxF = 1;
+    for (let f = 0; f < g.nFloors; f++) { let n = 0; for (let k = f * GG; k < (f + 1) * GG; k++) if (X[k]) n++; perF.push(n); maxF = Math.max(maxF, n); }
     const nearWall = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx < 0 || zz < 0 || xx >= G || zz >= G) return true; const v = X[i + dz * G + dx]; if (v === XV.SOLID || v === XV.CRACK) return true; } return false; };
     const nearHaz = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx >= 0 && zz >= 0 && xx < G && zz < G && haz[i + dz * G + dx]) return true; } return false; };
     const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
@@ -2828,10 +2865,10 @@ class Autopilot {
     while (H.length) {
       const [d, i] = pop();
       if (d > dist[i]) continue;
-      if (bestD >= 0 && d > bestD + 5) break;
+      if (bestD >= 0 && d > bestD + 32) break;
       if (i !== start && unknownN(i) && !this.tried.has(i)) { found.push(i); if (bestD < 0) bestD = d; }
       const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
-      const step = (n, base) => { if (!ok(n)) return; const nd = d + base + (nearWall(n) ? 0.35 : 0) + (nearHaz(n) ? 2.5 : 0) + (soft[n] ? 3 : 0) + (HZ.gate[n] ? 4 : 0); if (nd < dist[n]) { dist[n] = nd; prev[n] = i; push(nd, n); } };
+      const step = (n, base) => { if (!ok(n)) return; const nd = d + base + (nearWall(n) ? 0.35 : 0) + (nearHaz(n) ? 2.5 : 0) + (soft[n] ? 3 : 0) + (HZ.gate[n] ? 4 : 0) + (HZ.danger[n] ? 6 : 0); if (nd < dist[n]) { dist[n] = nd; prev[n] = i; push(nd, n); } };
       const L = x > 0, R = x < G - 1, U = z > 0, D = z < G - 1;
       if (L) step(i - 1, 1); if (R) step(i + 1, 1); if (U) step(i - G, 1); if (D) step(i + G, 1);
       if (L && U && ok(i - 1) && ok(i - G)) step(i - G - 1, 1.414); if (R && U && ok(i + 1) && ok(i - G)) step(i - G + 1, 1.414);
@@ -2845,7 +2882,7 @@ class Autopilot {
     for (const i of found) {
       const p = this.tileCenter(i);
       let a = Math.atan2(-(p.x - t.x), -(p.z - t.z)) - t.yaw; while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2;
-      const sc = dist[i] + Math.abs(a) * 2.5;
+      const fl = (i / GG) | 0, sc = dist[i] + Math.abs(a) * 2.5 - (perF[fl] < maxF * 0.35 ? 30 : (perF[fl] < maxF * 0.6 ? 10 : 0)) + (HZ.danger[i] ? 25 : 0);   // badly unexplored floors win; turret coverage loses
       if (sc < bestS) { bestS = sc; best = i; }
     }
     const tiles = [];
@@ -2858,13 +2895,14 @@ class Autopilot {
   segClear(ax, az, bx, bz, f, y) {
     const g = this.g, X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, haz = this.hazards().hard;
     const len = Math.hypot(bx - ax, bz - az); if (len < 0.01) return true;
-    const ux = (bx - ax) / len, uz = (bz - az) / len, px = -uz * 0.55, pz = ux * 0.55;
+    const ux = (bx - ax) / len, uz = (bz - az) / len, px = -uz * 1.0, pz = ux * 1.0;   // 1 m side clearance: legs never hug a corner
     for (let d = 0; d <= len; d += 0.5) {
       const x = ax + ux * d, z = az + uz * d;
       const c = g.cellAt(x, z); if (c < 0) return false;
       const i = f * GG + c;
       if (!this.flyable(X[i]) || (haz && haz[i]) || this.hazards().gate[i]) return false;
       if (g.isGridSolid(x + px, z + pz, y) || g.isGridSolid(x - px, z - pz, y)) return false;
+      for (const tg of g.targets) if (tg.active && Math.hypot(tg.pos.x - x, tg.pos.z - z) < tg.radius + 1.3) return false;   // a primary target's body
     }
     return true;
   }
@@ -2979,7 +3017,7 @@ class Autopilot {
     if (!P || t.floor !== 0) { this.gate = null; return null; }
     const HZ = this.hazards();
     if (!this.gate) {                                                    // a gate waypoint among the next ones, within 9 m of its beam line?
-      for (let n = P.k; n < Math.min(P.wps.length, P.k + 3); n++) {
+      for (let n = P.k; n < Math.min(P.wps.length, P.k + 2); n++) {      // the gate within the next two waypoints (approach brakes for walls ahead)
         const gi = P.wps[n].gate; if (!gi) continue;
         const l = g.lasers[gi - 1]; if (!l || l.disabled) continue;
         if (Math.abs(t.z - l.z) < 9) { this.gate = { l, wp: n, side: Math.sign(t.z - l.z) || 1, phase: 'APPROACH', t0: t.time }; break; }
@@ -2994,13 +3032,23 @@ class Autopilot {
     const aim = G0.phase === 'GO' ? after : w;
     let err = Math.atan2(-(aim.x - t.x), -(aim.z - t.z)) - t.yaw; while (err > Math.PI) err -= Math.PI * 2; while (err < -Math.PI) err += Math.PI * 2;
     const yaw = Math.max(-1, Math.min(1, 2.4 * err - 0.35 * t.yawRate)), climb = Math.max(-1, Math.min(1, 1.6 * (yc - t.y) - 0.3 * t.vSpeed));
-    if (G0.phase === 'GO') { this.why = 'LASER GATE: CROSSING'; return { yaw, climb, speed: 7 }; }
-    if (dz > 3.3) { G0.phase = 'APPROACH'; this.why = 'LASER GATE: APPROACH'; return { yaw, climb, speed: Math.max(0.6, Math.min(t.cruise, (dz - 3.0) * 1.5)) }; }
+    const a = Math.min(9, 0.5 * t.brakeMax), fanCap = t.fan ? Math.max(t.fan[2] > 3 ? 1.2 : 0, Math.sqrt(2 * a * Math.max(0, t.fanW - 1.8))) : 99;
+    let ys = yaw;
+    if (t.probe.l < 1.3) ys -= 0.9 * (1.3 - t.probe.l) / 1.3;
+    if (t.probe.r < 1.3) ys += 0.9 * (1.3 - t.probe.r) / 1.3;
+    ys = Math.max(-1, Math.min(1, ys));
+    if (G0.phase === 'GO') {                                               // committed speed; re-check every frame, abort while there is room to stop
+      const vNow = Math.max(1, t.speed), T = t.time + dz / vNow;
+      if (dz > 2.2 && !this.laserSafe(l, T - 0.2, T + 1.8 / Math.max(2, vNow) + 0.25, t.x, t.y)) { G0.phase = 'HOLD'; this.why = 'LASER GATE: ABORT'; return { yaw, climb, speed: 0 }; }
+      this.why = 'LASER GATE: CROSSING'; return { yaw, climb, speed: G0.vgo || 7 };
+    }
+    if (dz > 3.3) { G0.phase = 'APPROACH'; this.why = 'LASER GATE: APPROACH'; return { yaw: ys, climb, speed: Math.max(0.6, Math.min(t.cruise, (dz - 3.0) * 1.5, fanCap)) }; }
     G0.phase = 'HOLD'; this.why = 'LASER GATE: WAITING FOR A GAP';
     if (t.time - G0.t0 > 15) { this.tried.add(P.goal); this.gate = null; this.plan = null; this.replanT = 0; return { yaw: 0, climb, speed: 0 }; }
-    if (Math.abs(t.y - yc) < 0.3 && Math.abs(err) < 0.2 && t.speed < 1.5) {
-      const T = t.time + dz / 7;                                         // when we would reach the beam line at 7 m/s
-      if (this.laserSafe(l, T - 0.3, T + 0.45, t.x, yc)) { G0.phase = 'GO'; return { yaw, climb, speed: 7 }; }
+    if (Math.abs(t.y - yc) < 0.3 && Math.abs(err) < 0.2 && t.speed < 0.6) {
+      const vgo = Math.max(3, Math.min(7, fanCap));                       // crossing speed, chosen now and then held
+      const T = t.time + dz / vgo + 0.4;                                   // reaching the beam line: travel time plus the acceleration lag
+      if (this.laserSafe(l, T - 0.45, T + 1.8 / vgo + 0.45, t.x, yc)) { G0.phase = 'GO'; G0.vgo = vgo; return { yaw, climb, speed: vgo }; }
     }
     return { yaw, climb, speed: 0 };
   }
@@ -3100,13 +3148,14 @@ class Autopilot {
       if (n > P.k) along += Math.hypot(wps[n].x - wps[n - 1].x, wps[n].z - wps[n - 1].z);
       v = Math.min(v, Math.sqrt(wps[n].vmax * wps[n].vmax + 2 * a * Math.max(0, along - 0.8)));
     }
-    if (t.fan) v = Math.min(v, Math.sqrt(2 * a * Math.max(0, t.fan[2] - 1.8)));
+    if (t.fan) v = Math.min(v, Math.max(t.fan[2] > 3 ? 1.2 : 0, Math.sqrt(2 * a * Math.max(0, t.fanW - 1.8))));   // hull-wide clearance ahead; a clear centre line still allows a crawl
     v *= Math.max(0.15, Math.min(1, 1 - Math.abs(err) / 1.0));
     if (w.keep && Math.abs(altT - t.y) > 0.5 && Math.hypot(w.x - t.x, w.z - t.z) < 4) v = Math.min(v, 0.5);   // line up with a tunnel mouth first
     if (w.vert && Math.hypot(w.x - t.x, w.z - t.z) < 1.5) v = Math.min(v, 0.3);                               // floor change: go straight up / down
     // --- safety: keep off the side walls
-    if (t.probe.l < 0.8) yaw -= 0.5 * (0.8 - t.probe.l) / 0.8;
-    if (t.probe.r < 0.8) yaw += 0.5 * (0.8 - t.probe.r) / 0.8;
+    if (t.probe.l < 1.3) yaw -= 0.9 * (1.3 - t.probe.l) / 1.3;       // wall on the left: turn right
+    if (t.probe.r < 1.3) yaw += 0.9 * (1.3 - t.probe.r) / 1.3;
+    { const gap = Math.min(t.probe.l, t.probe.r); if (gap < 1.3) v = Math.min(v, 1.5 + 5 * Math.max(0, gap - 0.4)); }   // close to a side wall: slow down
     out = this.avoid({ yaw: Math.max(-1, Math.min(1, yaw)), climb, speed: Math.max(0, v) });
     this.cmd = { err, carrot: cp, v, L };
     g.xroute = P.tiles;
@@ -3133,7 +3182,7 @@ class Autopilot {
       if (maxCost && d > maxCost) return null;
       if (isGoal(i)) { const tiles = []; for (let k = i; k !== start && k >= 0; k = prev[k]) tiles.push(k); return tiles.reverse(); }
       const c = i % GG, x = c % G, z = (c / G) | 0;
-      const step = (n, base) => { if (!ok(n)) return; const nd = d + base + (HZ.soft[n] ? 3 : 0) + (HZ.gate[n] ? 4 : 0); if (nd < dist[n]) { dist[n] = nd; prev[n] = i; push(nd, n); } };
+      const step = (n, base) => { if (!ok(n)) return; const nd = d + base + (HZ.soft[n] ? 3 : 0) + (HZ.gate[n] ? 4 : 0) + (HZ.danger[n] ? 6 : 0); if (nd < dist[n]) { dist[n] = nd; prev[n] = i; push(nd, n); } };
       if (x > 0) step(i - 1, 1); if (x < G - 1) step(i + 1, 1); if (z > 0) step(i - G, 1); if (z < G - 1) step(i + G, 1);
       if (x > 0 && z > 0 && ok(i - 1) && ok(i - G)) step(i - G - 1, 1.414); if (x < G - 1 && z > 0 && ok(i + 1) && ok(i - G)) step(i - G + 1, 1.414);
       if (x > 0 && z < G - 1 && ok(i - 1) && ok(i + G)) step(i + G - 1, 1.414); if (x < G - 1 && z < G - 1 && ok(i + 1) && ok(i + G)) step(i + G + 1, 1.414);
@@ -6660,7 +6709,12 @@ class NikitaGame {
       const yE = oy + dy * tEnter;
       let fc = this.floorOfY(yE);
       const XG = this.xgrid;
-      if (XG) { const xi = fc * GG + c, xv = this.xCellVal(fc, c); if (XG[xi] !== xv) { XG[xi] = xv; this.xgridDirty = true; } }   // plot every tile the ray reaches
+      if (XG) {                                                           // plot every tile the ray reaches...
+        const xi = fc * GG + c, xv = this.xCellVal(fc, c); if (XG[xi] !== xv) { XG[xi] = xv; this.xgridDirty = true; }
+        // ...and the opening right above / below it (holes, atriums, the open space over a ramp), so floors connect on the map
+        if (fc > 0 && this.floors[fc][c] === CELL_VOID) { const j = xi - GG, w = this.xCellVal(fc - 1, c); if (XG[j] !== w) { XG[j] = w; this.xgridDirty = true; } }
+        if (fc + 1 < NF && this.floors[fc + 1][c] === CELL_VOID) { const j = xi + GG, w = this.xCellVal(fc + 1, c); if (XG[j] !== w) { XG[j] = w; this.xgridDirty = true; } }
+      }
       if (tEnter > 0) {
         const v = this.floors[fc][c];
         if (v === CELL_WALL || v === CELL_CRACKED) {
