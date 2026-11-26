@@ -1795,6 +1795,7 @@ const SPEED_STEP = 0.5;
 const CRUISE_THROTTLE = 0.378;
 const UPG_MAX_LEVEL = 10;
 const SAVE_KEY = 'nikita-save-v1';
+const AUTO_MEM_KEY = 'nikita.autoMem';   // the autopilot's explored-map memory per sector
 
 const SPEED_MODES = {
   1: { name: '[1] CRAWL',     speed: 7.5,  fov: 62, turnMult: 1.38, fuelRate: 0.58, detectMult: 0.65, exhaustColor: 0xffaa33, exhaustScale: 0.22, exhaustCadence: 0.055, plumeXZ: 0.68, plumeY: 0.58, inertia: 13.5, rollMult: 0.42, badgeClass: 'tier-1' },
@@ -4695,14 +4696,41 @@ class NikitaGame {
     const M = this.autoMemory();                // rooms already scanned in this sector carry over from rocket to rocket
     this.auto = { mem: M, cov: M.cov, spots: M.spots, mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: M.tried, triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
       sx: m.pos.x, sz: m.pos.z, lost: 0, t0: this.gameClock, noMore: false, fire: false, aimObj: null, aimT: 0, pick: null };
-    this.pushFeed(`AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+    this.pushFeed(M.spots ? `AUTOPILOT RESUMING — MAP REMEMBERED (SCAN ${this.scanPercent()}%) · HEADING FOR THE NEXT UNEXPLORED AREA` : `AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
   }
 
   // Exploration memory for the current sector (coverage of scanned rooms, spots already scanned or given up)
   autoMemory() {
     const key = (this.lidarKey || 'none') + '|' + this.nFloors;
-    if (!this._autoMem || this._autoMem.key !== key) this._autoMem = { key, cov: null, tried: new Set(), spots: 0, retried: false };
+    if (!this._autoMem || this._autoMem.key !== key) {
+      this._autoMem = { key, cov: null, tried: new Set(), spots: 0, retried: false };
+      try {                                       // stored on the device with the lidar map: survives closing the app and Continue
+        const all = JSON.parse(localStorage.getItem(AUTO_MEM_KEY) || '{}'), e = all[key];
+        const GG = GRID_SIZE * GRID_SIZE;
+        if (e && typeof e.cov === 'string') {
+          const bin = atob(e.cov), cov = new Uint8Array(GG * this.nFloors);
+          for (let i = 0; i < bin.length && i * 8 < cov.length; i++) { const b = bin.charCodeAt(i); for (let k = 0; k < 8; k++) if (b & (1 << k)) cov[i * 8 + k] = 1; }
+          this._autoMem.cov = cov; this._autoMem.spots = e.spots || 1; this._autoMem.done = !!e.done;
+        }
+      } catch (_) {}
+    }
     return this._autoMem;
+  }
+
+  // Save the exploration memory (coverage bit-packed, last 6 sectors kept)
+  autoMemorySave() {
+    const M = this._autoMem;
+    if (!M || !M.cov) return;
+    try {
+      let bin = '';
+      for (let i = 0; i < M.cov.length; i += 8) { let b = 0; for (let k = 0; k < 8; k++) if (M.cov[i + k]) b |= 1 << k; bin += String.fromCharCode(b); }
+      const all = JSON.parse(localStorage.getItem(AUTO_MEM_KEY) || '{}');
+      delete all[M.key];
+      all[M.key] = { cov: btoa(bin), spots: M.spots, done: !!M.done };
+      const keys = Object.keys(all);
+      while (keys.length > 6) delete all[keys.shift()];
+      localStorage.setItem(AUTO_MEM_KEY, JSON.stringify(all));
+    } catch (_) {}
   }
 
   autoStop(msg, keepPlay) {
@@ -4720,11 +4748,11 @@ class NikitaGame {
     const m = this.missile, st = this.state;
     if (st === 'CLEAR' || st === 'FAILED' || st === 'BRIEFING') { this.autoPlay = false; return; }
     if (this.paused) return;
-    if (st === 'READY') { this._autoFireT = (this._autoFireT || 0) + dt; if (this._autoFireT > 1.6) { this._autoFireT = 0; this.fireRocket(); } return; }
+    if (st === 'READY') { this._autoFireT = (this._autoFireT || 0) + dt; if (this._autoFireT > 0.8) { this._autoFireT = 0; this.fireRocket(); } return; }
     this._autoFireT = 0;
     if (st === 'PLAYING' && m.active && m.drop <= 0 && !m.flipping && !m.auto && !m.landed && m.fuel > 0) {
       this._autoEngT = (this._autoEngT || 0) + dt;
-      if (this._autoEngT > 0.6) { this._autoEngT = 0; this.autoEngage(); }
+      if (this._autoEngT > 0.25) { this._autoEngT = 0; this.autoEngage(); }
     }
   }
 
@@ -4773,10 +4801,10 @@ class NikitaGame {
       }
     }
     // 2) traverse the whole reachable map first: destroying the LAST primary target ends the sector, so that one waits until nothing
-    //    reachable is left to scan (or the scan reads 100%, rockets are nearly gone, the hull is badly hurt). Any other target in or next
-    //    to the current room is eliminated on the way (it does not end the sector).
+    //    reachable is left to scan (or the scan reads 100%, rockets are nearly gone, the hull is badly hurt). Exploring has priority over
+    //    killing, so no target is hunted before that.
     const exploredEnough = this.scanPercent() >= 100 || A.noMore || (A.mem && A.mem.done) || this.ammo <= 6 || m.hull < 30;
-    if (huntPath && (exploredEnough || (active.length > 1 && huntPath.length <= 14 && slack > 5))) { A.mode = 'HUNT'; return huntPath; }
+    if (huntPath && exploredEnough) { A.mode = 'HUNT'; return huntPath; }   // exploring comes first: targets wait until the map is done
     return null;
   }
 
@@ -4794,7 +4822,7 @@ class NikitaGame {
   // ---- room-by-room exploring: go to the middle of the room, spin 360 degrees to scan the walls, move to the nearest opening
   //      (the first spot the scan could not see past), scan again ----
   // Mark every cell the lidar could see from the rocket's spot (a fan of horizontal rays) as covered
-  autoMarkSpot(m, A) {
+  autoMarkSpot(m, A, quiet) {
     const G = GRID_SIZE, GG = G * G, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(m.pos.y)));
     if (!A.cov || A.cov.length !== GG * this.nFloors) A.cov = new Uint8Array(GG * this.nFloors);
     const R = Math.min(26, this.lidarParams().range);
@@ -4811,6 +4839,22 @@ class NikitaGame {
     }
     A.spots = (A.spots || 0) + 1;
     if (A.mem) { A.mem.cov = A.cov; A.mem.spots = A.spots; }
+    if (!quiet) this.autoMemorySave();
+  }
+
+  // While flying: everything in plain view close by counts as explored too, so a later rocket does not come back for it
+  autoMarkPassing(m, A) {
+    const G = GRID_SIZE, GG = G * G, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(m.pos.y)));
+    if (!A.cov || A.cov.length !== GG * this.nFloors) { A.cov = new Uint8Array(GG * this.nFloors); if (A.mem) A.mem.cov = A.cov; }
+    for (let k = 0; k < 48; k++) {
+      const a = (k / 48) * Math.PI * 2, dx = Math.sin(a), dz = Math.cos(a);
+      for (let d = 1; d <= 12; d += 1) {
+        const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
+        if (this.isGridSolid(x, z, m.pos.y)) break;
+        const c = this.cellAt(x, z);
+        if (c >= 0) A.cov[f * GG + c] = 1;
+      }
+    }
   }
 
   // Free distance (in metres, up to 7) from a node's cell centre to the nearest wall: how "in the middle of a room" it is
@@ -4890,15 +4934,16 @@ class NikitaGame {
     if (A.aimObj !== best.obj) { A.aimObj = best.obj; A.aimT = 0; }
     A.aimT += dt;
     if (A.aimT > 7) { A.ignore.add(best.obj); A.aimObj = null; return; }        // cannot hit it (height, angle): give up on it
-    const important = true;
-    // turn toward it when it is roughly ahead (threats always), and match its height
-    if (Math.abs(best.ang) < 0.7 || best.d < 20) {
+    // exploring has priority: only real threats (turrets, alerted sentries) make it turn, stop and climb to fight; anything else is
+    // shot only when it happens to be lined up, without slowing down
+    const threat = best.kind === 'turret' || (best.kind === 'sentry' && best.obj.alerted);
+    if (threat && (Math.abs(best.ang) < 0.7 || best.d < 20)) {
       out.yaw = Math.max(-1, Math.min(1, best.ang * 3.2));
-      out.speed = Math.min(out.speed, hunting ? 2.5 : 1.2);
+      out.speed = Math.min(out.speed, hunting ? 2.5 : 1.5);
     }
     const ceil = this.ceilAt(this.floorOfY(P.y), this.cellAt(P.x, P.z)), flo = this.groundAt(this.floorOfY(P.y), this.cellAt(P.x, P.z), P.x, P.z);
     const aimY = Math.max(flo + 1.3, Math.min(ceil - 1.1, best.y));
-    if (Math.abs(best.dy) > 0.5 || important) out.climb = Math.max(-1, Math.min(1, (aimY - P.y) * 1.6));
+    if (threat) out.climb = Math.max(-1, Math.min(1, (aimY - P.y) * 1.6));
     const tol = best.kind === 'sentry' ? 1.1 : 0.6;
     const angTol = Math.atan2(best.kind === 'sentry' ? 0.6 : 0.7, Math.max(2, best.d)) * 0.9;
     if ((Math.abs(best.ang) < angTol && Math.abs(aimY - P.y) < tol + 0.3) || (best.kind === 'sentry' && Math.abs(best.ang) < angTol)) A.fire = true;
@@ -4915,6 +4960,8 @@ class NikitaGame {
       return { yaw: 0, climb: 0, speed: 0 };
     }
     A.lost = 0;
+    A.passT = (A.passT || 0) - dt;
+    if (A.passT <= 0) { A.passT = 0.5; this.autoMarkPassing(m, A); }
     const out = this.autoDrive(m, dt, A, node);
     this.autoGunner(m, dt, A, out);
     this.gunHeld = A.fire;
@@ -4935,14 +4982,14 @@ class NikitaGame {
         this.autoMarkSpot(m, A);
         A.tried.add(A.target >= 0 ? A.target : node);
         A.spin = null; A.target = -1; A.path = null; A.replanT = 0;
-        A.elim = 9;                                             // room scanned: first eliminate what is in it (up to 9 s), then the next room
+        A.elim = 5;                                             // room scanned: deal with threats still in sight (up to 5 s), then the next room
       }
       return { yaw: 1, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
     }
 
     if (A.elim > 0) {            // eliminating: hold position while bracketed hostiles are in sight (the gunner turns and fires)
       A.elim -= dt;
-      if (this.autoCandidates(m, A).length) return { yaw: 0, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
+      if (this.autoCandidates(m, A).some((c) => c.kind === 'turret' || (c.kind === 'sentry' && c.obj.alerted))) return { yaw: 0, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
       A.elim = 0;
     }
 
@@ -6981,7 +7028,8 @@ class NikitaGame {
 
   // Erase the saved campaign (credits, upgrades, best scores, resume point, scan maps) but keep the settings; no reload.
   wipeSave() {
-    try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(AUTO_MEM_KEY); } catch (_) {}
+    this._autoMem = null;
     this.credits = 0; this.sectorBest = {}; this.contLvl = 0; this.contSeed = '';
     for (const k of Object.keys(this.upg)) this.upg[k] = 0;
     this.lidarKey = null;
@@ -6989,7 +7037,7 @@ class NikitaGame {
     return new Promise((res) => {
       try {
         const go = () => { const rq = indexedDB.deleteDatabase('nikita-lidar'); rq.onsuccess = res; rq.onerror = res; rq.onblocked = res; };
-        if (this._idb) this._idb.then((db) => { db.close(); go(); }).catch(go); else go();
+        if (this._idb) { const p = this._idb; this._idb = null; p.then((db) => { db.close(); go(); }).catch(go); } else go();   // forget the closed handle so the next save reopens (and recreates) the database
       } catch (_) { res(); }
       setTimeout(res, 1500);
     });
@@ -7430,6 +7478,7 @@ class NikitaGame {
   }
 
   launchNextMissile() {
+    try { this.lidarSnapshot(); this.autoMemorySave(); } catch (_) {}       // every respawn saves the explored map on the device
     if (this.targets.length > 0 && !this.targets.some(t => t.active)) {
       document.getElementById('killcam-banner').style.display = 'none';
       this.triggerSectorClear();
@@ -9788,13 +9837,13 @@ class NikitaGame {
   // it does not work, a "game closed" screen replaces the game.
   // Wipe credits, upgrades, every saved lidar map and preferences on this device, then restart fresh.
   deleteSavedData() {
-    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); } catch (_) {}
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); localStorage.removeItem(AUTO_MEM_KEY); } catch (_) {}
     this.lidarKey = null;
     this.lidarMemory.clear();
     const done = () => location.reload();
     try {
       const go = () => { const rq = indexedDB.deleteDatabase('nikita-lidar'); rq.onsuccess = done; rq.onerror = done; rq.onblocked = done; };
-      if (this._idb) this._idb.then((db) => { db.close(); go(); }).catch(go); else go();
+      if (this._idb) { const p = this._idb; this._idb = null; p.then((db) => { db.close(); go(); }).catch(go); } else go();   // forget the closed handle so the next save reopens (and recreates) the database
     } catch (_) { done(); }
     setTimeout(done, 1500);
   }
@@ -9883,6 +9932,7 @@ class NikitaGame {
 
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
+        try { this.lidarSnapshot(); this.autoMemorySave(); } catch (_) {}     // app sent to the background / closed: keep the explored map
         this.resetAllInputs();
         if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
       }
@@ -10399,12 +10449,16 @@ class NikitaGame {
     };
     document.getElementById('btn-new').addEventListener('click', async () => {
       if (this.hasSave()) {
-        const ok = await nkConfirm('START A NEW GAME?', 'Starting a new game deletes your saved progress (credits, upgrades, best scores and scan maps) on this device. This cannot be undone.', 'START NEW');
+        const ok = await nkConfirm('START A NEW GAME?', 'Starting a new game deletes ALL your saved progress on this device: level reached, credits, upgrades, best scores, scan maps and the autopilot\'s explored map. You start again from sector 1. Your settings are kept. This cannot be undone.', 'START NEW');
         if (!ok) return;
       }
-      await this.wipeSave();
+      await this.wipeSave();                       // everything: level, credits, upgrades, best scores, maps, autopilot memory
+      const lvEl = document.getElementById('brief-level');
+      if (lvEl) lvEl.value = '1';                  // a new game always starts at sector 1
+      this.level = 1; this.score = 0; this.rewards = this.rewards || {};
+      this.updateCreditLabels();
       const typedSeed = briefSeedEl ? briefSeedEl.value.trim() : '';
-      launch(parseInt(document.getElementById('brief-level').value, 10) || 1, typedSeed || this.generateRandomSeed(), true);
+      launch(1, typedSeed || this.generateRandomSeed(), true);
     });
     document.getElementById('btn-continue').addEventListener('click', () => {
       if (!this.hasSave()) return;
