@@ -8,7 +8,7 @@ If no name was given, take it from `<title>` or the README. If the app already h
 
 It must be installable on phones (home screen, full screen like a native app), work offline, and always update to the newest version without users clearing anything. It is hosted as static files on GitHub Pages, so there is no build step.
 
-Work through sections 1-12 in order, then do the checks in section 13 and report each result as pass / fail / not testable here.
+Work through sections 1-12 (including 5b, libraries) in order, then do the checks in section 13 and report each result as pass / fail / not testable here.
 
 ## 1. Ground rules
 - Served over HTTPS (GitHub Pages); localhost works for testing.
@@ -80,6 +80,16 @@ self.APP_FILES = [
 - Uses `self.` so both the page and the service worker can read it. Every new or renamed file must be added.
 - Scan the project and **verify the list is complete** (nothing the app loads is missing) and that every listed file exists. Do both with a small script and report any mismatch.
 - If the app is one big `index.html` with inline CSS/JS, the list is just the page, manifest, icons and any vendor/asset files.
+
+## 5b. Third-party libraries: latest versions, hosted locally
+Find every external library the app uses (three.js, Phaser, Howler, matter.js, etc.: `<script src>`, `import ... from 'https://...'`, importmaps, CDN links) and make sure each one is **current and works offline**.
+1. **Look up the real latest stable version at run time**; never rely on memory. Use `npm view <package> version` (or `curl https://registry.npmjs.org/<package>/latest`) and the library's release notes / migration guide. Skip pre-release tags (`alpha`, `beta`, `rc`, `next`).
+2. **Compare with what the app uses** and list each library as: current version -> latest version. Upgrade anything outdated. For a major-version jump, read the migration guide and fix the breaking changes in the app's code. Examples for three.js: use ES modules via an importmap rather than the old removed `examples/js/` builds, and check renamed or removed APIs, colour-management defaults, and lighting units.
+3. **Download the files into `vendor/`** (from the npm tarball or jsDelivr: `https://cdn.jsdelivr.net/npm/<pkg>@<exact-version>/...`) instead of loading from a CDN at runtime. A CDN link breaks offline play, and an unpinned `@latest` link can silently break the game later. Put the version in the file or folder name (e.g. `vendor/three-0.XXX.0/three.module.min.js`) so a new version is a new URL and the cache-first rule can never serve an old copy. Include the library's licence file/notice. Add only the files actually imported (e.g. three's `examples/jsm/` add-ons used, not the whole package).
+4. **Add every vendor file to `APP_FILES`** and reference it with a relative path. Add a short `vendor/README.md` listing each library, exact version, source URL and licence.
+5. **Make staleness visible:** add `tools/check-deps.mjs` (or `.sh`) that reads the versions in `vendor/README.md`, queries the npm registry, and prints which libraries are behind. Mention in the README's release steps to run it before each release. Do not make the app call the registry at runtime.
+6. **Test after upgrading:** run the app in Playwright, fail on any console error or warning about deprecated or removed APIs, and take a screenshot of the main screen/game to confirm it renders. If an upgrade cannot be made to work, keep the old version and report why; do not leave the app broken.
+7. Also drop libraries the app no longer uses, and prefer built-in browser APIs over a dependency where trivial.
 
 ## 6. Service worker (`sw.js`, in the root next to `index.html`)
 ```js
@@ -278,7 +288,7 @@ document.getElementById('btn-install').addEventListener('click', async () => {
 
 ## 12. Releasing an update (document in README)
 1. Change the files.
-2. Add any new file to `js/boot/files.js`.
+2. Add any new file to `js/boot/files.js`. Run `tools/check-deps` and upgrade outdated libraries in `vendor/` (new versioned file name, update `APP_FILES` and `vendor/README.md`).
 3. Bump `APP_VERSION` (the only number to change).
 4. Commit and push; GitHub Pages deploys in about 1 minute.
 
@@ -288,6 +298,7 @@ Installed phones pick up the new version on the next launch (or immediately via 
 Use the pre-installed Playwright + Chromium and a local static server (`python3 -m http.server`). State what you could not test (real phones).
 - **Manifest:** loads, name/icons (incl. maskable) resolve, no errors; every icon file exists and has the declared size.
 - **Files list:** every entry in `APP_FILES` exists, and nothing the page loads is missing from it.
+- **Libraries:** none loaded from a CDN or unpinned URL (grep for `cdn.`, `unpkg`, `@latest`); each vendored library is the latest stable at the time (show the version table from section 5b); `tools/check-deps` runs and reports nothing outdated; no console errors with the upgraded versions.
 - **Service worker:** `sw.js?v=<version>` activates; Cache Storage has exactly one `<prefix><version>` cache holding every file in `APP_FILES`.
 - **Offline test:** load once, go offline (`context.setOffline(true)`), reload: the app starts and plays.
 - **Update test:** bump the version -> reload -> new worker waits, banner appears, "Update now" activates it; old cache deleted, only the new one remains; the UI shows the new version.
