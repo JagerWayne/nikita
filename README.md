@@ -39,6 +39,11 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **Take-off.** Press LIFT OFF (the LAND button turns into it), or bring the lever to minimum once and then raise it past the bottom notch: the engine spools up for half a second (the view shakes, the fin levels), the rocket rises about 1.7 m off the floor while pitching its nose up, then pulls away and is airborne after about 1.4 s. Press the button again (or drop the lever when lifting off by lever) during the spool-up to abort.
 - **Crashing.** Dropping onto the floor (sinking faster than 4 m/s), diving steeply into it, or hitting it with the engine out detonates the warhead. A fast, shallow skim still scrapes the hull (-22%) and bounces off as before.
 
+## Hover (v2.15)
+
+- **HOVER button (H on a keyboard).** Toggles hover mode in flight (lift off first). The lever drops to 0 so the rocket stops and holds its place; there is no gravity sag. The stick (or W/S) now climbs and descends at up to 2.6 m/s while the nose stays level, left/right (A/D) rotate on the spot, and the lever runs from 0 to 4 m/s (the readout shows tenths) along the heading. Press again to return to forward flight at your previous lever setting.
+- **Gentle contact.** While hovering below about 5.5 m/s, touching a wall, floor or roof just stops you against it with no damage. Hover is quiet to sentries, uses no boost, and burns 30% more fuel than idle flight. The LAND button still works from hover (it settles straight down). The engine sound holds a steady lift note.
+
 ## Flight physics and sound (v2.14)
 
 - **Scan completion.** The SCAN badge now counts every real edge in the sector: wall seams, corners, shaft outlines, ramp outlines, opening rims and lift beams, secret chambers included. It reads 100% only when every one has been outlined (it shows at most 99% before that), so secret chambers must be breached or deep-scanned.

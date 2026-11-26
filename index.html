@@ -1081,7 +1081,10 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-detonate { --col: 0; --row: 1; font-size: 9px; white-space: pre-line; border-color: rgba(255, 170, 0, 0.9); color: #ffaa00; }
 #tbtn-detonate.det { border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
 #tbtn-decoy    { --col: 1; --row: 1; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; font-size: 9px; }
-#tbtn-land     { --col: 0; --row: 2; white-space: pre-line; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
+#tbtn-hover, #tbtn-land { white-space: pre-line; }
+#tbtn-land     { --col: 0; --row: 2; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
+#tbtn-hover    { --col: 1; --row: 2; border-color: rgba(120, 255, 170, 0.9); color: #7dffaa; }
+#tbtn-hover.on { background: rgba(120, 255, 170, 0.3); box-shadow: 0 0 16px rgba(120, 255, 170, 0.7); }
 #tbtn-land.armed { background: rgba(0, 229, 255, 0.3); animation: landBlink 0.8s steps(2) infinite; }
 #tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
 @media (max-height: 400px) { #touch-actions { --ab: 56px; --gap: 6px; } }
@@ -1254,6 +1257,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-land" aria-label="Land or lift off">LAND</button>
+    <button class="touch-act-btn" id="tbtn-hover" aria-label="Hover in place">HOVER</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Tap to switch between proximity fuze and hold-to-detonate">PROX<br/>FUZE</button>
@@ -1343,8 +1347,9 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
         <div><span class="ctrl-key">DECOY</span> : Lure sentries with a noise decoy</div>
         <div><span class="ctrl-key">GUN</span> : Hold to fire the rocket gun</div>
+        <div><span class="ctrl-key">HOVER</span> : Hold position. Stick up/down = altitude, left/right = rotate, lever = 0 to 4 m/s</div>
         <div><span class="ctrl-key">LAND</span> : Press LAND, then ease onto a flat floor or a shaft floor; press LIFT OFF (or raise the lever) to leave</div>
-        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, G (land), X</div>
+        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, G (land), H (hover), X</div>
       </div>
     </details>
 
@@ -1615,6 +1620,8 @@ const TAKEOFF_HEIGHT = 1.7;            // hover height reached before pulling aw
 const LAND_ARM_TIME = 24;              // an armed landing request lapses after this many seconds
 const PROBE_RANGE = 12;               // collision markers read walls, floor and roof out to this distance
 const FUZE_RANGE = 5.0;                // proximity fuze: the warhead goes off this close (centre to centre) to a primary target with a clear line
+const HOVER_SPEED_MAX = 4.0;           // hover mode: the lever runs 0 to 4 m/s
+const HOVER_CLIMB = 2.6;               // hover mode: climb / descent speed at full stick
 const LAND_LEAN = 0.34;                // a landed rocket settles leaning onto one fin (~7 deg camera tilt)
 // ---- ROCKET GUN ----
 const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
@@ -4305,7 +4312,7 @@ class NikitaGame {
 
     // 1) buffeting: smooth gusts grow with speed and in tight passages
     if (hasFuel) {
-      const gAmp = (0.25 + 1.6 * sfw + 1.4 * tight * sfw) * dt;
+      const gAmp = (0.25 + 1.6 * sfw + 1.4 * tight * sfw) * dt * (m.hover ? 0.25 : 1);
       const gx = Math.sin(t * 2.9 + 0.4) + 0.7 * Math.sin(t * 5.3 + 2.0);
       const gy = Math.sin(t * 3.7 + 1.1) + 0.7 * Math.sin(t * 6.1 + 0.3);
       m.vel.x += rx * gx * gAmp; m.vel.z += rz * gx * gAmp; m.vel.y += gy * gAmp * 0.6;
@@ -4314,7 +4321,7 @@ class NikitaGame {
 
     // 2) air cushion: a fast rocket is pushed away from walls, floor and roof it flies close to
     const P = m.probe;
-    if (P && spd > 5 && hasFuel) {
+    if (P && spd > 5 && hasFuel && !m.hover) {
       const push = (d, lim) => (d < lim ? ((lim - d) / lim) * 3.2 * sfw * dt : 0);
       const l = push(P.l, 1.7), r = push(P.r, 1.7);
       m.vel.x += rx * (l - r); m.vel.z += rz * (l - r);
@@ -4322,7 +4329,7 @@ class NikitaGame {
     }
 
     // 3) low-speed sag: below crawl speed the nose droops and the rocket sinks a little (not while landing)
-    if (!m.landReq && spd < 9 && hasFuel) {
+    if (!m.landReq && !m.hover && spd < 9 && hasFuel) {
       const sag = 1 - spd / 9;
       m.vel.y -= sag * 1.6 * dt;
       m.kickP = (m.kickP || 0) - sag * 0.12 * dt;
@@ -4351,6 +4358,26 @@ class NikitaGame {
   // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
   fuzeNear(p, x, y, z, dist) {
     return this.fuzeMode !== 'det' && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
+  }
+
+  // HOVER button: hold position in the air. Stick up/down = altitude, left/right = rotate, lever = 0..4 m/s
+  pressHover() {
+    const m = this.missile;
+    if (this.state !== 'PLAYING' || !m.active || m.drop > 0 || m.flipping) return;
+    if (m.landed) { this.pushFeed('LIFT OFF FIRST', 'amber'); return; }
+    if (m.fuel <= 0) return;
+    m.hover = !m.hover;
+    if (m.hover) {
+      m.hoverSavedThr = m.throttle;
+      this.setThrottle(0);
+      m.landReq = false;
+      this.pushFeed('HOVER — STICK UP/DOWN = ALTITUDE · LEFT/RIGHT = ROTATE · LEVER 0–4 m/s', 'cyan');
+    } else {
+      this.setThrottle(Math.max(0.2, m.hoverSavedThr || 0.2));
+      this.pushFeed('HOVER OFF — FORWARD FLIGHT', 'amber');
+    }
+    this.audio.playSpeedShift(1);
+    this.updateSpeedBadgeUI();
   }
 
   // LAND button: arms or cancels a landing; on the ground it lifts off (or aborts a lift-off)
@@ -6426,7 +6453,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6544,7 +6571,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -7100,9 +7127,10 @@ class NikitaGame {
 
     let effT = holdBoost ? 1 : (holdCrawl ? 0 : m.throttle);
     if (!canBoost && effT > CRUISE_THROTTLE) effT = CRUISE_THROTTLE;   // overdrive locked while recharging
-    m.effThrottle = effT;
-    if (effT > this.stats.maxThrottle) this.stats.maxThrottle = effT;
-    const desiredMode = this.modeForThrottle(effT);
+    if (m.hover && m.fuel <= 0) { m.hover = false; this.pushFeed('HOVER LOST — ENGINE OUT', 'red'); }
+    m.effThrottle = m.hover ? 0.04 + effT * 0.08 : effT;     // a hovering rocket is quiet
+    if (!m.hover && effT > this.stats.maxThrottle) this.stats.maxThrottle = effT;
+    const desiredMode = m.hover ? 1 : this.modeForThrottle(effT);
 
     if (desiredMode !== m.activeSpeedMode) {
       m.activeSpeedMode = desiredMode;
@@ -7110,7 +7138,7 @@ class NikitaGame {
       this.updateSpeedBadgeUI();
     }
 
-    const profile = blendProfile(effT, _profile);
+    const profile = blendProfile(m.hover ? 0 : effT, _profile);
 
     if (!this.cfg.infFuel) {
       // Fuel model: drag-like burn = base x (0.5 + 0.5 (v / v_cruise)^2), so cruise gives the most distance per tank;
@@ -7121,7 +7149,7 @@ class NikitaGame {
       const burning = m.drop <= 0 && !m.flipping && m.fuel > 0;
       // efficiency: distance per fuel relative to the best possible (straight flight at cruise) = 1.0
       m.eff = burning ? (m.landed ? -2 : vr / (0.5 + 0.5 * vr * vr + 0.3 * turn)) : -1;
-      m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() / (1 + 0.15 * (this.nFloors - 1)) : 0;
+      m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() / (1 + 0.15 * (this.nFloors - 1)) * (m.hover ? 1.3 : 1) : 0;
       if (this.nFloors > 1) {
         // first visit to each upper floor in a sector pays a small scouting bonus
         const fNow = this.floorOfY(m.pos.y);
@@ -7142,7 +7170,7 @@ class NikitaGame {
     }
 
     // Boost capacitor drains in proportion to how far the lever is above cruise (full lever = 24%/s)
-    let boostLoad = Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));
+    let boostLoad = m.hover ? 0 : Math.max(0, (effT - CRUISE_THROTTLE) / (1 - CRUISE_THROTTLE));
     if (this.power.freeBoost > 0) { boostLoad = 0; m.boost = 100; this.power.freeBoost = Math.max(0, this.power.freeBoost - dt); }
     if (this.power.stealth > 0) this.power.stealth = Math.max(0, this.power.stealth - dt);
     if (boostLoad > 0 && !this.cfg.infBoost) {
@@ -7282,8 +7310,11 @@ class NikitaGame {
     }
 
     if (m.drop > 0 || m.flipping) { yawInput = 0; pitchInput = 0; mouseYaw = 0; mousePitch = 0; }
+    // hover: stick up / down climbs and descends, the nose stays level; left / right rotate on the spot
+    m.hoverClimb = 0;
+    if (m.hover && !m.landed) { m.hoverClimb = pitchInput; pitchInput = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
-    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost;
+    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1);
     const targetYawRate = yawInput * agility;
     const targetPitchRate = pitchInput * agility * 0.85;
     const rateResp = yawInput !== 0 ? 15.0 : 12.5;
@@ -7294,7 +7325,8 @@ class NikitaGame {
     m.yaw += m.yawRate * dt + mouseYaw;
     m.pitch = wrapPi(m.pitch + m.pitchRate * dt + mousePitch);   // no pitch limit: loops are possible if there is room
 
-    if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked && Math.abs(m.pitch) < 1.2) {
+    if (m.hover) m.pitch += (0 - m.pitch) * Math.min(1, dt * 3.5);
+    else if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked && Math.abs(m.pitch) < 1.2) {
       m.pitch += (0 - m.pitch) * Math.min(1, dt * 1.85);
     }
 
@@ -7404,8 +7436,8 @@ class NikitaGame {
         m.pitch = Math.max(-0.02, Math.min(0.7, m.pitch));
       }
     } else {
-      const leverSpeed = this.throttleSpeed(effT);
-      let targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
+      const leverSpeed = m.hover ? effT * HOVER_SPEED_MAX : this.throttleSpeed(effT);
+      let targetSpeed = hasFuel ? (m.hover ? leverSpeed : leverSpeed * this.cfg.speedMult) : 9.5;
       if (m.landReq) {
         m.landReqT = (m.landReqT || 0) + dt;
         if (!hasFuel || m.landReqT > LAND_ARM_TIME) { m.landReq = false; this.pushFeed('LANDING CANCELLED', 'amber'); }
@@ -7419,6 +7451,11 @@ class NikitaGame {
 
       let inertia = profile.inertia;
       if (m.burnT > 0) { m.burnT -= dt; inertia *= 2.6; m.currentSpeed = Math.max(m.currentSpeed, 14); }
+      if (m.hover) {
+        // thrusters hold the rocket up: no gravity sag, vertical speed follows the stick (or the landing descent)
+        _v2.y = m.landReq ? m.vel.y : m.hoverClimb * HOVER_CLIMB;
+        inertia = 4.5;
+      }
       m.vel.lerp(_v2, Math.min(1, dt * inertia));
 
       if (m.landReq) {
@@ -7669,6 +7706,13 @@ class NikitaGame {
           }
         }
 
+        if (hitSurface && m.hover && m.vel.length() < 5.5) {
+          // hovering is slow enough to touch things gently: just stop pushing into the surface
+          _v4.set(hitNormalX, hitNormalY, hitNormalZ).normalize();
+          const vn = m.vel.dot(_v4);
+          if (vn < 0) m.vel.addScaledVector(_v4, -vn);
+          hitSurface = false;
+        }
         if (hitSurface) {
           _v4.set(hitNormalX, hitNormalY, hitNormalZ).normalize();
           _v5.copy(m.vel).normalize();
@@ -7723,7 +7767,7 @@ class NikitaGame {
       }
     }
 
-    this.audio.updateEngine(true, m.activeSpeedMode, m.currentSpeed / this.maxSpeed(), engineOn);
+    this.audio.updateEngine(true, m.activeSpeedMode, m.hover ? Math.max(0.28, m.currentSpeed / this.maxSpeed()) : m.currentSpeed / this.maxSpeed(), engineOn);
 
     this.cStyle(this.el.speedLines, 'opacity', m.activeSpeedMode === 3 ? '0.85' : '0');
     if (m.activeSpeedMode === 3) {
@@ -8696,7 +8740,7 @@ class NikitaGame {
     const readout = document.getElementById('thr-readout');
     if (fill) fill.style.height = `${pct}%`;
     if (thumb) thumb.style.bottom = `calc(${pct}% - 8px)`;
-    if (readout) readout.textContent = `${this.throttleSpeed(this.missile.throttle).toFixed(0)} m/s`;
+    if (readout) readout.textContent = this.missile.hover ? `${(this.missile.throttle * HOVER_SPEED_MAX).toFixed(1)} m/s` : `${this.throttleSpeed(this.missile.throttle).toFixed(0)} m/s`;
   }
 
   throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (this.maxSpeed() - SPEED_MIN); }
@@ -8768,7 +8812,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun', 'tbtn-land'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun', 'tbtn-land', 'tbtn-hover'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -9218,6 +9262,18 @@ class NikitaGame {
       btnLand.addEventListener('pointerup', landUp);
       btnLand.addEventListener('pointercancel', landUp);
     }
+    const btnHover = document.getElementById('tbtn-hover');
+    if (btnHover) {
+      btnHover.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        this.audio.unlock();
+        btnHover.classList.add('pressed');
+        this.pressHover();
+      });
+      const hoverUp = () => btnHover.classList.remove('pressed');
+      btnHover.addEventListener('pointerup', hoverUp);
+      btnHover.addEventListener('pointercancel', hoverUp);
+    }
     const btnDecoy = document.getElementById('tbtn-decoy');
     btnDecoy.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -9320,6 +9376,7 @@ class NikitaGame {
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyG' && !e.repeat) this.pressLand();
+      if (e.code === 'KeyH' && !e.repeat) this.pressHover();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
       }
@@ -9539,6 +9596,8 @@ class NikitaGame {
     this.cText(el, txt);
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
     this.cStyle(el, 'display', txt ? 'block' : 'none');
+    const hb = this._hoverBtn || (this._hoverBtn = document.getElementById('tbtn-hover'));
+    if (hb) { const on = Boolean(m.active && m.hover && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
     if (btn) { this.cText(btn, lbl); if (btn._armed !== armed) { btn._armed = armed; btn.classList.toggle('armed', armed); } }
   }
   cStyle(el, prop, v) { const k = '_s_' + prop; if (el[k] !== v) { el[k] = v; el.style[prop] = v; } }
