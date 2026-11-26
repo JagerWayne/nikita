@@ -1,8 +1,0 @@
-{
-  "name": "pwa-kit",
-  "version": "1.0.0",
-  "description": "Turn static HTML apps and games (GitHub Pages) into installable, offline, self-updating PWAs: manifest, icons, service worker, byte-based update progress bar, Check for updates, version display, title menu, delete save, landscape lock, vendored libraries and a bundled verifier.",
-  "author": { "name": "JagerWayne" },
-  "keywords": ["pwa", "service-worker", "github-pages", "html5-game", "offline", "manifest"],
-  "license": "MIT"
-}
