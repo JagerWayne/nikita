@@ -1463,7 +1463,7 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
         <div><span class="ctrl-key">DECOY</span> : Lure sentries with a noise decoy</div>
         <div><span class="ctrl-key">GUN</span> : Hold to fire the rocket gun</div>
-        <div><span class="ctrl-key">AUTO</span> : Auto-discovery: hovers around the map by itself until everything reachable is scanned (move the stick to take over)</div>
+        <div><span class="ctrl-key">AUTO</span> : Full autopilot: scans the map, grabs pickups, shoots sentries, turrets, laser boxes, barrels and grates, hunts the primary targets with the fuze, picks its speed from the room ahead and launches the next rocket by itself. Press again or move the stick to take over</div>
         <div><span class="ctrl-key">HOVER</span> : Brake and hold position (the nose dips as you slow down). Stick up/down = altitude, left/right = rotate, lever = 0 to 4 m/s. <b>To land: hover, then hold the stick down onto a flat floor.</b> To lift off: press HOVER (or raise the lever)</div>
         <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, H (hover / lift off; hover + S lands), V (auto-discover), X</div>
       </div>
@@ -2769,6 +2769,7 @@ class NikitaGame {
     this.blastMult = 1;
     this.gunAmmo = GUN_CAP_MIN;
     this.gunHeld = false;
+    this.autoPlay = false;     // the autopilot keeps playing across rockets while this is on
     this.fuzeMode = 'prox';      // proximity fuze armed by default; the DET button toggles hold-to-detonate
     this.gunCool = 0;
     this.gunNoiseT = 0;
@@ -4566,8 +4567,9 @@ class NikitaGame {
   }
 
   // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
-  fuzeNear(p, x, y, z, dist) {
-    return this.fuzeMode !== 'det' && !this.missile.auto && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
+  fuzeNear(p, x, y, z, dist, isPrimary) {
+    const autoOk = !this.missile.auto || (isPrimary && this.auto && this.auto.mode === 'HUNT');   // the autopilot only blows up on a primary target it is hunting
+    return this.fuzeMode !== 'det' && autoOk && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
   }
 
   /* ------------------------------------------------------------------------
@@ -4672,33 +4674,174 @@ class NikitaGame {
     return path.reverse();
   }
 
+  // AUTO button: full autopilot. It scans, grabs useful pickups, guns down sentries / turrets / laser boxes / barrels / grates,
+  // hunts the primary targets with the proximity fuze, adjusts its speed to the room it has, and relaunches by itself.
+  // Press again (or move the stick) to take over.
   pressAuto() {
     const m = this.missile;
-    if (this.state !== 'PLAYING' || !m.active || m.drop > 0 || m.flipping) return;
-    if (m.auto) { this.autoStop('AUTO-DISCOVERY OFF'); return; }
-    if (m.landed) { this.pushFeed('LIFT OFF FIRST', 'amber'); return; }
-    if (m.fuel <= 0) return;
-    if (!m.hover) this.pressHover();
-    m.auto = true; m.landReq = false;
-    this.auto = { target: -1, path: null, pi: 0, dwell: 0, tried: new Set(), replanT: 0, stuckT: 0, sx: m.pos.x, sz: m.pos.z, lost: 0 };
-    this.pushFeed(`AUTO-DISCOVERY ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+    if (this.autoPlay || m.auto) { this.autoPlay = false; this.autoStop('AUTOPILOT OFF'); return; }
+    if (this.state === 'READY') { this.autoPlay = true; this._autoFireT = 0; this.pushFeed('AUTOPILOT ON — IT LAUNCHES THE ROCKET ITSELF', 'cyan'); return; }
+    if (this.state !== 'PLAYING' || !m.active || m.drop > 0 || m.flipping || m.fuel <= 0) return;
+    this.autoPlay = true;
+    if (m.landed) { this.pressHover(); return; }          // lift off to a hover; the autopilot takes over once airborne
+    this.autoEngage();
   }
 
-  autoStop(msg) {
+  autoEngage() {
     const m = this.missile;
+    if (m.fuel <= 0 || m.landed) return;
+    if (!m.hover) this.pressHover();
+    m.auto = true; m.landReq = false;
+    this.auto = { mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: new Set(), triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
+      sx: m.pos.x, sz: m.pos.z, lost: 0, t0: this.gameClock, noMore: false, fire: false, aimObj: null, aimT: 0, pick: null };
+    this.pushFeed(`AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+  }
+
+  autoStop(msg, keepPlay) {
+    const m = this.missile;
+    if (!keepPlay) this.autoPlay = false;
+    this.gunHeld = false;
     if (!m.auto) return;
     m.auto = false; m.autoSpeed = 0;
     if (msg) this.pushFeed(msg, 'amber');
   }
 
+  // Runs every frame: keeps the autopilot going between rockets (launches the next one, re-engages after the launch drop)
+  autoPlayTick(dt) {
+    if (!this.autoPlay) return;
+    const m = this.missile, st = this.state;
+    if (st === 'CLEAR' || st === 'FAILED' || st === 'BRIEFING') { this.autoPlay = false; return; }
+    if (this.paused) return;
+    if (st === 'READY') { this._autoFireT = (this._autoFireT || 0) + dt; if (this._autoFireT > 1.6) { this._autoFireT = 0; this.fireRocket(); } return; }
+    this._autoFireT = 0;
+    if (st === 'PLAYING' && m.active && m.drop <= 0 && !m.flipping && !m.auto && !m.landed && m.fuel > 0) {
+      this._autoEngT = (this._autoEngT || 0) + dt;
+      if (this._autoEngT > 0.6) { this._autoEngT = 0; this.autoEngage(); }
+    }
+  }
+
+  // Free distance straight ahead (a 1.4 m wide corridor), in metres up to `max`
+  autoFwdClear(m, max) {
+    const dx = -Math.sin(m.yaw), dz = -Math.cos(m.yaw), rx = dz * -1, rz = dx;     // heading and a sideways vector
+    for (let d = 1; d <= max; d += 1) {
+      const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
+      if (this.isGridSolid(x, z, m.pos.y) || this.isGridSolid(x + rx * 0.7, z + rz * 0.7, m.pos.y) || this.isGridSolid(x - rx * 0.7, z - rz * 0.7, m.pos.y)) return d - 1;
+    }
+    return max;
+  }
+
+  // Pick what to do next. Returns a path (maybe empty) and sets A.mode / A.pick, or null to fall back to exploring.
+  autoChoose(m, node, blocked, A) {
+    const G = GRID_SIZE, GG = G * G;
+    const cellNode = (pos) => {
+      const c = this.cellAt(pos.x, pos.z); if (c < 0) return -1;
+      const f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(pos.y)));
+      return f * GG + c;
+    };
+    // fuel: a flight lasts about 50 s, so work out what the way to the nearest primary target would cost (~2% fuel per second at 5 m/s)
+    const active = this.targets.filter((t) => t.active);
+    let huntPath = null, huntCost = 0;
+    if (active.length && this.gameClock > (A.huntBlock || 0)) {
+      const goals = new Set();
+      for (const t of active) {
+        const n = cellNode(t.pos); if (n < 0) continue;
+        const c = n % GG, x = c % G, z = (c / G) | 0, f0 = n - c;
+        goals.add(n);
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, nz = z + dz; if (nx >= 0 && nz >= 0 && nx < G && nz < G) goals.add(f0 + nz * G + nx); }
+      }
+      huntPath = this.autoBfs(node, (i) => goals.has(i), blocked);
+      if (huntPath) huntCost = huntPath.length * CELL_SIZE / 5.0 * 2.2;
+    }
+    const slack = m.fuel - huntCost;                               // fuel left over once the target is reached
+    // 1) a useful pickup close by (only with plenty of spare fuel)
+    if (m.fuel > 25 && (!huntPath || slack > 38)) {
+      const want = (p) => p.active && !A.triedPick.has(p) && (p.type === 'ROCKETS' || p.type === 'OVERCHARGE' ||
+        (p.type === 'AMMO' && this.gunAmmo < this.gunCap() * 0.7) || (p.type === 'REPAIR' && m.hull < 85));
+      const byNode = new Map();
+      for (const p of this.pickups) if (want(p)) { const n = cellNode(p.pos); if (n >= 0 && this.navOk(n) && !blocked[n]) byNode.set(n, p); }
+      if (byNode.size) {
+        const path = this.autoBfs(node, (i) => byNode.has(i), blocked);
+        if (path && path.length <= 16) { A.mode = 'PICKUP'; A.pick = byNode.get(path.length ? path[path.length - 1] : node); return path; }
+      }
+    }
+    // 2) hunt the primary targets as soon as the fuel is just enough to reach one (or the scan is mostly done, the hull is hurt, time is up)
+    if (huntPath && (slack < 30 || this.scanPercent() >= 85 || A.noMore || m.hull < 45 || this.gameClock - A.t0 > 100)) { A.mode = 'HUNT'; return huntPath; }
+    return null;
+  }
+
+  // The gunner
+  // Straight run at the nearest primary target when it is in clear sight and within maxD; null otherwise
+  autoHuntApproach(m, vmax, maxD) {
+    let tt = null, td = 1e9;
+    for (const t of this.targets) if (t.active) { const d = m.pos.distanceTo(t.pos); if (d < td) { td = d; tt = t; } }
+    if (!tt || td > maxD || !this.los3(m.pos.x, m.pos.y, m.pos.z, tt.pos.x, tt.pos.y, tt.pos.z)) return null;
+    let ty = Math.atan2(-(tt.pos.x - m.pos.x), -(tt.pos.z - m.pos.z)) - m.yaw;
+    while (ty > Math.PI) ty -= Math.PI * 2; while (ty < -Math.PI) ty += Math.PI * 2;
+    return { yaw: Math.max(-1, Math.min(1, ty * 2.8)), climb: Math.max(-1, Math.min(1, (tt.pos.y - m.pos.y) * 1.4)), speed: Math.abs(ty) < 0.5 ? Math.min(vmax, Math.max(2, td - 2.5)) : 0.5 };
+  }
+
+  // The gunner: finds the best thing in sight to shoot, turns toward it, matches its height and holds the trigger while aligned.
+  // Mutates `out` ({yaw, climb, speed}) and sets A.fire.
+  autoGunner(m, dt, A, out) {
+    A.fire = false;
+    if (this.gunAmmo <= 0 || m.drop > 0) return;
+    const P = m.pos, hunting = A.mode === 'HUNT';
+    let best = null, bestScore = -1e9;
+    const consider = (obj, kind, x, y, z, minD, maxD, pri, ammoNeed) => {
+      if (A.ignore.has(obj) || this.gunAmmo < ammoNeed) return;
+      const dx = x - P.x, dy = y - P.y, dz = z - P.z, d = Math.hypot(dx, dy, dz);
+      if (d < minD || d > maxD) return;
+      if (!this.los3(P.x, P.y, P.z, x, y, z)) return;
+      let ang = Math.atan2(-dx, -dz) - m.yaw; while (ang > Math.PI) ang -= Math.PI * 2; while (ang < -Math.PI) ang += Math.PI * 2;
+      const score = pri * 12 - d - Math.abs(ang) * 5;
+      if (score > bestScore) { bestScore = score; best = { obj, kind, x, y, z, d, ang, dy }; }
+    };
+    for (const s of this.sentries) if (s.active && !s.dying) consider(s, 'sentry', s.pos.x, s.pos.y + 1.2, s.pos.z, 3, 24, s.alerted ? 7 : 5, 4);
+    for (const t of this.turrets) if (t.active) consider(t, 'turret', t.pos.x, t.pos.y, t.pos.z, 3, 26, 6, 8);
+    for (const l of this.lasers) if (!l.disabled && l.relayActive) consider(l, 'box', l.relayPos.x, l.relayPos.y, l.relayPos.z, 3, 20, 3, 6);
+    for (const b of this.barrels) if (b.active) consider(b, 'barrel', b.pos.x, b.pos.y, b.pos.z, 13, 26, 2, 12);   // far enough that the blast cannot reach the rocket
+    for (const g of this.grates) if (g.active) consider(g, 'grate', g.pos.x, g.pos.y, g.pos.z, 3, 18, 1, 24);
+    if (!best) { A.aimObj = null; A.aimT = 0; return; }
+    if (A.aimObj !== best.obj) { A.aimObj = best.obj; A.aimT = 0; }
+    A.aimT += dt;
+    if (A.aimT > 7) { A.ignore.add(best.obj); A.aimObj = null; return; }        // cannot hit it (height, angle): give up on it
+    const important = best.kind === 'sentry' || best.kind === 'turret' || best.kind === 'box';
+    // turn toward it when it is roughly ahead (always for threats), and match its height
+    if (Math.abs(best.ang) < 0.7 || (important && best.d < 18)) {
+      out.yaw = Math.max(-1, Math.min(1, best.ang * 3.2));
+      out.speed = Math.min(out.speed, hunting ? 2.5 : 1.2);
+    }
+    const ceil = this.ceilAt(this.floorOfY(P.y), this.cellAt(P.x, P.z)), flo = this.groundAt(this.floorOfY(P.y), this.cellAt(P.x, P.z), P.x, P.z);
+    const aimY = Math.max(flo + 1.3, Math.min(ceil - 1.1, best.y));
+    if (Math.abs(best.dy) > 0.5 || important) out.climb = Math.max(-1, Math.min(1, (aimY - P.y) * 1.6));
+    const tol = best.kind === 'sentry' ? 1.1 : 0.6;
+    const dist = best.d, angTol = Math.atan2(best.kind === 'sentry' ? 0.6 : 0.7, Math.max(2, dist)) * 0.9;
+    if (Math.abs(best.ang) < angTol && Math.abs(aimY - P.y) < tol + 0.3 || (best.kind === 'sentry' && Math.abs(best.ang) < angTol)) A.fire = true;
+  }
+
   // One frame of autopilot: returns { yaw, climb, speed } in stick units / m/s
   autoSteer(m, dt) {
-    const A = this.auto, G = GRID_SIZE, GG = G * G;
-    const hold = (climbAlt) => ({ yaw: 0, climb: climbAlt === undefined ? 0 : Math.max(-1, Math.min(1, (climbAlt - m.pos.y) * 1.4)), speed: 0 });
+    const A = this.auto, GG = GRID_SIZE * GRID_SIZE;
     const node = this.autoNode(m);
-    if (node < 0) { A.lost += dt; if (A.lost > 6) this.autoStop('AUTO-DISCOVERY LOST ITS POSITION — STOPPED'); return hold(); }
+    if (node < 0) {
+      A.lost += dt;
+      if (A.lost > 6) this.autoStop('AUTOPILOT LOST ITS POSITION — STOPPED');
+      this.gunHeld = false;
+      return { yaw: 0, climb: 0, speed: 0 };
+    }
     A.lost = 0;
-    if (this.scanPercent() >= 100) { this.autoStop('AUTO-DISCOVERY COMPLETE — SCAN 100%'); return hold(); }
+    const out = this.autoDrive(m, dt, A, node);
+    this.autoGunner(m, dt, A, out);
+    this.gunHeld = A.fire;
+    return out;
+  }
+
+  // Navigation: explore (scan) / pickup / hunt, with a speed that follows the free distance ahead
+  autoDrive(m, dt, A, node) {
+    const G = GRID_SIZE, GG = G * G;
+    const hold = (climbAlt) => ({ yaw: 0, climb: climbAlt === undefined ? 0 : Math.max(-1, Math.min(1, (climbAlt - m.pos.y) * 1.4)), speed: 0 });
+    const scanDone = this.scanPercent() >= 100;
+    if (scanDone) A.noMore = true;
 
     if (A.dwell > 0) {          // arrived: spin slowly so the scanner sweeps every side
       A.dwell -= dt;
@@ -4707,42 +4850,59 @@ class NikitaGame {
     }
 
     A.replanT -= dt;
+    // re-plan every 2 s. While exploring a better goal may appear (a pickup, or the hunt starting); a pickup / hunt goal is kept until done.
     if (A.target < 0 || !A.path || A.replanT <= 0) {
       const blocked = this.autoBlocked();
-      if (A.target < 0) {
-        const cand = new Set();
-        this.edgeTotal();
-        for (const seg of this.edgeList) {
-          if (this.revealedSeg.has(seg)) continue;
-          const n = this.autoSegNode(seg);
-          if (n >= 0 && !A.tried.has(n)) cand.add(n);
-        }
-        let path = this.autoBfs(node, (i) => cand.has(i), blocked);
-        if (!path) {
-          // everything reachable is done. A sealed secret chamber? Go and hover at its cracked wall.
-          const sec = this.breakables.filter((b) => b.active);
-          const near = new Set();
-          for (const b of sec) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const x = b.gx + dx, z = b.gz + dz;
-            if (x >= 0 && z >= 0 && x < G && z < G && this.navOk(z * G + x) && !isShaft(this.floors[0][z * G + x])) near.add(z * G + x);
-          }
-          if (!A.final && near.size) path = this.autoBfs(node, (i) => near.has(i), blocked);
-          if (path) {
-            A.final = true;
-            this.pushFeed('SEALED AREA LEFT — HEADING TO A CRACKED WALL', 'cyan');
-          } else {
-            const sealed = this.breakables.filter((b) => b.active).length;
-            this.autoStop(`AUTO-DISCOVERY DONE — SCAN ${this.scanPercent()}%` + (sealed ? ` · ${sealed} CRACKED WALL${sealed > 1 ? 'S' : ''} STILL SEALED OR UNREACHABLE` : ' · THE REST IS BLOCKED'));
-            return hold();
-          }
-        }
-        A.target = path.length ? path[path.length - 1] : node;
-        A.path = path; A.pi = 0;
-      } else {
+      if (A.mode !== 'EXPLORE' && A.target >= 0 && A.path) {            // keep the goal, refresh the way to it
         const t = A.target;
-        const path = this.autoBfs(node, (i) => i === t, blocked);
-        if (!path) { A.tried.add(A.target); A.target = -1; A.path = null; return hold(); }
-        A.path = path; A.pi = 0;
+        const p4 = this.autoBfs(node, (i) => i === t, blocked);
+        if (p4) { A.path = p4; A.pi = 0; } else { A.target = -1; A.path = null; A.mode = 'EXPLORE'; A.replanT = 0.3; return hold(); }
+      } else {
+        const before = A.mode;
+        const cp = this.autoChoose(m, node, blocked, A);
+        if (cp) {
+          A.target = cp.length ? cp[cp.length - 1] : node; A.path = cp; A.pi = 0;
+          if (before !== A.mode) this.pushFeed(A.mode === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS' : 'AUTOPILOT: GOING FOR A PICKUP', 'cyan');
+        } else {
+          A.mode = 'EXPLORE';
+          if (A.target >= 0 && A.path) {                                 // keep exploring toward the same edge
+            const t = A.target;
+            const p3 = this.autoBfs(node, (i) => i === t, blocked);
+            if (!p3) { A.tried.add(A.target); A.target = -1; A.path = null; return hold(); }
+            A.path = p3; A.pi = 0;
+          } else {
+            const cand = new Set();
+            this.edgeTotal();
+            for (const seg of this.edgeList) {
+              if (this.revealedSeg.has(seg)) continue;
+              const n = this.autoSegNode(seg);
+              if (n >= 0 && !A.tried.has(n)) cand.add(n);
+            }
+            let p2 = this.autoBfs(node, (i) => cand.has(i), blocked);
+            if (!p2) {
+              A.noMore = true;
+              if (this.targets.some((t) => t.active) && this.gameClock > (A.huntBlock || 0)) { A.replanT = 0.2; return hold(); }   // nothing left to scan: the next decision is a hunt
+              // everything reachable is done. A sealed secret chamber? Go and hover at its cracked wall.
+              const sec = this.breakables.filter((b) => b.active);
+              const near = new Set();
+              for (const b of sec) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                const x = b.gx + dx, z = b.gz + dz;
+                if (x >= 0 && z >= 0 && x < G && z < G && this.navOk(z * G + x) && !isShaft(this.floors[0][z * G + x])) near.add(z * G + x);
+              }
+              if (!A.final && near.size) p2 = this.autoBfs(node, (i) => near.has(i), blocked);
+              if (p2) {
+                A.final = true;
+                this.pushFeed('SEALED AREA LEFT — HEADING TO A CRACKED WALL', 'cyan');
+              } else {
+                const sealed = this.breakables.filter((b) => b.active).length;
+                this.autoStop(`AUTOPILOT DONE — SCAN ${this.scanPercent()}%` + (sealed ? ` · ${sealed} CRACKED WALL${sealed > 1 ? 'S' : ''} STILL SEALED OR UNREACHABLE` : ' · THE REST IS BLOCKED'));
+                return hold();
+              }
+            }
+            A.target = p2.length ? p2[p2.length - 1] : node;
+            A.path = p2; A.pi = 0;
+          }
+        }
       }
       A.replanT = 2.0;
     }
@@ -4754,8 +4914,15 @@ class NikitaGame {
       if (Math.hypot(wx - m.pos.x, wz - m.pos.z) < 1.1) A.pi++; else break;
     }
     if (A.pi >= A.path.length) {
+      if (A.mode === 'PICKUP') { if (A.pick) A.triedPick.add(A.pick); A.target = -1; A.path = null; A.mode = 'EXPLORE'; return hold(); }
+      if (A.mode === 'HUNT') {
+        const ho = this.autoHuntApproach(m, 7, 1e9);          // in the target's cell: go straight at it
+        if (ho) return ho;
+        A.huntBlock = this.gameClock + 25; A.target = -1; A.path = null; A.mode = 'EXPLORE'; A.replanT = 0;   // no line to it: explore a while and retry
+        return hold();
+      }
       if (A.final) {
-        this.autoStop(`AUTO-DISCOVERY AT THE SEALED WALL — SCAN ${this.scanPercent()}% · BLAST IT OPEN (COSTS THIS ROCKET), THEN RELAUNCH AND PRESS AUTO`);
+        this.autoStop(`AUTOPILOT AT THE SEALED WALL — SCAN ${this.scanPercent()}% · BLAST IT OPEN (COSTS THIS ROCKET), THEN RELAUNCH`);
         return hold();
       }
       A.dwell = 1.2; return hold();
@@ -4766,21 +4933,29 @@ class NikitaGame {
     while (dYaw > Math.PI) dYaw -= Math.PI * 2;
     while (dYaw < -Math.PI) dYaw += Math.PI * 2;
 
-    // stuck for 3 s: give this spot up
+    // stuck for 3 s: give this goal up
     A.stuckT += dt;
     if (A.stuckT > 3) {
-      if (Math.hypot(m.pos.x - A.sx, m.pos.z - A.sz) < 0.6) { A.tried.add(A.target); A.target = -1; A.path = null; }
+      if (Math.hypot(m.pos.x - A.sx, m.pos.z - A.sz) < 0.6) { if (A.mode === 'EXPLORE') A.tried.add(A.target); else if (A.pick) A.triedPick.add(A.pick); A.target = -1; A.path = null; }
       A.stuckT = 0; A.sx = m.pos.x; A.sz = m.pos.z;
     }
     const wAlt = this.autoNodeAlt(wp);
     const nearShaft = (f0, i) => f0 === 0 && isShaft(this.floors[0][i % GG]);
     // lining up with a tunnel mouth (or leaving one): get to the right height before moving on
     const align = (nearShaft((wp / GG) | 0, wp) || nearShaft((node / GG) | 0, node)) && Math.abs(wAlt - m.pos.y) > 0.5;
-    return {
-      yaw: Math.max(-1, Math.min(1, dYaw * 2.5)),
-      climb: Math.max(-1, Math.min(1, (wAlt - m.pos.y) * 1.4)),
-      speed: align ? 0 : (Math.abs(dYaw) < 0.4 ? HOVER_SPEED_MAX : (Math.abs(dYaw) < 0.9 ? 1.2 : 0.0))
-    };
+
+    // speed: as fast as the free distance ahead allows (stopping room), slower in turns and close to walls
+    const fc = this.autoFwdClear(m, 14), vmax = A.mode === 'HUNT' ? 7 : 6;
+    let v = Math.max(0, Math.min(vmax, fc - 2.0));
+    v *= Math.max(0, Math.min(1, 1 - Math.abs(dYaw) / 1.1));
+    if (v < 1.0 && Math.abs(dYaw) < 0.9 && fc > 3) v = 1.0;
+    const Pr = m.probe;
+    if (Pr && (Pr.l < 1.1 || Pr.r < 1.1)) v = Math.min(v, 2.5);
+    let out = { yaw: Math.max(-1, Math.min(1, dYaw * 2.5)), climb: Math.max(-1, Math.min(1, (wAlt - m.pos.y) * 1.4)), speed: align ? 0 : v };
+
+    // hunting: with a clear line to a primary target, go straight at it (the proximity fuze fires at 5 units)
+    if (A.mode === 'HUNT') { const ho = this.autoHuntApproach(m, vmax, 16); if (ho) out = ho; }
+    return out;
   }
 
   // HOVER button: brake and hold position in the air. Stick up/down = altitude, left/right = rotate, lever = 0..4 m/s.
@@ -4800,7 +4975,7 @@ class NikitaGame {
     }
     if (m.fuel <= 0) return;
     m.hover = !m.hover;
-    if (!m.hover) this.autoStop('AUTO-DISCOVERY OFF');
+    if (!m.hover) this.autoStop('AUTOPILOT OFF');
     if (m.hover) {
       const spd = m.vel.length();
       m.hoverSavedThr = m.throttle;
@@ -7430,6 +7605,7 @@ class NikitaGame {
 
     this.updateFacilityObjects(effectiveDt);
     this.updatePickups(effectiveDt);
+    this.autoPlayTick(effectiveDt);
     if (this.bullets) this.updateGun(effectiveDt);
     this.updateDecoys(effectiveDt);
     if (this.state === 'READY') this.updateReadyAim(effectiveDt);
@@ -7897,8 +8073,8 @@ class NikitaGame {
       const manual = Math.abs(this.touchInput.joyX) > 0.3 || Math.abs(this.touchInput.joyY) > 0.3 ||
         this.keys['KeyA'] || this.keys['KeyD'] || this.keys['KeyW'] || this.keys['KeyS'] ||
         this.keys['ArrowLeft'] || this.keys['ArrowRight'] || this.keys['ArrowUp'] || this.keys['ArrowDown'];
-      if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTO-DISCOVERY STOPPED');
-      else if (manual) this.autoStop('AUTO-DISCOVERY OFF — MANUAL CONTROL');
+      if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTOPILOT STOPPED', m.fuel <= 0);   // an engine-out does not end the autopilot: it relaunches
+      else if (manual) this.autoStop('AUTOPILOT OFF — MANUAL CONTROL');
       else {
         const a = this.autoSteer(m, dt);
         yawInput = a.yaw; pitchInput = a.climb; mouseYaw = 0; m.autoSpeed = a.speed;
@@ -8106,7 +8282,7 @@ class NikitaGame {
           return;
         }
         // proximity fuze: close enough to a primary target (and not behind a wall) -> burst automatically
-        if (this.fuzeNear(_v3, t.pos.x, t.pos.y, t.pos.z, tDist)) {
+        if (this.fuzeNear(_v3, t.pos.x, t.pos.y, t.pos.z, tDist, true)) {
           m.pos.copy(_v3);
           this._proxBurst = true;
           this.detonateMissile(_v3, `PROXIMITY FUZE: ${t.name}`, t, null);
@@ -8242,7 +8418,7 @@ class NikitaGame {
               hitNormalY = 1;
               const slow = m.currentSpeed <= LAND_SPEED;
               const falling = m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH || !hasFuel;
-              const wantLand = m.landReq || (m.hover && m.hoverClimb < -0.05 && !m.inLift);   // hovering with the stick held down = landing
+              const wantLand = m.landReq || (m.hover && !m.auto && m.hoverClimb < -0.05 && !m.inLift);   // only the player lands (the autopilot never touches down)   // hovering with the stick held down = landing
               if (slow && !falling && m.drop <= 0 && !m.flipping && !wantLand) {
                 // slow and gentle but not landing: skim along the floor without damage
                 if (m.vel.y < 0) m.vel.y = 0;
@@ -10219,7 +10395,7 @@ class NikitaGame {
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
     this.cStyle(el, 'display', txt ? 'block' : 'none');
     const ab = this._autoBtn || (this._autoBtn = document.getElementById('tbtn-auto'));
-    if (ab) { const on = Boolean(m.active && m.auto && this.state === 'PLAYING'); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\nON' : 'AUTO'); }
+    if (ab) { const on = Boolean(this.autoPlay && (this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING')); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\n' + (m.auto && this.auto ? this.auto.mode : 'ON') : 'AUTO'); }
     const hb = this._hoverBtn || (this._hoverBtn = document.getElementById('tbtn-hover'));
     if (hb) { const on = Boolean(m.active && m.hover && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
   }

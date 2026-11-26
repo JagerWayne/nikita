@@ -56,6 +56,17 @@ Installed phones pick up the new version on the next launch. If an install ever 
 - **HOVER button (H on a keyboard).** Toggles hover mode in flight (lift off first). The lever drops to 0 so the rocket stops and holds its place; there is no gravity sag. The stick (or W/S) now climbs and descends at up to 2.6 m/s while the nose stays level, left/right (A/D) rotate on the spot, and the lever runs from 0 to 4 m/s (the readout shows tenths) along the heading. Press again to return to forward flight at your previous lever setting.
 - **Gentle contact.** While hovering below about 5.5 m/s, touching a wall, floor or roof just stops you against it with no damage. Hover is quiet to sentries, uses no boost, and burns 30% more fuel than idle flight. The LAND button still works from hover (it settles straight down). The engine sound holds a steady lift note.
 
+## Full autopilot (v2.20)
+
+The AUTO button (V on a keyboard) is now a full autopilot that plays the sector for you. Press it in the READY state and it launches the rocket itself; press it in flight and it takes over. It re-engages after every launch and relaunches after a lost rocket, an engine-out or a kill, until the sector is cleared, you run out of rockets, or you press AUTO again. Moving the stick takes over at once.
+
+- **Navigation.** It plans routes over every floor (ramps included), avoids turbines, bulkheads, live lasers, barrels and grates, and scans the facility as it goes. The button shows what it is doing: EXPLORE, PICKUP or HUNT.
+- **Speed.** It sets its own speed from the free distance ahead (up to 6 m/s exploring, 7 m/s hunting), slowing for turns, tunnel mouths and walls so contacts stay gentle.
+- **Targets.** It works out what the way to the nearest primary target would cost in fuel (a flight lasts about 50 s) and switches to HUNT while there is enough left, or earlier if the scan is mostly done or the hull is hurt. It runs straight at the target once it sees it and lets the proximity fuze go off. While on autopilot the fuze ignores everything except the primary target it is hunting.
+- **Gunner.** Whenever something is in clear sight it turns toward it, matches its height and holds the trigger: sentries, CIWS turrets, laser boxes, vent grates, and fuel barrels (only from more than 13 units away, so the blast cannot reach it). It gives up on a target it cannot hit after 7 s and keeps a few rounds in reserve.
+- **Pickups.** It detours for rocket caches, overcharge, ammo (when low) and repair kits (when hurt) if it has fuel to spare.
+- **Landing.** The autopilot never lands. The old AUTO-DISCOVERY is part of it (it explores whenever it is not hunting or picking something up).
+
 ## Auto discovery and hover physics (v2.16)
 
 - **AUTO button (V on a keyboard).** From flight, the rocket switches to hover and flies itself around the facility, floor by floor and up and down the ramps, visiting the places next to every edge the scanner has not outlined yet. It stops at each spot and turns slowly so the scanner sweeps all around, then picks the nearest remaining spot. It stops with "AUTO-DISCOVERY COMPLETE" at 100% scan, or reports what is left when nothing else is reachable. Move the stick (or press AUTO again) to take over at any time.
