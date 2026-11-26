@@ -5,6 +5,8 @@ self.APP_FILES = [
   'js/boot/version.js',
   'js/boot/files.js',
   'js/boot/sizes.js',
+  'js/share.js',
+  'vendor/qrcode-generator-2.0.4/qrcode.js',
   'vendor/three-0.187.0/three.module.js',
   'vendor/three-0.187.0/three.core.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'

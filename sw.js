@@ -18,14 +18,16 @@ self.addEventListener('install', event => {
     const size = {};                                          // url -> expected bytes
     PRECACHE.forEach(u => { size[u] = sizes[u] || (u === './' ? sizes['index.html'] : 0) || FALLBACK; });
     let total = PRECACHE.reduce((n, u) => n + size[u], 0);
-    let loaded = 0, files = 0, failed = 0, last = 0, timer = 0;
+    let loaded = 0, files = 0, failed = 0, last = 0, timer = 0, finished = false;
     const report = async (final) => {                         // tell every open page how far the download is
+      if (finished) return;                                   // nothing may follow the final message (a late throttled update would undo it)
       const now = Date.now();
       if (!final && now - last < 100) {                       // at most ~10 messages a second, but never drop the latest value
         if (!timer) timer = setTimeout(() => { timer = 0; report(); }, 100 - (now - last));
         return;
       }
       last = now;
+      if (final) { finished = true; clearTimeout(timer); }
       const pages = await self.clients.matchAll({ includeUncontrolled: true });
       pages.forEach(p => p.postMessage({ type: 'progress', version: VERSION, loaded, total: Math.max(total, loaded), files, count: PRECACHE.length, failed, final: !!final }));
     };

@@ -13,6 +13,8 @@
 <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
 <script src="./js/boot/version.js"></script>
 <script src="./js/boot/files.js"></script>
+<script>window.PWA_SHARE = { qr: 'vendor/qrcode-generator-2.0.4/qrcode.js', title: 'NIKITA // SHADOW OPS', text: 'Fly a wire-guided Nikita warhead through 100 facility sectors. Play free in your browser or install it:' };</script>
+<script src="./js/share.js"></script>
 <title>NIKITA // SHADOW OPS — 3D Tactical Guided-Missile Simulation</title>
 <style>
   :root {
@@ -783,6 +785,40 @@
     #continue-info, #title-update { grid-column: 1 / -1; }
   }
   .launch-big { width: min(100%, 340px); min-height: 66px; font-size: 20px; letter-spacing: 0.2em; background: rgba(0, 255, 136, 0.24); box-shadow: 0 0 22px rgba(0, 255, 136, 0.35); }
+  .title-menu .share-btn { min-height: 44px; font-size: 14px; }
+  #nk-share { position: fixed; inset: 0; z-index: 100001; display: none; align-items: center; justify-content: center; background: rgba(2, 8, 6, 0.9); padding: 18px; overflow-y: auto; }
+  #nk-share .modal-card { max-width: 420px; text-align: center; max-height: 94dvh; overflow-y: auto; }
+  #nk-share h3 { color: var(--hud-green); letter-spacing: 0.16em; font-size: 16px; margin-bottom: 4px; }
+  #nk-share .share-sub { font-size: 12px; color: #b7e8cf; margin-bottom: 10px; }
+  #nk-share-qr { background: #fff; padding: 0; border-radius: 8px; display: block; margin: 0 auto 6px; max-width: 100%; image-rendering: pixelated; }
+  #nk-share-qr-msg { font-size: 11px; color: var(--hud-amber); min-height: 1.3em; margin-bottom: 8px; }
+  #nk-share-link { width: 100%; padding: 10px; margin-bottom: 12px; background: rgba(0, 255, 136, 0.08); border: 1px solid var(--hud-green); color: #d8ffe9; font: 13px monospace; border-radius: 4px; text-align: center; user-select: text; -webkit-user-select: text; }
+  @media (orientation: landscape) and (max-height: 520px) {
+    #nk-share .modal-card { max-width: 620px; display: grid; grid-template-columns: auto 1fr; gap: 0 22px; text-align: left; align-items: center; }
+    #nk-share h3, #nk-share .share-sub { grid-column: 2; }
+    #nk-share-qr-wrap { grid-row: 1 / span 5; grid-column: 1; }
+    #nk-share .share-body { grid-column: 2; }
+    #nk-share-qr { width: 200px !important; height: 200px !important; }
+  }
+  #meryl-call { position: fixed; inset: 0; z-index: 99990; display: none; align-items: center; justify-content: center; padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); background: radial-gradient(ellipse at center, rgba(3, 18, 12, 0.94), rgba(1, 6, 4, 0.98)); }
+  #meryl-call::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0, 255, 136, 0.05) 0 1px, transparent 1px 3px); }
+  #meryl-call .mc-card { position: relative; width: 100%; max-width: 560px; border: 1px solid var(--hud-green); background: rgba(4, 14, 10, 0.9); box-shadow: 0 0 36px rgba(0, 255, 136, 0.25); border-radius: 6px; padding: 16px 20px; color: #d8ffe9; }
+  .mc-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+  .mc-avatar { width: 56px; height: 56px; border-radius: 50%; border: 2px solid var(--hud-green); display: grid; place-items: center; font-size: 26px; color: var(--hud-green); background: rgba(0, 255, 136, 0.08); text-shadow: 0 0 10px rgba(0, 255, 136, 0.6); flex: none; }
+  .mc-name { font-size: 18px; letter-spacing: 0.2em; color: var(--hud-green); }
+  .mc-role { font-size: 10.5px; letter-spacing: 0.14em; color: var(--hud-amber); margin-top: 3px; }
+  .mc-wave { margin-left: auto; display: flex; align-items: center; gap: 3px; height: 28px; }
+  .mc-wave i { width: 4px; height: 6px; background: var(--hud-green); border-radius: 2px; opacity: 0.5; }
+  #meryl-call.talking .mc-wave i { animation: mcWave 0.5s ease-in-out infinite alternate; opacity: 1; }
+  .mc-wave i:nth-child(2) { animation-delay: 0.1s; } .mc-wave i:nth-child(3) { animation-delay: 0.2s; } .mc-wave i:nth-child(4) { animation-delay: 0.05s; } .mc-wave i:nth-child(5) { animation-delay: 0.15s; }
+  @keyframes mcWave { from { height: 5px; } to { height: 26px; } }
+  @media (prefers-reduced-motion: reduce) { #meryl-call.talking .mc-wave i { animation: none; height: 16px; } #mc-ring { animation: none !important; } }
+  #mc-ring { text-align: center; letter-spacing: 0.22em; color: var(--hud-amber); font-size: 14px; padding: 18px 0; animation: mcBlink 0.9s steps(2) infinite; }
+  @keyframes mcBlink { 50% { opacity: 0.25; } }
+  #mc-line { min-height: 4.6em; font-size: 14px; line-height: 1.55; margin: 6px 0 10px; }
+  #mc-obj { display: none; border: 1px solid rgba(0, 255, 136, 0.4); background: rgba(0, 255, 136, 0.06); border-radius: 4px; padding: 8px 12px; margin-bottom: 10px; font-size: 12px; letter-spacing: 0.06em; line-height: 1.7; }
+  #mc-obj b { color: var(--hud-amber); }
+  @media (orientation: landscape) and (max-height: 520px) { #mc-line { min-height: 3.2em; font-size: 13px; } #mc-ring { padding: 8px 0; } .mc-avatar { width: 44px; height: 44px; font-size: 20px; } }
   #nk-confirm, #nk-progress { position: fixed; inset: 0; z-index: 100001; display: none; align-items: center; justify-content: center; background: rgba(2, 8, 6, 0.9); padding: 18px; }
   #nk-confirm .modal-card, #nk-progress .modal-card { max-width: 420px; text-align: center; }
   #nk-confirm h3 { color: var(--hud-amber); letter-spacing: 0.16em; margin-bottom: 10px; font-size: 16px; }
@@ -1331,6 +1367,26 @@ window.addEventListener('unhandledrejection', function (e) {
   </div>
 </div>
 
+<!-- Share Game: link + QR code (js/share.js) -->
+<div id="nk-share" role="dialog" aria-modal="true" aria-labelledby="nk-share-title"><div class="modal-card">
+  <h3 id="nk-share-title">SHARE GAME</h3>
+  <p class="share-sub">Scan the QR code or copy the link</p>
+  <div id="nk-share-qr-wrap"><canvas id="nk-share-qr" width="260" height="260" aria-label="QR code with the game link"></canvas><div id="nk-share-qr-msg"></div></div>
+  <div class="share-body">
+    <input id="nk-share-link" type="text" readonly aria-label="Game link" />
+    <div class="btn-row center"><button class="tac-btn" id="nk-share-copy">COPY LINK</button><button class="tac-btn amber" id="nk-share-native" hidden>SHARE&hellip;</button><button class="tac-btn" id="nk-share-close">CLOSE</button></div>
+  </div>
+</div></div>
+
+<!-- Intro radio call from Meryl -->
+<div id="meryl-call" role="dialog" aria-modal="true" aria-label="Incoming call from Meryl"><div class="mc-card">
+  <div class="mc-head"><div class="mc-avatar">M</div><div><div class="mc-name">MERYL</div><div class="mc-role">HANDLER // SECURE LINE</div></div><div class="mc-wave"><i></i><i></i><i></i><i></i><i></i></div></div>
+  <div id="mc-ring">INCOMING SECURE CALL...</div>
+  <p id="mc-line" aria-live="polite"></p>
+  <div id="mc-obj"><b>MISSION</b><br>&#9654; ELIMINATE <b>ALL</b> PRIMARY TARGETS<br>&#9654; DESTROY <b>AS MUCH AS POSSIBLE</b>: sentries, turrets, lasers, barrels, grates, walls</div>
+  <div class="btn-row center"><button class="tac-btn launch-big" id="mc-next" style="min-height:48px;font-size:15px;width:auto;padding:0 28px">ANSWER</button><button class="tac-btn" id="mc-skip" style="min-height:48px">SKIP</button></div>
+</div></div>
+
 <!-- In-app confirm dialog, update progress and offline badge -->
 <div id="nk-confirm" role="dialog" aria-modal="true"><div class="modal-card">
   <h3 id="nk-confirm-title"></h3><p id="nk-confirm-text"></p>
@@ -1377,6 +1433,7 @@ window.addEventListener('unhandledrejection', function (e) {
         <button class="tac-btn launch-big" id="btn-new">NEW</button>
         <button class="tac-btn menu-btn" id="btn-continue">CONTINUE</button>
         <button class="tac-btn menu-btn" id="btn-options">OPTIONS</button>
+        <button class="tac-btn amber menu-btn share-btn" id="btn-share" data-pwa-share>SHARE GAME</button>
         <button class="tac-btn danger menu-btn" id="btn-exit">EXIT</button>
       </div>
       <p class="ios-hint" id="continue-info" style="margin:8px 0 0;"></p>
@@ -1440,6 +1497,7 @@ window.addEventListener('unhandledrejection', function (e) {
     </details>
 
     <div class="btn-row center" style="margin-top:12px;">
+      <button class="tac-btn amber" id="btn-replay-intro" style="padding:6px 14px; font-size:12px;">REPLAY INTRO CALL</button>
       <button class="tac-btn amber" id="btn-upgrades" style="padding:6px 14px; font-size:12px;">UPGRADES</button>
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
       <button class="tac-btn amber" id="btn-update" style="padding:6px 14px; font-size:12px;">CHECK FOR UPDATES</button>
@@ -2081,6 +2139,17 @@ class AudioEngine {
     this.tone(700, 120, 0, 0.36, 0.045, 0.01);
   }
 
+  playRing() {                                  // two-tone phone ring
+    this.tone(880, 880, 0, 0.18, 0.05, 0.01); this.tone(660, 660, 0.22, 0.18, 0.05, 0.01);
+  }
+  playRadioBlip() {                             // squelch click + a short burst of static when a radio line opens or closes
+    this.tone(1400, 900, 0, 0.07, 0.04, 0.004);
+    if (!this.initialized) return;
+    const c = this.ctx, t = c.currentTime + 0.02, src = c.createBufferSource(), g = c.createGain(), f = c.createBiquadFilter();
+    src.buffer = this.noiseBuffer; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.8;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.05, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    src.connect(f); f.connect(g); g.connect(this.master); src.start(t, Math.random()); src.stop(t + 0.18);
+  }
   playTargetChime() {
     [523.25, 659.25, 1046.5].forEach((f, i) => this.tone(f, f, i * 0.08, 0.4, 0.05, 0.015));
   }
@@ -6455,6 +6524,62 @@ class NikitaGame {
     if (!optionsToo) this.refreshTitleMenu();
   }
 
+  // Radio call from Meryl before a new campaign: asks the player to eliminate every target and destroy as much as possible.
+  playIntroCall() {
+    const root = document.getElementById('meryl-call');
+    if (!root) return Promise.resolve();
+    const lines = [
+      'Nikita, this is Meryl. Good, the line is clean. Listen carefully, we do not have much time.',
+      'There are a hundred sectors in that facility, and every one holds primary targets. Eliminate every single target. That is the mission.',
+      'And while you are in there, destroy as much as you can: sentries, turrets, laser boxes, fuel barrels, vent grates, cracked walls. Everything that burns is points, and points are credits for your upgrades.',
+      'Fly low and keep the speed down: they hear you coming. Watch your fuel, an empty tank ends the flight. I will be on the line the whole way. Good hunting, Nikita.'
+    ];
+    const ring = document.getElementById('mc-ring'), lineEl = document.getElementById('mc-line'), obj = document.getElementById('mc-obj');
+    const nextBtn = document.getElementById('mc-next'), skipBtn = document.getElementById('mc-skip');
+    return new Promise((resolve) => {
+      let stage = 'ring', idx = -1, typing = 0, ringTimer = 0, pos = 0;
+      const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const stopTyping = () => { clearInterval(typing); typing = 0; root.classList.remove('talking'); };
+      const finish = () => {
+        stopTyping(); clearInterval(ringTimer);
+        document.removeEventListener('keydown', onKey, true);
+        root.style.display = 'none';
+        try { this.audio.playRadioBlip(); } catch (_) {}
+        resolve();
+      };
+      const type = (text) => {
+        stopTyping(); pos = 0; lineEl.textContent = '';
+        if (reduce) { lineEl.textContent = text; return; }
+        root.classList.add('talking');
+        typing = setInterval(() => {
+          pos += 2; lineEl.textContent = text.slice(0, pos);
+          if (pos >= text.length) stopTyping();
+        }, 28);
+      };
+      const next = () => {
+        if (stage === 'ring') {
+          clearInterval(ringTimer); ring.style.display = 'none'; stage = 'talk'; idx = 0;
+          try { this.audio.playRadioBlip(); } catch (_) {}
+          nextBtn.textContent = 'NEXT'; type(lines[0]); return;
+        }
+        if (typing) { stopTyping(); lineEl.textContent = lines[idx]; return; }     // first tap completes the line
+        if (idx < lines.length - 1) { idx++; try { this.audio.playRadioBlip(); } catch (_) {} type(lines[idx]); if (idx === lines.length - 1) { obj.style.display = 'block'; nextBtn.textContent = 'BEGIN MISSION'; } return; }
+        finish();
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); }
+        else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); next(); }
+      };
+      ring.style.display = ''; lineEl.textContent = ''; obj.style.display = 'none'; nextBtn.textContent = 'ANSWER';
+      root.style.display = 'flex';
+      document.addEventListener('keydown', onKey, true);
+      nextBtn.onclick = next; skipBtn.onclick = finish;
+      try { this.audio.playRing(); } catch (_) {}
+      ringTimer = setInterval(() => { try { this.audio.playRing(); } catch (_) {} }, 1500);
+      try { nextBtn.focus({ preventScroll: true }); } catch (_) {}
+    });
+  }
+
   // Erase the saved campaign (credits, upgrades, best scores, resume point, scan maps) but keep the settings; no reload.
   wipeSave() {
     try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
@@ -9865,7 +9990,7 @@ class NikitaGame {
     this.updateCreditLabels();
 
     // Title menu: NEW (wipes the old save) / CONTINUE (resumes from storage) / OPTIONS / EXIT
-    const launch = (lvl, seed) => {
+    const launch = async (lvl, seed, intro) => {
       this.audio.unlock();
       this.vibrate(18);
       const wantGyro = document.getElementById('brief-gyro-enable').checked;
@@ -9873,6 +9998,7 @@ class NikitaGame {
       this.requestGameFullscreen();
       document.getElementById('ov-seed-input').value = seed;
       document.getElementById('briefing-modal').style.display = 'none';
+      if (intro) await this.playIntroCall();               // Meryl briefs the player on a new campaign
       document.getElementById('hud-layer').style.display = 'block';
       this.startSector(lvl, seed);
       try { history.pushState({ nk: 1 }, ''); } catch (_) {}   // the back button pauses instead of leaving the app
@@ -9884,7 +10010,7 @@ class NikitaGame {
       }
       await this.wipeSave();
       const typedSeed = briefSeedEl ? briefSeedEl.value.trim() : '';
-      launch(parseInt(document.getElementById('brief-level').value, 10) || 1, typedSeed || this.generateRandomSeed());
+      launch(parseInt(document.getElementById('brief-level').value, 10) || 1, typedSeed || this.generateRandomSeed(), true);
     });
     document.getElementById('btn-continue').addEventListener('click', () => {
       if (!this.hasSave()) return;
@@ -9892,6 +10018,7 @@ class NikitaGame {
       launch(this.contLvl || parseInt(document.getElementById('brief-level').value, 10) || 1, this.contSeed || typedSeed || this.generateRandomSeed());
     });
     document.getElementById('btn-options').addEventListener('click', () => this.showTitleView(true));
+    document.getElementById('btn-replay-intro').addEventListener('click', () => { this.audio.unlock(); document.getElementById('briefing-modal').style.display = 'none'; this.playIntroCall().then(() => { document.getElementById('briefing-modal').style.display = 'flex'; }); });
     document.getElementById('btn-options-back').addEventListener('click', () => this.showTitleView(false));
     document.getElementById('title-menu').addEventListener('keydown', (e) => {   // arrow keys move through the menu
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
