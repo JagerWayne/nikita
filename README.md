@@ -2,7 +2,7 @@
 
 A 3D tactical guided-missile simulation for phones (and desktop). Fly a wire-guided Nikita warhead through 100 procedurally generated facility sectors, destroy the primary targets, avoid sentries, lasers, turbines, CIWS turrets, ECM fields and sliding bulkheads.
 
-Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, bundled in `vendor/three/` so the game has no external dependencies and works offline.
+Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, bundled in `vendor/three-0.187.0/` so the game has no external dependencies and works offline.
 
 ## Play
 
@@ -19,11 +19,13 @@ The game is a PWA. Open the Pages link, then:
 
 It then launches full-screen from the home screen and works offline after the first load. Every launch checks for a new version and updates itself automatically.
 
-**Updates (v2.14.1–2):** the main screen has a CHECK FOR UPDATES button (it reports whether you are on the latest version and turns into UPDATE TO vX when a newer one exists). If a phone is showing an older copy, a green NEW VERSION banner appears at the top a few seconds after the page loads; tap it to wipe the cache and reload. The menu title shows the version in use.
+**Title menu (v2.16):** the first screen shows the icon, the game name, the version and NEW / CONTINUE / OPTIONS / EXIT. NEW deletes the old save (after a confirm) and starts at the start sector from Options; CONTINUE resumes the saved sector with your credits and upgrades (greyed out when nothing is saved); OPTIONS holds gyro, seed, start sector, upgrades, install, CHECK FOR UPDATES and DELETE SAVE; EXIT autosaves, stops the game and closes the app (browsers only allow closing an installed app window, otherwise a THANKS FOR PLAYING screen appears). The phone's back button pauses the game instead of leaving it. Forced landscape: the manifest says landscape, the game locks the orientation when it can, and a ROTATE DEVICE overlay covers portrait.
+
+**Updates (v2.16):** OPTIONS has a CHECK FOR UPDATES button (it reports whether you are on the latest version and turns into UPDATE TO vX when a newer one exists), and a green NEW VERSION banner appears on the title screen when a phone shows an older copy. Updating shows a byte-based progress bar (percentage and MB downloaded) while every file is cached, then reloads into the new version. A half-downloaded update is never installed: the old version keeps running and you can retry. The first visit shows a small "Downloading for offline play" strip.
 
 **Releasing an update:**
 1. Change the files.
-2. Add any new static file to `js/boot/files.js`.
+2. Add any new static file to `js/boot/files.js`, then run `node tools/make-sizes.mjs` (writes `js/boot/sizes.js`, the file sizes behind the progress bar) and `node tools/check-deps.mjs` (is a vendored library behind? upgrade it into a new `vendor/<name>-<version>/` folder and update `files.js`, the import map and `vendor/README.md`).
 3. Bump `APP_VERSION` in `js/boot/version.js` (the only version number; it names the offline cache and the `sw.js?v=` URL).
 4. Push to `main`.
 

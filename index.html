@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="NIKITA" />
 <meta name="theme-color" content="#050a08" />
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="icon" type="image/png" href="./icons/icon-192.png" />
@@ -761,7 +762,38 @@
   .title-card { max-width: 460px; text-align: center; }
   .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
   .title-card .briefing-desc { margin: 6px 0 16px; }
+  .title-head { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .title-icon { width: 96px; height: 96px; border-radius: 22%; box-shadow: 0 0 22px rgba(0, 255, 136, 0.35); }
+  .title-name { font-size: 22px; letter-spacing: 0.16em; color: var(--hud-green); text-shadow: 0 0 12px rgba(0, 255, 136, 0.5); }
+  .title-sub { font-size: 11px; color: var(--hud-amber); letter-spacing: 0.14em; margin-top: 4px; }
+  .title-ver { font-size: 13px; color: #d8ffe9; letter-spacing: 0.18em; margin-top: 6px; }
+  .title-menu { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .title-menu .tac-btn { width: min(100%, 340px); min-height: 52px; font-size: 16px; letter-spacing: 0.22em; }
+  .title-menu .launch-big { min-height: 60px; font-size: 20px; }
+  .title-menu .tac-btn:focus-visible { outline: 2px solid var(--hud-cyan); outline-offset: 2px; }
+  @media (orientation: landscape) and (max-height: 520px) {
+    #briefing-modal .title-card { max-width: 720px; }
+    #title-view { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 22px; align-items: center; }
+    .title-head { margin-bottom: 0; }
+    .title-icon { width: 84px; height: 84px; }
+    .title-name { font-size: 18px; }
+    .title-menu { gap: 8px; }
+    .title-menu .tac-btn { min-height: 44px; font-size: 14px; }
+    .title-menu .launch-big { min-height: 48px; font-size: 16px; }
+    #continue-info, #title-update { grid-column: 1 / -1; }
+  }
   .launch-big { width: min(100%, 340px); min-height: 66px; font-size: 20px; letter-spacing: 0.2em; background: rgba(0, 255, 136, 0.24); box-shadow: 0 0 22px rgba(0, 255, 136, 0.35); }
+  #nk-confirm, #nk-progress { position: fixed; inset: 0; z-index: 100001; display: none; align-items: center; justify-content: center; background: rgba(2, 8, 6, 0.9); padding: 18px; }
+  #nk-confirm .modal-card, #nk-progress .modal-card { max-width: 420px; text-align: center; }
+  #nk-confirm h3 { color: var(--hud-amber); letter-spacing: 0.16em; margin-bottom: 10px; font-size: 16px; }
+  #nk-confirm p { color: #b7e8cf; font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+  #nk-progress .pbar { height: 16px; border: 1px solid var(--hud-green); border-radius: 8px; overflow: hidden; background: rgba(0, 255, 136, 0.1); margin: 14px 0 10px; }
+  #nk-progress .pbar i { display: block; height: 100%; width: 0; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); transition: width 0.2s linear; }
+  #nk-progress .ptext { font-size: 13px; color: #d8ffe9; letter-spacing: 0.06em; min-height: 1.4em; }
+  #nk-strip { position: fixed; left: 50%; bottom: max(8px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 99998; display: none; min-width: 240px; max-width: 90vw; padding: 6px 12px; background: rgba(4, 14, 10, 0.92); border: 1px solid var(--hud-green); border-radius: 6px; font-size: 11px; letter-spacing: 0.08em; color: #d8ffe9; }
+  #nk-strip .pbar { height: 6px; background: rgba(0, 255, 136, 0.15); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+  #nk-strip .pbar i { display: block; height: 100%; width: 0; background: var(--hud-green); transition: width 0.2s linear; }
+  #nk-offline { position: fixed; right: max(8px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top)); z-index: 99997; display: none; padding: 3px 8px; font-size: 10px; letter-spacing: 0.12em; color: var(--hud-amber); border: 1px solid var(--hud-amber); border-radius: 4px; background: rgba(4, 14, 10, 0.8); pointer-events: none; }
   details.fold { margin: 14px 0 0; text-align: left; border: 1px solid rgba(0, 255, 136, 0.35); border-radius: 4px; background: rgba(0, 20, 12, 0.5); }
   details.fold > summary { cursor: pointer; padding: 9px 12px; font-size: 12px; letter-spacing: 0.16em; color: var(--hud-amber); list-style: none; user-select: none; -webkit-user-select: none; }
   details.fold > summary::-webkit-details-marker { display: none; }
@@ -1144,7 +1176,7 @@ window.addEventListener('unhandledrejection', function (e) {
 <script type="importmap">
 {
   "imports": {
-    "three": "./vendor/three/three.module.js"
+    "three": "./vendor/three-0.187.0/three.module.js"
   }
 }
 </script>
@@ -1296,6 +1328,20 @@ window.addEventListener('unhandledrejection', function (e) {
   </div>
 </div>
 
+<!-- In-app confirm dialog, update progress and offline badge -->
+<div id="nk-confirm" role="dialog" aria-modal="true"><div class="modal-card">
+  <h3 id="nk-confirm-title"></h3><p id="nk-confirm-text"></p>
+  <div class="btn-row center"><button class="tac-btn" id="nk-confirm-cancel">CANCEL</button><button class="tac-btn danger" id="nk-confirm-ok">OK</button></div>
+</div></div>
+<div id="nk-progress" role="dialog" aria-modal="true"><div class="modal-card">
+  <h3 style="color:var(--hud-green);letter-spacing:.16em;font-size:16px">UPDATING</h3>
+  <div class="pbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+  <div class="ptext" id="nk-progress-text"></div>
+  <div class="btn-row center" style="margin-top:12px"><button class="tac-btn" id="nk-progress-retry" style="display:none">RETRY</button><button class="tac-btn" id="nk-progress-close" style="display:none">CLOSE</button></div>
+</div></div>
+<div id="nk-strip"><div id="nk-strip-text"></div><div class="pbar"><i></i></div></div>
+<div id="nk-offline">OFFLINE</div>
+
 <!-- Landscape Orientation Guard -->
 <div id="rotate-overlay">
   <div class="rotate-phone-icon"></div>
@@ -1315,15 +1361,28 @@ window.addEventListener('unhandledrejection', function (e) {
 <!-- Mission Briefing Modal -->
 <div id="briefing-modal" class="modal-backdrop">
   <div class="modal-card title-card">
-    <div class="modal-title">
-      <span>NIKITA // SHADOW OPS</span>
-      <span class="modal-subtitle">TACTICAL GUIDED-MISSILE SIM &middot; <span id="app-version">v1.0</span></span>
+    <div id="title-view">
+      <div class="title-head">
+        <img class="title-icon" src="icons/icon-192.png" alt="" width="96" height="96" />
+        <div class="title-text">
+          <div class="title-name">NIKITA // SHADOW OPS</div>
+          <div class="title-sub">TACTICAL GUIDED-MISSILE SIM</div>
+          <div class="title-ver">VERSION <span id="app-version">v1.0</span></div>
+        </div>
+      </div>
+      <div class="title-menu" id="title-menu">
+        <button class="tac-btn launch-big" id="btn-new">NEW</button>
+        <button class="tac-btn menu-btn" id="btn-continue">CONTINUE</button>
+        <button class="tac-btn menu-btn" id="btn-options">OPTIONS</button>
+        <button class="tac-btn danger menu-btn" id="btn-exit">EXIT</button>
+      </div>
+      <p class="ios-hint" id="continue-info" style="margin:8px 0 0;"></p>
+      <p class="ios-hint" id="title-update" style="display:none; margin:8px 0 0;"></p>
     </div>
-    <p class="briefing-desc">Fly the Nikita warhead through 100 facility sectors and destroy every primary target.</p>
 
-    <div class="btn-row center">
-      <button class="tac-btn launch-big" id="btn-launch">INITIATE LAUNCH</button>
-    </div>
+    <div id="options-view" style="display:none">
+    <div class="modal-title"><span>OPTIONS</span><span class="modal-subtitle">NIKITA &middot; v<span id="opt-version"></span></span></div>
+    <p class="briefing-desc">Fly the Nikita warhead through 100 facility sectors and destroy every primary target.</p>
 
     <details class="fold">
       <summary>TARGETS &amp; POINTS</summary>
@@ -1381,10 +1440,11 @@ window.addEventListener('unhandledrejection', function (e) {
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
       <button class="tac-btn amber" id="btn-update" style="padding:6px 14px; font-size:12px;">CHECK FOR UPDATES</button>
       <button class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVE</button>
-      <button class="tac-btn danger" id="btn-exit" style="padding:6px 14px; font-size:12px;">EXIT</button>
     </div>
     <p class="ios-hint" id="install-help" style="display:none; margin:8px 0 0;"></p>
     <p class="ios-hint" id="update-status" style="display:none; margin:8px 0 0;"></p>
+    <div class="btn-row center" style="margin-top:14px;"><button class="tac-btn" id="btn-options-back">BACK</button></div>
+    </div>
   </div>
 </div>
 
@@ -2610,6 +2670,8 @@ class NikitaGame {
     this.initGun();
     this.credits = 0;
     this.sectorBest = {};
+    this.contLvl = 0;      // sector to resume with CONTINUE (0 = no save)
+    this.contSeed = '';
     this.loadProgress();
     this.score = 0;
     this.sectorStartScore = 0;
@@ -6004,6 +6066,8 @@ class NikitaGame {
       const d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
       if (d && typeof d === 'object') {
         this.credits = Math.max(0, Math.floor(d.credits || 0));
+        this.contLvl = Math.max(0, Math.min(MAX_LEVELS, Math.floor(d.lvl || 0)));
+        this.contSeed = typeof d.seed === 'string' ? d.seed.slice(0, 40) : '';
         if (d.best && typeof d.best === 'object') this.sectorBest = d.best;
         for (const k of Object.keys(this.upg)) this.upg[k] = Math.max(0, Math.min(this.upgradeMax(k), Math.floor((d.upg && d.upg[k]) || 0)));
       }
@@ -6011,7 +6075,7 @@ class NikitaGame {
   }
 
   saveProgress() {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify({ credits: this.credits, upg: this.upg, best: this.sectorBest })); } catch (_) {}
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify({ credits: this.credits, upg: this.upg, best: this.sectorBest, lvl: this.contLvl || 0, seed: this.contSeed || '' })); } catch (_) {}
   }
 
   maxSpeed() { return Math.min(SPEED_MAX, SPEED_START_CAP + SPEED_STEP * this.upg.speed); }
@@ -6100,6 +6164,55 @@ class NikitaGame {
   updateCreditLabels() {
     const b = document.getElementById('btn-upgrades');
     if (b) b.textContent = `UPGRADES · ${this.credits} CR`;
+    this.refreshTitleMenu();
+  }
+
+  // Is there anything saved on this device? (a sector to resume, credits, upgrades or best scores)
+  hasSave() {
+    try {
+      const d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+      if (!d || typeof d !== 'object') return false;
+      return (d.lvl > 0) || (d.credits > 0) || Object.keys(d.best || {}).length > 0 || Object.values(d.upg || {}).some((v) => v > 0);
+    } catch (_) { return false; }
+  }
+
+  // CONTINUE is greyed out without a save; the default focus goes to CONTINUE when a save exists, otherwise NEW.
+  refreshTitleMenu() {
+    const cont = document.getElementById('btn-continue');
+    if (!cont) return;
+    const has = this.hasSave();
+    cont.disabled = !has;
+    const info = document.getElementById('continue-info');
+    if (info) info.textContent = has ? ('Saved: sector ' + (this.contLvl || 1) + ' · ' + this.credits + ' credits') : 'No saved game on this device.';
+    const tv = document.getElementById('title-view');
+    if (tv && tv.style.display !== 'none' && this.state === 'BRIEFING') {
+      const t = has ? cont : document.getElementById('btn-new');
+      try { t.focus({ preventScroll: true }); } catch (_) {}
+    }
+  }
+
+  showTitleView(optionsToo) {
+    const tv = document.getElementById('title-view'), ov = document.getElementById('options-view');
+    if (!tv || !ov) return;
+    tv.style.display = optionsToo ? 'none' : '';
+    ov.style.display = optionsToo ? 'block' : 'none';
+    if (!optionsToo) this.refreshTitleMenu();
+  }
+
+  // Erase the saved campaign (credits, upgrades, best scores, resume point, scan maps) but keep the settings; no reload.
+  wipeSave() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
+    this.credits = 0; this.sectorBest = {}; this.contLvl = 0; this.contSeed = '';
+    for (const k of Object.keys(this.upg)) this.upg[k] = 0;
+    this.lidarKey = null;
+    try { this.lidarMemory.clear(); } catch (_) {}
+    return new Promise((res) => {
+      try {
+        const go = () => { const rq = indexedDB.deleteDatabase('nikita-lidar'); rq.onsuccess = res; rq.onerror = res; rq.onblocked = res; };
+        if (this._idb) this._idb.then((db) => { db.close(); go(); }).catch(go); else go();
+      } catch (_) { res(); }
+      setTimeout(res, 1500);
+    });
   }
 
   openUpgrades() {
@@ -6123,6 +6236,7 @@ class NikitaGame {
       if (e) e.style.display = 'none';
     }
     document.getElementById('briefing-modal').style.display = 'flex';
+    this.showTitleView(false);
     const lv = document.getElementById('brief-level');
     if (lv) lv.value = String(this.level);
     this.resetOverlays();
@@ -8886,6 +9000,7 @@ class NikitaGame {
   }
 
   exitGame() {
+    this.saveProgress();
     this.stopped = true;
     this.paused = true;
     try { if (this.audio && this.audio.ctx) this.audio.ctx.close(); } catch (_) {}
@@ -8899,8 +9014,10 @@ class NikitaGame {
       const box = document.createElement('div');
       box.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#050a08;color:#00ff88;font:15px/1.6 monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;';
       box.innerHTML = '<div style="font-size:22px;letter-spacing:0.18em">GAME CLOSED</div>' +
-        '<div style="opacity:.75;max-width:420px">You can close this tab or swipe the app away. Nothing is running in the background.</div>' +
-        '<button id="nk-relaunch" style="padding:12px 22px;font:bold 14px monospace;letter-spacing:0.14em;background:#00ff88;color:#02120a;border:0;border-radius:6px">LAUNCH AGAIN</button>';
+        '<img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:22%">' +
+        '<div style="letter-spacing:.14em">THANKS FOR PLAYING</div>' +
+        '<div style="opacity:.75;max-width:420px">Your progress is saved. You can now close this app (swipe it away or press Home). Nothing is running in the background.</div>' +
+        '<button id="nk-relaunch" style="padding:12px 22px;font:bold 14px monospace;letter-spacing:0.14em;background:#00ff88;color:#02120a;border:0;border-radius:6px">BACK TO MENU</button>';
       document.body.appendChild(box);
       document.getElementById('nk-relaunch').onclick = () => location.reload();
     }, 250);
@@ -9444,12 +9561,9 @@ class NikitaGame {
 
     document.getElementById('btn-exit').addEventListener('click', () => this.exitGame());
     const delBtn = document.getElementById('btn-delete-save');
-    let delArmed = 0;
-    delBtn.addEventListener('click', () => {
-      if (delArmed && performance.now() - delArmed < 4000) { delBtn.textContent = 'DELETING...'; this.deleteSavedData(); return; }
-      delArmed = performance.now();
-      delBtn.textContent = 'TAP AGAIN TO ERASE ALL';
-      setTimeout(() => { if (performance.now() - delArmed >= 3900) { delArmed = 0; delBtn.textContent = 'DELETE SAVE'; } }, 4100);
+    delBtn.addEventListener('click', async () => {
+      const ok = await nkConfirm('DELETE SAVE DATA?', 'This erases your credits, upgrades, best scores, saved scan maps and settings on this device. It cannot be undone. The offline copy of the game is kept.', 'DELETE');
+      if (ok) { delBtn.textContent = 'DELETING...'; this.deleteSavedData(); }
     });
     document.getElementById('btn-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
@@ -9469,21 +9583,49 @@ class NikitaGame {
     });
     this.updateCreditLabels();
 
-    document.getElementById('btn-launch').addEventListener('click', () => {
+    // Title menu: NEW (wipes the old save) / CONTINUE (resumes from storage) / OPTIONS / EXIT
+    const launch = (lvl, seed) => {
       this.audio.unlock();
       this.vibrate(18);
       const wantGyro = document.getElementById('brief-gyro-enable').checked;
       this.setGyroEnabled(wantGyro);
       this.requestGameFullscreen();
-
-      const typedSeed = briefSeedEl ? briefSeedEl.value.trim() : '';
-      const seed = typedSeed || this.generateRandomSeed();
-      const lvl = parseInt(document.getElementById('brief-level').value, 10) || 1;
       document.getElementById('ov-seed-input').value = seed;
       document.getElementById('briefing-modal').style.display = 'none';
       document.getElementById('hud-layer').style.display = 'block';
       this.startSector(lvl, seed);
+      try { history.pushState({ nk: 1 }, ''); } catch (_) {}   // the back button pauses instead of leaving the app
+    };
+    document.getElementById('btn-new').addEventListener('click', async () => {
+      if (this.hasSave()) {
+        const ok = await nkConfirm('START A NEW GAME?', 'Starting a new game deletes your saved progress (credits, upgrades, best scores and scan maps) on this device. This cannot be undone.', 'START NEW');
+        if (!ok) return;
+      }
+      await this.wipeSave();
+      const typedSeed = briefSeedEl ? briefSeedEl.value.trim() : '';
+      launch(parseInt(document.getElementById('brief-level').value, 10) || 1, typedSeed || this.generateRandomSeed());
     });
+    document.getElementById('btn-continue').addEventListener('click', () => {
+      if (!this.hasSave()) return;
+      const typedSeed = briefSeedEl ? briefSeedEl.value.trim() : '';
+      launch(this.contLvl || parseInt(document.getElementById('brief-level').value, 10) || 1, this.contSeed || typedSeed || this.generateRandomSeed());
+    });
+    document.getElementById('btn-options').addEventListener('click', () => this.showTitleView(true));
+    document.getElementById('btn-options-back').addEventListener('click', () => this.showTitleView(false));
+    document.getElementById('title-menu').addEventListener('keydown', (e) => {   // arrow keys move through the menu
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const items = [...document.querySelectorAll('#title-menu button:not(:disabled)')];
+      const i = items.indexOf(document.activeElement);
+      items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+      e.preventDefault();
+    });
+    window.addEventListener('popstate', () => {          // Android back / browser back during play: pause, stay in the game
+      if (this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING') {
+        this.setPaused(true);
+        try { history.pushState({ nk: 1 }, ''); } catch (_) {}
+      }
+    });
+    const ov = document.getElementById('opt-version'); if (ov) ov.textContent = NIKITA_VERSION;
 
     document.getElementById('btn-next-sector').addEventListener('click', () => {
       this.requestGameFullscreen();
@@ -9668,6 +9810,7 @@ class NikitaGame {
 
 
   startSector(lvl, seed, carryOver = false) {
+    this.contLvl = lvl; this.contSeed = String(seed || ''); this.saveProgress();
     document.getElementById('clear-modal').style.display = 'none';
     document.getElementById('fail-modal').style.display = 'none';
     document.getElementById('killcam-banner').style.display = 'none';
@@ -9727,25 +9870,130 @@ window.__nikitaOps = new NikitaGame();
    ========================================================================== */
 const NIKITA_VERSION = window.APP_VERSION || '?';   // set in js/boot/version.js
 document.getElementById('app-version').textContent = `v${NIKITA_VERSION}`;
+document.title = 'NIKITA // SHADOW OPS v' + NIKITA_VERSION;
 
-/* Offline copy + service worker. The version is in the worker's URL, so every release installs a fresh
-   worker and cache; the phone checks for a new sw.js on every launch (updateViaCache: 'none' + update()). */
+const PWA = { prefix: 'nikita-', reloadOnSwap: false, mode: null, target: null, failed: 0, hideTimer: 0 };
+const $nk = (id) => document.getElementById(id);
+
+/* In-app confirm dialog (window.confirm is ugly or blocked in installed apps). Resolves true / false; CANCEL has the focus. */
+function nkConfirm(title, text, okLabel) {
+  return new Promise((resolve) => {
+    const box = $nk('nk-confirm'), ok = $nk('nk-confirm-ok'), cancel = $nk('nk-confirm-cancel');
+    $nk('nk-confirm-title').textContent = title;
+    $nk('nk-confirm-text').textContent = text;
+    ok.textContent = okLabel || 'OK';
+    box.style.display = 'flex';
+    const done = (v) => { box.style.display = 'none'; ok.onclick = cancel.onclick = null; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); } };
+    document.addEventListener('keydown', onKey, true);
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    cancel.focus();
+  });
+}
+
+/* Progress bar. pct = 0..100, or null to hide. Updates by the player are a modal over the whole app;
+   the first download (offline readiness) is a small non-blocking strip. */
+function formatBytes(n) { return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+function setProgress(pct, text) {
+  clearTimeout(PWA.hideTimer);
+  const modal = $nk('nk-progress'), strip = $nk('nk-strip');
+  if (pct === null) { modal.style.display = 'none'; strip.style.display = 'none'; PWA.mode = null; return; }
+  const box = PWA.mode === 'strip' ? strip : modal;
+  box.style.display = PWA.mode === 'strip' ? 'block' : 'flex';
+  box.querySelector('.pbar i').style.width = pct + '%';
+  box.querySelector('.pbar').setAttribute('aria-valuenow', String(pct));
+  (PWA.mode === 'strip' ? $nk('nk-strip-text') : $nk('nk-progress-text')).textContent = text || '';
+  if (PWA.mode !== 'strip') { $nk('nk-progress-retry').style.display = 'none'; $nk('nk-progress-close').style.display = 'none'; }
+}
+function progressFailed(text) {            // keep the old version running, offer Retry
+  if (PWA.mode !== 'modal') { setProgress(null); return; }
+  $nk('nk-progress-text').textContent = text;
+  const r = $nk('nk-progress-retry'), c = $nk('nk-progress-close');
+  r.style.display = c.style.display = '';
+  r.onclick = () => installVersion(PWA.target);
+  c.onclick = () => setProgress(null);
+}
+
+/* Offline copy + service worker. The version is in the worker's URL, so every release installs a fresh worker
+   and cache. A worker for the version this page already runs swaps in silently; a newer one waits for UPDATE NOW. */
+function workerVersion(w) { try { return new URL(w.scriptURL).searchParams.get('v'); } catch (_) { return null; } }
+function watchWorker(w) {
+  const check = () => { if (w.state === 'installed' && navigator.serviceWorker.controller) onUpdateReady(w); };
+  w.addEventListener('statechange', check);
+  check();
+}
+function onUpdateReady(w) {
+  if (workerVersion(w) === NIKITA_VERSION) { w.postMessage('skipWaiting'); return; }   // this page is already the new version: no reload
+  whenOnMenu(() => showUpdateBanner(workerVersion(w), () => { PWA.reloadOnSwap = true; setProgress(100, 'Installing...'); w.postMessage('skipWaiting'); }));
+}
+function whenOnMenu(fn) {                  // never interrupt a flight: wait until the title screen is showing
+  const g = window.__nikitaOps;
+  if (!g || g.state === 'BRIEFING') fn(); else setTimeout(() => whenOnMenu(fn), 3000);
+}
+function showUpdateBanner(ver, onTap) {
+  if ($nk('nk-update')) return;
+  const bar = document.createElement('button');
+  bar.id = 'nk-update';
+  bar.textContent = 'NEW VERSION ' + (ver || '') + ' — TAP TO UPDATE';
+  bar.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:99999;padding:10px 16px;font:bold 12px monospace;letter-spacing:.08em;background:#00ff88;color:#02120a;border:0;border-radius:6px;box-shadow:0 0 14px rgba(0,255,136,.6)';
+  bar.addEventListener('click', () => { bar.remove(); onTap(); });
+  document.body.appendChild(bar);
+}
+// Hard fallback when no service worker is available: wipe caches and load the new copy.
+async function hardReload(ver) {
+  try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map((g) => g.unregister())); } catch (_) {}
+  try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (_) {}
+  location.replace(location.pathname + '?u=' + encodeURIComponent(ver));
+}
+/* Install a specific release from this page: register its worker, show the byte progress while every file
+   downloads, then switch to it (the page reloads once it has taken over). */
+async function installVersion(v) {
+  PWA.target = v; PWA.failed = 0; PWA.mode = 'modal'; PWA.reloadOnSwap = true;
+  setProgress(0, 'Updating to v' + v + '... 0%');
+  if (!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)) { hardReload(v); return; }
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js?v=' + encodeURIComponent(v), { updateViaCache: 'none' });
+    const w = reg.installing || reg.waiting;
+    if (!w) { hardReload(v); return; }
+    const go = () => { setProgress(100, 'Installing...'); w.postMessage('skipWaiting'); };   // `controllerchange` then reloads
+    w.addEventListener('statechange', () => {
+      if (w.state === 'installed') { if (PWA.failed) progressFailed('Some files could not be downloaded. Check your connection and retry.'); else go(); }
+      if (w.state === 'redundant') progressFailed(navigator.onLine ? 'The update could not be installed. Please retry.' : 'You are offline. Connect to the internet and retry.');
+    });
+    if (w.state === 'installed') go();
+  } catch (e) { progressFailed('Could not start the update. Check your connection and retry.'); }
+}
+
 function refreshOfflineCache() {
-  const CACHE = 'nikita-' + NIKITA_VERSION;
+  const CACHE = PWA.prefix + NIKITA_VERSION;
   try {
     if (window.caches) {
       // a new release: drop older caches and re-download the app's own files into the current one
-      caches.keys().then((keys) => Promise.all(keys.filter((k) => k.indexOf('nikita-') === 0 && k !== CACHE).map((k) => caches.delete(k)))).catch(() => {});
-      caches.open(CACHE).then((c) => {
-        (self.APP_FILES || []).filter((u) => u.indexOf('vendor/') !== 0).forEach((u) => {
-          fetch(u, { cache: 'reload' }).then((r) => { if (r.ok) c.put(u, r); }).catch(() => {});
-        });
-      }).catch(() => {});
+      caches.keys().then((keys) => Promise.all(keys.filter((k) => k.indexOf(PWA.prefix) === 0 && k !== CACHE).map((k) => caches.delete(k)))).catch(() => {});
     }
   } catch (e) {}
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    navigator.serviceWorker.addEventListener('message', (e) => {   // the worker reports BYTES downloaded
+      const d = e.data;
+      if (!d || d.type !== 'progress') return;
+      if (!PWA.mode) { if (!navigator.serviceWorker.controller) PWA.mode = 'strip'; else return; }   // silent background refresh: no UI
+      const pct = d.final ? 100 : Math.min(99, Math.floor(d.loaded / Math.max(1, d.total) * 100));
+      PWA.failed = d.failed;
+      if (PWA.mode === 'strip') {
+        setProgress(pct, (d.final ? 'Ready for offline play' : 'Downloading for offline play... ' + pct + '%') + ' (' + formatBytes(d.loaded) + ' / ' + formatBytes(d.total) + ')');
+        if (d.final) PWA.hideTimer = setTimeout(() => setProgress(null), 2500);
+      } else if (!d.final) {
+        setProgress(pct, 'Updating to v' + d.version + '... ' + pct + '% (' + formatBytes(d.loaded) + ' / ' + formatBytes(d.total) + ')');
+      }
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {   // a new worker took over: load its files (only when the player asked)
+      if (PWA.reloadOnSwap && !PWA.reloading) { PWA.reloading = true; location.reload(); }
+    });
     navigator.serviceWorker.register('sw.js?v=' + encodeURIComponent(NIKITA_VERSION), { updateViaCache: 'none' })
       .then((reg) => {
+        if (reg.waiting) watchWorker(reg.waiting);
+        reg.addEventListener('updatefound', () => { if (reg.installing) watchWorker(reg.installing); });
         reg.update().catch(() => {});
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') reg.update().catch(() => {});
@@ -9760,46 +10008,48 @@ async function fetchLatestVersion() {
   try {
     const r = await fetch('js/boot/version.js?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) return { ok: false };
-    const m = /APP_VERSION\s*=\s*'([^']+)'/.exec(await r.text());
+    const m = /APP_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(await r.text());
     if (!m) return { ok: false };
     return { ok: true, latest: m[1], newer: m[1] !== NIKITA_VERSION };
   } catch (_) { return { ok: false }; }
 }
-// Wipe the service worker and caches, then load the new copy under a fresh URL.
-async function applyUpdate(ver) {
-  try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map((g) => g.unregister())); } catch (_) {}
-  try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (_) {}
-  location.replace(location.pathname + '?u=' + encodeURIComponent(ver));
-}
-// Automatic stale-copy guard: a green banner offers the reload.
+// Silent stale-copy guard (on start and when the app comes back to the foreground, at most every 30 minutes).
+let lastUpdateCheck = 0;
 async function checkForNewVersion() {
-  if (!/^https?:$/.test(location.protocol) || !navigator.onLine || document.getElementById('nk-update')) return;
+  if (!/^https?:$/.test(location.protocol) || !navigator.onLine || $nk('nk-update')) return;
+  if (Date.now() - lastUpdateCheck < 30 * 60 * 1000) return;
+  lastUpdateCheck = Date.now();
   const v = await fetchLatestVersion();
   if (!v.ok || !v.newer) return;
-  const bar = document.createElement('button');
-  bar.id = 'nk-update';
-  bar.textContent = 'NEW VERSION ' + v.latest + ' — TAP TO RELOAD';
-  bar.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:99999;padding:10px 16px;font:bold 12px monospace;letter-spacing:.08em;background:#00ff88;color:#02120a;border:0;border-radius:6px;box-shadow:0 0 14px rgba(0,255,136,.6)';
-  bar.addEventListener('click', () => applyUpdate(v.latest));
-  document.body.appendChild(bar);
+  whenOnMenu(() => showUpdateBanner('v' + v.latest, () => installVersion(v.latest)));
 }
-// Main-screen button
+// Options-screen button
 (() => {
-  const btn = document.getElementById('btn-update'), msg = document.getElementById('update-status');
+  const btn = $nk('btn-update'), msg = $nk('update-status');
   if (!btn || !msg) return;
   let pending = null;
   const say = (t) => { msg.textContent = t; msg.style.display = 'block'; };
   btn.addEventListener('click', async () => {
-    if (pending) { btn.textContent = 'UPDATING…'; applyUpdate(pending); return; }
-    btn.textContent = 'CHECKING…';
+    if (pending) { installVersion(pending); return; }
+    btn.textContent = 'CHECKING…'; btn.disabled = true;
     const v = await fetchLatestVersion();
+    btn.disabled = false;
     if (!v.ok) { btn.textContent = 'CHECK FOR UPDATES'; say(navigator.onLine ? 'Could not reach the server. Try again in a moment.' : 'You are offline. Connect to the internet and try again.'); return; }
     if (v.newer) { pending = v.latest; btn.textContent = 'UPDATE TO v' + v.latest; say('New version v' + v.latest + ' is available (you have v' + NIKITA_VERSION + '). Tap the button to update.'); }
-    else { btn.textContent = 'CHECK FOR UPDATES'; say('You are up to date: v' + NIKITA_VERSION + '.'); }
+    else { btn.textContent = 'CHECK FOR UPDATES'; say('You have the latest version (v' + NIKITA_VERSION + ').'); }
   });
 })();
 window.addEventListener('load', () => setTimeout(checkForNewVersion, 2500));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
+
+// Offline badge + ask the browser to keep the saved game (persistent storage), after the first tap
+(() => {
+  const badge = $nk('nk-offline');
+  const sync = () => { badge.style.display = navigator.onLine ? 'none' : 'block'; };
+  window.addEventListener('online', sync); window.addEventListener('offline', sync); sync();
+  const ask = () => { try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {} };
+  window.addEventListener('pointerdown', ask, { once: true });
+})();
 
 let deferredInstallPrompt = null;
 const installBtn = document.getElementById('btn-install');

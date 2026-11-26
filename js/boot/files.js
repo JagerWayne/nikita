@@ -4,7 +4,8 @@ self.APP_FILES = [
   'manifest.webmanifest',
   'js/boot/version.js',
   'js/boot/files.js',
-  'vendor/three/three.module.js',
-  'vendor/three/three.core.js',
+  'js/boot/sizes.js',
+  'vendor/three-0.187.0/three.module.js',
+  'vendor/three-0.187.0/three.core.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'
 ];
