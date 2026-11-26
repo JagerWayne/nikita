@@ -1078,7 +1078,8 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 }
 #tbtn-lock     { --col: 0; --row: 0; }
 #tbtn-gun      { --col: 1; --row: 0; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
-#tbtn-detonate { --col: 0; --row: 1; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; font-size: 9px; }
+#tbtn-detonate { --col: 0; --row: 1; font-size: 9px; white-space: pre-line; border-color: rgba(255, 170, 0, 0.9); color: #ffaa00; }
+#tbtn-detonate.det { border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
 #tbtn-decoy    { --col: 1; --row: 1; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; font-size: 9px; }
 #tbtn-land     { --col: 0; --row: 2; white-space: pre-line; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
 #tbtn-land.armed { background: rgba(0, 229, 255, 0.3); animation: landBlink 0.8s steps(2) infinite; }
@@ -1086,8 +1087,12 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 @media (max-height: 400px) { #touch-actions { --ab: 56px; --gap: 6px; } }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
+  background: rgba(3, 16, 12, 0.84);
+}
+#tbtn-detonate.det, #tbtn-detonate.det.pressed {
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
 }
+#tbtn-detonate.pressed:not(.det) { background: rgba(255, 170, 0, 0.3); }
 
 /* Floating stick: idle graphic sits low-left (was ~70px too high) */
 #joy-gimbal { transform: translate(-50%, 50%); }
@@ -1251,7 +1256,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <button class="touch-act-btn" id="tbtn-land" aria-label="Land or lift off">LAND</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
-    <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
+    <button class="touch-act-btn" id="tbtn-detonate" aria-label="Tap to switch between proximity fuze and hold-to-detonate">PROX<br/>FUZE</button>
   </div>
 </div>
 
@@ -2680,6 +2685,7 @@ class NikitaGame {
     this.blastMult = 1;
     this.gunAmmo = GUN_CAP_MIN;
     this.gunHeld = false;
+    this.fuzeMode = 'prox';      // proximity fuze armed by default; the DET button toggles hold-to-detonate
     this.gunCool = 0;
     this.gunNoiseT = 0;
     this._gunMsgT = 0;
@@ -7417,7 +7423,7 @@ class NikitaGame {
           return;
         }
         // proximity fuze: close enough to a primary target (and not behind a wall) -> burst automatically
-        if (tDist < FUZE_RANGE && m.drop <= 0 && this.los3(_v3.x, _v3.y, _v3.z, t.pos.x, t.pos.y, t.pos.z)) {
+        if (this.fuzeMode !== 'det' && tDist < FUZE_RANGE && m.drop <= 0 && this.los3(_v3.x, _v3.y, _v3.z, t.pos.x, t.pos.y, t.pos.z)) {
           m.pos.copy(_v3);
           this._proxBurst = true;
           this.detonateMissile(_v3, `PROXIMITY FUZE: ${t.name}`, t, null);
@@ -9163,7 +9169,13 @@ class NikitaGame {
 
 
     const btnDet = document.getElementById('tbtn-detonate');
-    const DET_HOLD_MS = 300;
+    const DET_HOLD_MS = 400;
+    const showDetMode = () => {
+      const prox = this.fuzeMode !== 'det';
+      btnDet.classList.toggle('det', !prox);
+      this.cText(btnDet, prox ? 'PROX\nFUZE' : 'HOLD\nDETONATE');
+    };
+    this.showDetMode = showDetMode; showDetMode();
     let detPid = null, detStart = 0, detRaf = 0;
     const setHold = (v) => btnDet.style.setProperty('--hold', v.toFixed(3));
     const stopDet = () => {
@@ -9175,6 +9187,7 @@ class NikitaGame {
     const tickDet = () => {
       if (detPid === null) return;
       if (this.paused) { stopDet(); return; }
+      if (this.fuzeMode !== 'det') return;
       const p = Math.min(1, (performance.now() - detStart) / DET_HOLD_MS);
       setHold(p);
       if (p >= 1) {
@@ -9203,7 +9216,13 @@ class NikitaGame {
       if (detPid !== null && (!e || e.pointerId === detPid)) {
         const held = performance.now() - detStart;
         stopDet();
-        if (held < DET_HOLD_MS && this.state === 'PLAYING') this.pushFeed('HOLD DETONATE TO FIRE WARHEAD', 'amber');
+        if (held < DET_HOLD_MS) {
+          // a tap switches between proximity fuze and hold-to-detonate
+          this.fuzeMode = this.fuzeMode === 'det' ? 'prox' : 'det';
+          showDetMode();
+          this.vibrate(15);
+          this.pushFeed(this.fuzeMode === 'det' ? 'DETONATE MODE — HOLD 0.4 s TO FIRE WARHEAD' : 'PROXIMITY FUZE ARMED', this.fuzeMode === 'det' ? 'red' : 'amber');
+        }
       }
     };
     btnDet.addEventListener('pointerup', endDet);
