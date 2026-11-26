@@ -106,12 +106,24 @@ importScripts('./js/boot/files.js');
 const PRECACHE = ['./'].concat(self.APP_FILES || []);
 
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE)
-      // fresh copies (skip the HTTP cache), one by one, so one missing file can't block the install
-      .then(cache => Promise.all(PRECACHE.map(url => cache.add(new Request(url, { cache: 'reload' })).catch(() => {}))))
-      // NOTE: no skipWaiting() here, see "update flow" below
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    const total = PRECACHE.length;
+    let done = 0, failed = 0;
+    const report = async (final) => {                         // tell every open page how far the download is
+      const pages = await self.clients.matchAll({ includeUncontrolled: true });
+      pages.forEach(p => p.postMessage({ type: 'progress', version: VERSION, done, total, failed, final: !!final }));
+    };
+    await report();
+    // fresh copies (skip the HTTP cache), in parallel; one missing file must not block the install
+    await Promise.all(PRECACHE.map(url =>
+      cache.add(new Request(url, { cache: 'reload' }))
+        .catch(() => { failed++; })
+        .then(() => { done++; return report(); })
+    ));
+    await report(true);
+    // NOTE: no skipWaiting() here, see "update flow" below
+  })());
 });
 
 self.addEventListener('activate', event => {
@@ -204,8 +216,42 @@ function onUpdateReady(worker) {            // a newer version is downloaded and
   PWA.waiting = worker;
   showUpdateBanner();                       // small non-blocking bar: "New version ready" [Update now] [Later]
 }
-function applyUpdate() { if (PWA.waiting) PWA.waiting.postMessage('skipWaiting'); else location.reload(); }
+function applyUpdate() {
+  if (PWA.waiting) { setProgress(100, 'Installing...'); PWA.waiting.postMessage('skipWaiting'); }   // files are already downloaded
+  else location.reload();
+}
+
+/* ---- progress bar: the new worker reports how many files it has downloaded ---- */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data;
+    if (!d || d.type !== 'progress') return;
+    const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
+    setProgress(pct, 'Updating to v' + d.version + '... ' + pct + '% (' + d.done + '/' + d.total + ' files)');
+    if (d.final && d.failed) setUpdateStatus(d.failed + ' file(s) could not be downloaded. Check your connection and try again.');
+  });
+}
+/* setProgress(pct, text): shows/updates the bar (see "Progress bar UI" below); hides it when pct is null. */
+
+/* Install a specific release from the current page: register its worker, watch the download, then switch to it. */
+async function installVersion(v) {
+  setProgress(0, 'Updating to v' + v + '... 0%');
+  if (!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)) { location.reload(); return; }
+  const reg = await navigator.serviceWorker.register('sw.js?v=' + encodeURIComponent(v), { updateViaCache: 'none' });
+  const w = reg.installing || reg.waiting;
+  if (!w) { location.reload(); return; }
+  const go = () => { setProgress(100, 'Installing...'); w.postMessage('skipWaiting'); };   // then `controllerchange` reloads
+  if (w.state === 'installed') go();
+  else w.addEventListener('statechange', () => { if (w.state === 'installed') go(); if (w.state === 'redundant') setProgress(null); });
+}
 ```
+
+### Progress bar UI (required, shown for every update)
+- A bar with a **percentage and a file count** ("Updating to v1.3... 42% (20/48 files)") that fills from 0 to 100%. Use a `<progress>`-style element or a div with `width: X%` and `role="progressbar"` + `aria-valuenow`; animate smoothly; make it large enough to read on a phone (>= 12 px tall).
+- Show it in a modal layer over the whole app (not only inside Settings) so it is visible whether the update was started from the banner, the Check for updates button or a silent check. Block input during the final "Installing..." step; keep a **Cancel** only before the download starts.
+- It reflects **every file in `APP_FILES`** (the count comes from the worker), so 100% means everything is cached and the app can run fully offline.
+- On finish: show 100% for a moment, then reload into the new version. On failure (`failed > 0`, offline, worker `redundant`): hide the bar, keep the old version running, show the error and a **Retry** button. Never reload into a half-downloaded version.
+- Also use the same bar on the very first visit ("Downloading for offline play... 63%") so the player knows when offline mode is ready, but do not block the app then; show it as a small non-blocking strip.
 
 ### Check for updates (button)
 Because the version lives in the worker's URL, the *only* reliable way to see if a newer release exists is to ask the server for the latest `js/boot/version.js` (bypassing every cache) and compare it with the running `APP_VERSION`. Do exactly that, as well as `reg.update()`:
@@ -219,12 +265,10 @@ async function checkForUpdates() {
     const latest = m && m[1];
     if (!latest) throw new Error('no version');
     if (latest === window.APP_VERSION) { setUpdateStatus('You have the latest version (v' + window.APP_VERSION + ').'); return; }
-    setUpdateStatus('Version v' + latest + ' is available. Updating...');
-    // the page still runs the old worker URL: re-register so the new sw.js?v=<latest> installs, then take over
-    const reg = await navigator.serviceWorker.getRegistration();
-    if (reg) await reg.update().catch(() => {});
-    // Simplest reliable path: reload. The fresh index.html (network-first) loads the new version.js, which registers the new worker.
-    location.reload();
+    setUpdateStatus('Version v' + latest + ' is available.');
+    // The worker URL contains the version, so reg.update() alone never finds a new release.
+    // Register sw.js?v=<latest> from here: it downloads every file (progress bar), then takes over and the page reloads.
+    await installVersion(latest);
   } catch (e) { setUpdateStatus('Could not check for updates. Try again later.'); }
 }
 ```
@@ -236,7 +280,7 @@ async function checkForUpdates() {
 ## 8. Version display + Settings/About panel
 Add (or extend) a Settings / About panel reachable from the main menu, containing:
 - **Version:** clearly visible text, e.g. `Version 1.0`, always read from `window.APP_VERSION` (never hard-coded a second time). Also show a small `v1.0` in a corner of the title/menu screen. Optionally append a "Running offline copy" or "Installed app" tag (`display-mode: standalone`).
-- **Check for updates** button (section 7) with its status line underneath.
+- **Check for updates** button (section 7) with its status line underneath; tapping "Update now" shows the percentage progress bar (section 7).
 - **Install app** button (section 10), hidden unless installable; iOS hint if applicable.
 - **Delete save data** (section 9), if the app saves anything.
 - Make buttons at least 44x44 px and legible on phones; respect the safe-area insets.
@@ -302,6 +346,7 @@ Use the pre-installed Playwright + Chromium and a local static server (`python3 
 - **Service worker:** `sw.js?v=<version>` activates; Cache Storage has exactly one `<prefix><version>` cache holding every file in `APP_FILES`.
 - **Offline test:** load once, go offline (`context.setOffline(true)`), reload: the app starts and plays.
 - **Update test:** bump the version -> reload -> new worker waits, banner appears, "Update now" activates it; old cache deleted, only the new one remains; the UI shows the new version.
+- **Progress bar:** during an update (and the first-visit download) the bar goes 0 -> 100% monotonically, the file count matches `APP_FILES.length` (+1 for `./`), it is visible on a phone-size viewport (390x844), and an offline/failed download (block one file with `page.route`) hides the bar, shows Retry and does not reload. Screenshot it mid-way (throttle the network or delay responses so the intermediate state can be captured).
 - **Check for updates button:** shows "latest" when equal, "available" when the server version differs (simulate by changing `version.js`), and "offline" when offline.
 - **Version display:** the Settings/About text and the corner label equal `APP_VERSION`.
 - **Delete save:** create a save, press Delete -> Cancel keeps it, Delete wipes only the app's keys (add a foreign key first to prove it survives), the app resets cleanly, and offline still works afterwards.
