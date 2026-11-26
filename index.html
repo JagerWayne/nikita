@@ -1064,20 +1064,26 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 
 /* Right-thumb action arc (container ignores touches so gaps still aim) */
 #touch-actions {
+  --ab: 60px; --gap: 8px;
   position: absolute; right: calc(var(--safe-r) + 92px); bottom: var(--safe-b);
-  width: 150px; height: 180px; display: block; grid-template-columns: none; grid-template-rows: none;
+  width: calc(var(--ab) * 2 + var(--gap)); height: calc(var(--ab) * 3 + var(--gap) * 2);
+  display: block; grid-template-columns: none; grid-template-rows: none;
   pointer-events: none; opacity: var(--btn-opacity);
   transform: scale(var(--btn-scale)); transform-origin: bottom right;
 }
-#touch-actions .touch-act-btn { position: absolute; pointer-events: auto; }
-#tbtn-lock    { width: 84px; height: 84px; right: 0;     bottom: 0;     font-size: 12px; }
-#tbtn-detonate { width: 76px; height: 76px; right: 4px;  bottom: 94px;  font-size: 10px; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
-#tbtn-cam     { width: 48px; height: 48px; right: 96px;  bottom: 6px;   font-size: 8px; }
-#tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
-#tbtn-gun     { width: 66px; height: 66px; right: 158px; bottom: 6px;   font-size: 10px; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
-#tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
-#tbtn-land    { width: 60px; height: 60px; right: 162px; bottom: 80px; font-size: 10px; white-space: pre-line; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
+/* two columns by three rows, nearest the thumb at the bottom right; nothing reaches into the screen centre */
+#touch-actions .touch-act-btn {
+  position: absolute; pointer-events: auto; width: var(--ab); height: var(--ab); font-size: 10px;
+  right: calc(var(--col) * (var(--ab) + var(--gap))); bottom: calc(var(--row) * (var(--ab) + var(--gap)));
+}
+#tbtn-lock     { --col: 0; --row: 0; }
+#tbtn-gun      { --col: 1; --row: 0; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
+#tbtn-detonate { --col: 0; --row: 1; border-color: rgba(255, 51, 68, 0.9); color: #ff6677; font-size: 9px; }
+#tbtn-decoy    { --col: 1; --row: 1; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; font-size: 9px; }
+#tbtn-land     { --col: 0; --row: 2; white-space: pre-line; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
 #tbtn-land.armed { background: rgba(0, 229, 255, 0.3); animation: landBlink 0.8s steps(2) infinite; }
+#tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
+@media (max-height: 400px) { #touch-actions { --ab: 56px; --gap: 6px; } }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1091,13 +1097,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 body.lefty #left-flight-zone { left: 50%; }
 body.lefty #right-aim-zone { right: auto; left: 0; }
 body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 92px); transform-origin: bottom left; }
-body.lefty #touch-actions .touch-act-btn { right: auto; }
-body.lefty #tbtn-lock { left: 0; }
-body.lefty #tbtn-cam { left: 96px; }
-body.lefty #tbtn-decoy { left: 92px; }
-body.lefty #tbtn-gun { left: 158px; }
-body.lefty #tbtn-land { left: 162px; }
-body.lefty #tbtn-detonate { left: 4px; }
+body.lefty #touch-actions .touch-act-btn { right: auto; left: calc(var(--col) * (var(--ab) + var(--gap))); }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
 /* Low-spec mode: drop the expensive full-screen effects */
@@ -1608,6 +1608,7 @@ const TAKEOFF_HEIGHT = 1.7;            // hover height reached before pulling aw
 const LAND_ARM_SPEED = 8.0;            // while a landing is armed the rocket eases down to this speed
 const LAND_ARM_TIME = 14;              // an armed landing request lapses after this many seconds
 const PROBE_RANGE = 12;               // collision markers read walls, floor and roof out to this distance
+const FUZE_RANGE = 5.0;                // proximity fuze: the warhead goes off this close (centre to centre) to a primary target with a clear line
 const LAND_LEAN = 0.34;                // a landed rocket settles leaning onto one fin (~7 deg camera tilt)
 // ---- ROCKET GUN ----
 const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
@@ -6661,7 +6662,7 @@ class NikitaGame {
         this.audio.playTargetChime();
         this.pushFeed(`PRIMARY TARGET DESTROYED: ${t.name}`, 'amber');
         this.rewardKill('target', this.targets, (x) => !x.active, true);
-        if (t === directTarget) { this.awardRockets(REWARD_BONUS.directHit, 'DIRECT HIT', 'bonus'); this.awardPoints(POINTS_BONUS.directHit, 'DIRECT HIT', false); }
+        if (t === directTarget && !this._proxBurst) { this.awardRockets(REWARD_BONUS.directHit, 'DIRECT HIT', 'bonus'); this.awardPoints(POINTS_BONUS.directHit, 'DIRECT HIT', false); }
       }
     }
 
@@ -7409,9 +7410,18 @@ class NikitaGame {
 
       for (const t of this.targets) {
         if (!t.active) continue;
-        if (_v3.distanceTo(t.pos) < t.radius + MISSILE_RADIUS) {
+        const tDist = _v3.distanceTo(t.pos);
+        if (tDist < t.radius + MISSILE_RADIUS) {
           m.pos.copy(_v3);
           this.detonateMissile(_v3, `DIRECT HIT: ${t.name}`, t, null);
+          return;
+        }
+        // proximity fuze: close enough to a primary target (and not behind a wall) -> burst automatically
+        if (tDist < FUZE_RANGE && m.drop <= 0 && this.los3(_v3.x, _v3.y, _v3.z, t.pos.x, t.pos.y, t.pos.z)) {
+          m.pos.copy(_v3);
+          this._proxBurst = true;
+          this.detonateMissile(_v3, `PROXIMITY FUZE: ${t.name}`, t, null);
+          this._proxBurst = false;
           return;
         }
       }

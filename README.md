@@ -39,6 +39,8 @@ Installed phones pick up the new version on the next launch. If an install ever 
 
 ## Collision markers and blast danger (v2.11)
 
+- **Proximity fuze (v2.12).** The warhead bursts by itself when it comes within 5 units of a primary target with a clear line to it, so near misses count. It pays the normal kill points but not the DIRECT HIT bonus (a true impact still does). Sentries, turrets and barrels are not fuzed.
+- **Button layout (v2.12).** The action buttons sit in a tidy two-column block beside the throttle lever (GUN and LOCK on the bottom row, DECOY and DETONATE above, LAND on top) and no longer reach into the middle of the screen.
 - **Collision markers.** Four markers around the seeker ring read the gap between the hull and the wall on the left, the wall on the right, the roof above and the floor below, out to 12 m: green over 5.5 m, amber under that, red under 2.5 m. Inside a shaft, up and down read the shaft's own slab and lintel. Markers are hidden while nothing is in range.
 - **Blast radius kills Nikita.** Every explosion whose radius reaches the rocket, with a clear line to it, sets off the warhead: fuel barrels (including chains and barrels shot by the gun), delayed blasts and so on. Walls between the blast and the rocket still protect it. This includes a landed rocket parked near a barrel.
 
