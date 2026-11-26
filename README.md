@@ -19,7 +19,7 @@ The game is a PWA. Open the Pages link, then:
 
 It then launches full-screen from the home screen and works offline after the first load. Every launch checks for a new version and updates itself automatically.
 
-**Stale copies (v2.14.1):** if a phone is showing an older copy, a green NEW VERSION banner appears at the top a few seconds after the page loads; tap it to wipe the cache and reload. The menu title shows the version in use.
+**Updates (v2.14.1–2):** the main screen has a CHECK FOR UPDATES button (it reports whether you are on the latest version and turns into UPDATE TO vX when a newer one exists). If a phone is showing an older copy, a green NEW VERSION banner appears at the top a few seconds after the page loads; tap it to wipe the cache and reload. The menu title shows the version in use.
 
 **Releasing an update:**
 1. Change the files.
@@ -32,7 +32,7 @@ Installed phones pick up the new version on the next launch. If an install ever 
 ## Landing (v2.9–2.11)
 
 - **LAND button (v2.11, VTOL since v2.14).** Press LAND (G on a keyboard) and the rocket brakes to a hover, levels its nose and settles straight down onto the floor like a VTOL, then lands by itself. Press the button again to cancel; a landing also lapses after 24 s. Ramps and the lift shaft cannot be landed on (the landing cancels). A slow, gentle touch without a landing request just skims the floor without damage.
-- **Landing indicator.** Under the flight panel: ▼ LANDING — BRAKING, ▼ LANDING — DESCENDING with your height, then ▣ LANDED · PRESS LIFT OFF. There is no "land available" prompt any more.
+- **No landing banner.** The LAND button itself shows the state: LAND, CANCEL while a landing is in progress, LIFT OFF once down and ABORT during lift-off. The feed still reports touchdown and cancellations.
 - **Shafts (v2.11).** A shaft's slab and lintel now count as floor and roof once the rocket is inside the opening, so you can land in a shaft the same way. Take-off inside a shaft rises only as far as the roof allows and keeps the nose level.
 - **On the ground.** The engine idles and keeps burning fuel (half the cruise burn; the EFF meter reads IDLE). You can turn on the spot and tilt the nose up to aim, and the gun still fires, so a landed rocket works as a quiet sniper post. An empty tank still self-destructs.
 - **Touchdown (v2.10).** The rocket hops once or twice, dips its nose and then leans over onto one fin (the view tilts about 7 degrees). A harder touchdown shakes the view more.

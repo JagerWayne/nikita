@@ -1374,10 +1374,12 @@ window.addEventListener('unhandledrejection', function (e) {
     <div class="btn-row center" style="margin-top:12px;">
       <button class="tac-btn amber" id="btn-upgrades" style="padding:6px 14px; font-size:12px;">UPGRADES</button>
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
+      <button class="tac-btn amber" id="btn-update" style="padding:6px 14px; font-size:12px;">CHECK FOR UPDATES</button>
       <button class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVE</button>
       <button class="tac-btn danger" id="btn-exit" style="padding:6px 14px; font-size:12px;">EXIT</button>
     </div>
     <p class="ios-hint" id="install-help" style="display:none; margin:8px 0 0;"></p>
+    <p class="ios-hint" id="update-status" style="display:none; margin:8px 0 0;"></p>
   </div>
 </div>
 
@@ -9526,19 +9528,13 @@ class NikitaGame {
     const el = this._landEl || (this._landEl = document.getElementById('hud-land'));
     if (!el) return;
     const btn = this._landBtn || (this._landBtn = document.getElementById('tbtn-land'));
-    let txt = '', cls = '', lbl = 'LAND', armed = false;
+    // no on-screen banner any more: the LAND button itself shows the state (LAND / CANCEL / LIFT OFF / ABORT)
+    const txt = '', cls = '';
+    let lbl = 'LAND', armed = false;
     if (m.active && this.state === 'PLAYING') {
-      if (m.landed && m.takeoffT >= 0) { txt = '▲ LIFTING OFF'; cls = 'down'; lbl = 'ABORT'; }
-      else if (m.landed) { txt = '▣ LANDED · PRESS LIFT OFF'; cls = 'down'; lbl = 'LIFT\nOFF'; }
-      else if (m.drop <= 0 && !m.flipping && m.fuel > 0) {
-        this.localSurf(m.pos.x, m.pos.y, m.pos.z);
-        const alt = m.pos.y - MISSILE_RADIUS - this._sf;
-        if (m.landReq) {
-          armed = true; lbl = 'CANCEL';
-          if (m.currentSpeed > 2) { txt = '▼ LANDING — BRAKING'; cls = 'ok'; }
-          else { txt = `▼ LANDING — DESCENDING  ${alt.toFixed(1)}m`; cls = 'ok'; }
-        }
-      }
+      if (m.landed && m.takeoffT >= 0) lbl = 'ABORT';
+      else if (m.landed) lbl = 'LIFT\nOFF';
+      else if (m.landReq && m.drop <= 0 && !m.flipping && m.fuel > 0) { armed = true; lbl = 'CANCEL'; }
     }
     this.cText(el, txt);
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
@@ -9700,26 +9696,49 @@ function refreshOfflineCache() {
 }
 window.addEventListener('load', () => setTimeout(refreshOfflineCache, 1500));
 
-// Stale-copy guard: ask the server which version is current (cache-busted); if this page is older, offer a reload.
-async function checkForNewVersion() {
-  if (!/^https?:$/.test(location.protocol) || !navigator.onLine) return;
+// Update check: ask the server which version is current (cache-busted). Returns { ok, latest, newer }.
+async function fetchLatestVersion() {
   try {
     const r = await fetch('js/boot/version.js?t=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) return;
+    if (!r.ok) return { ok: false };
     const m = /APP_VERSION\s*=\s*'([^']+)'/.exec(await r.text());
-    if (!m || m[1] === NIKITA_VERSION || document.getElementById('nk-update')) return;
-    const bar = document.createElement('button');
-    bar.id = 'nk-update';
-    bar.textContent = 'NEW VERSION ' + m[1] + ' — TAP TO RELOAD';
-    bar.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:99999;padding:10px 16px;font:bold 12px monospace;letter-spacing:.08em;background:#00ff88;color:#02120a;border:0;border-radius:6px;box-shadow:0 0 14px rgba(0,255,136,.6)';
-    bar.addEventListener('click', async () => {
-      try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map((g) => g.unregister())); } catch (_) {}
-      try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (_) {}
-      location.replace(location.pathname + '?u=' + encodeURIComponent(m[1]));
-    });
-    document.body.appendChild(bar);
-  } catch (_) {}
+    if (!m) return { ok: false };
+    return { ok: true, latest: m[1], newer: m[1] !== NIKITA_VERSION };
+  } catch (_) { return { ok: false }; }
 }
+// Wipe the service worker and caches, then load the new copy under a fresh URL.
+async function applyUpdate(ver) {
+  try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map((g) => g.unregister())); } catch (_) {}
+  try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (_) {}
+  location.replace(location.pathname + '?u=' + encodeURIComponent(ver));
+}
+// Automatic stale-copy guard: a green banner offers the reload.
+async function checkForNewVersion() {
+  if (!/^https?:$/.test(location.protocol) || !navigator.onLine || document.getElementById('nk-update')) return;
+  const v = await fetchLatestVersion();
+  if (!v.ok || !v.newer) return;
+  const bar = document.createElement('button');
+  bar.id = 'nk-update';
+  bar.textContent = 'NEW VERSION ' + v.latest + ' — TAP TO RELOAD';
+  bar.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:99999;padding:10px 16px;font:bold 12px monospace;letter-spacing:.08em;background:#00ff88;color:#02120a;border:0;border-radius:6px;box-shadow:0 0 14px rgba(0,255,136,.6)';
+  bar.addEventListener('click', () => applyUpdate(v.latest));
+  document.body.appendChild(bar);
+}
+// Main-screen button
+(() => {
+  const btn = document.getElementById('btn-update'), msg = document.getElementById('update-status');
+  if (!btn || !msg) return;
+  let pending = null;
+  const say = (t) => { msg.textContent = t; msg.style.display = 'block'; };
+  btn.addEventListener('click', async () => {
+    if (pending) { btn.textContent = 'UPDATING…'; applyUpdate(pending); return; }
+    btn.textContent = 'CHECKING…';
+    const v = await fetchLatestVersion();
+    if (!v.ok) { btn.textContent = 'CHECK FOR UPDATES'; say(navigator.onLine ? 'Could not reach the server. Try again in a moment.' : 'You are offline. Connect to the internet and try again.'); return; }
+    if (v.newer) { pending = v.latest; btn.textContent = 'UPDATE TO v' + v.latest; say('New version v' + v.latest + ' is available (you have v' + NIKITA_VERSION + '). Tap the button to update.'); }
+    else { btn.textContent = 'CHECK FOR UPDATES'; say('You are up to date: v' + NIKITA_VERSION + '.'); }
+  });
+})();
 window.addEventListener('load', () => setTimeout(checkForNewVersion, 2500));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
 
