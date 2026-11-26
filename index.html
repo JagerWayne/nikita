@@ -2732,7 +2732,8 @@ class Autopilot {
     this.stuck = { t: 0, x: 0, z: 0 }; this.cmd = null; this.why = 'ENGAGED';
     this.gun = { ignore: new Set(), aimObj: null, aimT: 0, mode: 'EXPLORE', path: null, pi: 0 };
     this.fc = null; this.tracks = new Map(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
-    this.mission = 'EXPLORE'; this.noFrontier = false; this.pickNow = null; this._decT = 0; this.gate = null;
+    this.mission = 'EXPLORE'; this.noFrontier = false; this.pickNow = null; this._decT = 0; this.gate = null; this.engT = null; this._cmdPrev = null; this.exposed = false;
+    if (this._tiKey !== this.g.lidarKey) { this.turretIgnore = new Map(); this._tiKey = this.g.lidarKey; }
     if (this._pkKey !== this.g.lidarKey) { this.pickTried = new Set(); this._pkKey = this.g.lidarKey; }
     if (this._boxKey !== this.g.lidarKey) { this.boxTried = new Set(); this._boxKey = this.g.lidarKey; }
   }
@@ -2755,7 +2756,7 @@ class Autopilot {
       for (let gx = 0; gx < G; gx++) if (Math.abs(gridToWorldX(gx) - tb.pos.x) < tb.radius + MISSILE_RADIUS + CELL_SIZE * 0.5 && gz >= 0 && gz < G) hard[gz * G + gx] = 1;
     }
     for (const b of g.bulkheads) disc(hard, b.x, b.z, 3.0, 0);
-    g.lasers.forEach((l, li) => { if (l.disabled) return; const gz = worldToGridZ(l.z); for (let x = l.xMin; x <= l.xMax + 0.01; x += CELL_SIZE * 0.5) { const gx = worldToGridX(x); if (gx >= 0 && gx < G && gz >= 0 && gz < G) gate[gz * G + gx] = li + 1; } });   // laser grids: timed gates
+    g.lasers.forEach((l, li) => { if (l.disabled) return; const gz = worldToGridZ(l.z); const blocked = this.gateBlock && (this.gateBlock.get(l) || 0) > now; for (let x = l.xMin; x <= l.xMax + 0.01; x += CELL_SIZE * 0.5) { const gx = worldToGridX(x); if (gx >= 0 && gx < G && gz >= 0 && gz < G) { if (blocked) hard[gz * G + gx] = 1; else gate[gz * G + gx] = li + 1; } } });   // laser grids: timed gates (a grid that would not open: avoided for a while)
     for (const tg of g.targets) if (tg.active) disc(hard, tg.pos.x, tg.pos.z, 0.3, Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tg.pos.y))));   // primary targets: flying into one detonates the warhead
     for (const b of g.barrels) if (b.active) disc(soft, b.pos.x, b.pos.z, 0.6, Math.min(g.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
     for (const gr of g.grates) if (gr.active) disc(soft, gr.pos.x, gr.pos.z, 0.6, 0);
@@ -2829,7 +2830,29 @@ class Autopilot {
     };
     for (const b of g.barrels) if (b.active && Math.abs(b.pos.y - t.y) < 4) check(b.pos.x, b.pos.y, b.pos.z, 1.47, b.pos.y + 2.1);
     for (const s of g.sentries) if (s.active && !s.dying && Math.abs(s.pos.y - t.y) < 4) check(s.pos.x, s.pos.y, s.pos.z, 1.2, s.pos.y + 3.0);
-    for (const tg of g.targets) if (tg.active && this.mission !== 'HUNT') check(tg.pos.x, tg.pos.y, tg.pos.z, tg.radius + 0.5, null);
+    for (const tg of g.targets) {
+      if (!tg.active || this.mission === 'HUNT') continue;
+      const dx = tg.pos.x - t.x, dz = tg.pos.z - t.z, f = dx * fx + dz * fz, s = dx * rx + dz * rz, R = tg.radius + 1.8;
+      if (f > -1 && f < 8 && Math.abs(s) < R) { slow = Math.min(slow, 2.5); nudge += (s >= 0 ? 2 : -2) * (1 - Math.abs(s) / R); }   // a primary target ahead: slow down and steer firmly round it
+    }
+    // laser planes: outside a timed gate crossing, never close in on an active beam plane (stop within 3 m when heading at it)
+    if (!this.gate) for (const l of g.lasers) {                       // only a real crossing course: the path meets the plane within 3 m, inside the span, while unsafe
+      if (l.disabled) continue;
+      const dz = t.z - l.z;
+      if (Math.sign(dz) * fz >= -0.05) continue;                        // not heading toward the plane
+      const along = Math.abs(dz) / Math.abs(fz);
+      if (along > 3) continue;
+      const xc = t.x + fx * along;
+      if (xc < l.xMin - 0.5 || xc > l.xMax + 0.5) continue;
+      const tc = along / Math.max(1, t.speed);
+      if (!this.laserSafe(l, t.time, t.time + tc + 0.5, xc, t.y)) slow = 0;
+    }
+    // primary targets: within 4.5 m and heading at one -> stop forward motion and turn away (their body is 2.1 m)
+    if (this.mission !== 'HUNT') for (const tg of g.targets) {
+      if (!tg.active) continue;
+      const dx = tg.pos.x - t.x, dz = tg.pos.z - t.z, d = Math.hypot(dx, dz), f = dx * fx + dz * fz, s = dx * rx + dz * rz;
+      if (d < 4.5 && f > 0 && Math.abs(s) < tg.radius + 0.9) { slow = 0; nudge += (s >= 0 ? 2.5 : -2.5); }   // only on a collision course
+    }
     if (climbTo > -Infinity) { const yT = Math.min(t.y + t.ceil - 0.5, climbTo); out.climb = Math.max(out.climb, Math.max(-1, Math.min(1, 1.6 * (yT - t.y)))); }
     if (slow < Infinity) out.speed = Math.min(out.speed, slow);
     if (nudge) out.yaw = Math.max(-1, Math.min(1, out.yaw + 0.6 * nudge));
@@ -2938,6 +2961,15 @@ class Autopilot {
   newPlan() {
     const t = this.t, g = this.g;
     if (this.mission === 'HUNT') { this.newHuntPlan(); return; }
+    if (this.mission === 'ENGAGE') {
+      const E = this.engT;
+      if (!E || !E.tu.active) { this.mission = 'EXPLORE'; this.engT = null; this.plan = null; return; }
+      const tp = this.planTurret(t.node);
+      if (!tp || tp.tu !== E.tu) { if (!tp) { this.turretIgnore.set(E.tu, t.time + 60); this.mission = 'EXPLORE'; this.engT = null; this.plan = null; return; } this.engT.tu = tp.tu; }
+      if (!tp.tiles.length) { this.plan = null; this.engT.atSpot = true; this.why = 'ENGAGING CIWS'; return; }
+      this.plan = { goal: tp.tiles[tp.tiles.length - 1], tiles: tp.tiles, wps: this.smooth(tp.tiles), k: 0, t0: t.time, alt0: t.y, turret: E.tu };
+      g.xroute = tp.tiles.slice(); this.why = 'TO A FIRING SPOT (CIWS)'; return;
+    }
     if (this.mission === 'PICKUP') { this.newPickupPlan(); return; }
     if (g.xgrid && t.node >= 0) { const v = g.xCellVal(t.floor, t.node % (GRID_SIZE * GRID_SIZE)); if (g.xgrid[t.node] !== v) { g.xgrid[t.node] = v; g.xgridDirty = true; } }
     if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }   // between floors / over a hole: try again shortly
@@ -2948,7 +2980,7 @@ class Autopilot {
       if (lp) {
         this.boxGoal = lp.laser; this.boxLaser = lp.laser;
         if (!lp.tiles.length) { this.boxWait = { t: 0 }; this.plan = null; this.why = 'SHOOTING A LASER SWITCH BOX'; return; }
-        this.plan = { goal: lp.goal, tiles: lp.tiles, wps: this.smooth(lp.tiles), k: 0, t0: t.time, laser: lp.laser };
+        this.plan = { goal: lp.goal, tiles: lp.tiles, wps: this.smooth(lp.tiles), k: 0, t0: t.time, alt0: t.y, laser: lp.laser };
         g.xroute = lp.tiles.slice(); this.why = 'TO A LASER SWITCH BOX'; return;
       }
       const X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, G = GRID_SIZE, i = t.node;
@@ -2962,7 +2994,7 @@ class Autopilot {
       return;
     }
     if (!p.tiles.length) { this.startScan(p.goal); return; }
-    this.plan = { goal: p.goal, tiles: p.tiles, wps: this.smooth(p.tiles), k: 0, t0: t.time };
+    this.plan = { goal: p.goal, tiles: p.tiles, wps: this.smooth(p.tiles), k: 0, t0: t.time, alt0: t.y };
     g.xroute = p.tiles.slice();
     this.why = 'ROUTE TO FRONTIER';
   }
@@ -3028,8 +3060,7 @@ class Autopilot {
     if (l.disabled || dz < -1.6) { this.gate = null; return null; }     // grid switched off, or crossed
     const yc = Math.max(t.y - t.agl + 0.9, Math.min(t.y + t.ceil - 0.9, this.gateAltitude(l)));
     const w = P.wps[Math.min(G0.wp, P.wps.length - 1)];
-    const after = P.wps[Math.min(G0.wp + 1, P.wps.length - 1)];
-    const aim = G0.phase === 'GO' ? after : w;
+    const aim = G0.phase === 'GO' ? { x: w.x, z: l.z - G0.side * 4 } : w;   // the dash goes straight across the beam line (no turning mid-crossing)
     let err = Math.atan2(-(aim.x - t.x), -(aim.z - t.z)) - t.yaw; while (err > Math.PI) err -= Math.PI * 2; while (err < -Math.PI) err += Math.PI * 2;
     const yaw = Math.max(-1, Math.min(1, 2.4 * err - 0.35 * t.yawRate)), climb = Math.max(-1, Math.min(1, 1.6 * (yc - t.y) - 0.3 * t.vSpeed));
     const a = Math.min(9, 0.5 * t.brakeMax), fanCap = t.fan ? Math.max(t.fan[2] > 3 ? 1.2 : 0, Math.sqrt(2 * a * Math.max(0, t.fanW - 1.8))) : 99;
@@ -3038,17 +3069,18 @@ class Autopilot {
     if (t.probe.r < 1.3) ys += 0.9 * (1.3 - t.probe.r) / 1.3;
     ys = Math.max(-1, Math.min(1, ys));
     if (G0.phase === 'GO') {                                               // committed speed; re-check every frame, abort while there is room to stop
-      const vNow = Math.max(1, t.speed), T = t.time + dz / vNow;
-      if (dz > 2.2 && !this.laserSafe(l, T - 0.2, T + 1.8 / Math.max(2, vNow) + 0.25, t.x, t.y)) { G0.phase = 'HOLD'; this.why = 'LASER GATE: ABORT'; return { yaw, climb, speed: 0 }; }
+      const vgo = G0.vgo || 7, lag = Math.max(0, 0.4 - (t.time - (G0.goT || t.time)));   // same model as the go decision
+      const T = t.time + dz / vgo + lag;
+      if (dz > 2.5 && !this.laserSafe(l, T - 0.25, T + 1.8 / vgo + 0.3, t.x, t.y)) { G0.phase = 'HOLD'; this.why = 'LASER GATE: ABORT'; return { yaw, climb, speed: 0 }; }
       this.why = 'LASER GATE: CROSSING'; return { yaw, climb, speed: G0.vgo || 7 };
     }
     if (dz > 3.3) { G0.phase = 'APPROACH'; this.why = 'LASER GATE: APPROACH'; return { yaw: ys, climb, speed: Math.max(0.6, Math.min(t.cruise, (dz - 3.0) * 1.5, fanCap)) }; }
     G0.phase = 'HOLD'; this.why = 'LASER GATE: WAITING FOR A GAP';
-    if (t.time - G0.t0 > 15) { this.tried.add(P.goal); this.gate = null; this.plan = null; this.replanT = 0; return { yaw: 0, climb, speed: 0 }; }
+    if (t.time - G0.t0 > 20) { (this.gateBlock || (this.gateBlock = new Map())).set(l, t.time + 30); this._hz = null; this.gate = null; this.plan = null; this.replanT = 0; this.why = 'LASER GATE: TRYING ANOTHER WAY'; return { yaw: 0, climb, speed: 0 }; }   // grid avoided for 30 s, goal kept
     if (Math.abs(t.y - yc) < 0.3 && Math.abs(err) < 0.2 && t.speed < 0.6) {
       const vgo = Math.max(3, Math.min(7, fanCap));                       // crossing speed, chosen now and then held
       const T = t.time + dz / vgo + 0.4;                                   // reaching the beam line: travel time plus the acceleration lag
-      if (this.laserSafe(l, T - 0.45, T + 1.8 / vgo + 0.45, t.x, yc)) { G0.phase = 'GO'; G0.vgo = vgo; return { yaw, climb, speed: vgo }; }
+      if (this.laserSafe(l, T - 0.45, T + 1.8 / vgo + 0.45, t.x, yc)) { G0.phase = 'GO'; G0.vgo = vgo; G0.goT = t.time; return { yaw, climb, speed: vgo }; }
     }
     return { yaw, climb, speed: 0 };
   }
@@ -3073,6 +3105,20 @@ class Autopilot {
     if (this._hazT <= 0) { this._hazT = 2; g.xHazRefresh(); }
     const wrap = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
     let out = { yaw: 0, climb: 0, speed: 0 };
+    // --- at a turret firing spot: face it, climb level with it, let fire control kill it (12 s at most)
+    if (this.mission === 'ENGAGE' && this.engT && this.engT.atSpot) {
+      const E = this.engT, tu = E.tu;
+      E.spotT = (E.spotT || 0) + dt;
+      if (!tu.active || E.spotT > 12) {
+        if (tu.active) this.turretIgnore.set(tu, t.time + 60);
+        g.pushFeed(tu.active ? 'AUTOPILOT: CIWS OUT OF REACH — MOVING ON' : 'AUTOPILOT: CIWS DESTROYED', tu.active ? 'amber' : 'cyan');
+        this.engT = null; this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this._hz = null;
+      } else {
+        const brg = wrap(Math.atan2(-(tu.pos.x - t.x), -(tu.pos.z - t.z)) - t.yaw);
+        const yT = Math.min(t.y + t.ceil - 0.6, tu.pos.y);
+        return this.fire(dt, { yaw: Math.max(-1, Math.min(1, 3 * brg - 0.35 * t.yawRate)), climb: Math.max(-1, Math.min(1, 1.6 * (yT - t.y))), speed: 0 });
+      }
+    }
     // --- at a laser switch box: face it until fire control has shot it (or 8 s)
     if (this.boxWait) {
       const L = this.boxLaser; this.boxWait.t += dt;
@@ -3096,6 +3142,17 @@ class Autopilot {
     this._decT -= dt;
     if (this._decT <= 0) { this._decT = 1; if (!(this.huntBlockT > t.time)) this.decide(); }
     if (this.mission === 'HUNT') { const ht = this.huntTerminal(); if (ht) { this.cmd = null; return ht.homing ? ht : this.fire(dt, ht); } }
+    // running out of fuel next to a primary target: the engine-out crash blast (8 m) would end the sector early. Keep clear.
+    if (this.mission !== 'HUNT' && t.burn > 0 && t.rangeSec < 8) {
+      let tg = null, td = 13;
+      for (const x of g.targets) if (x.active) { const d = Math.hypot(x.pos.x - t.x, x.pos.z - t.z); if (d < td) { td = d; tg = x; } }
+      if (tg) {
+        let err = Math.atan2(-(t.x - tg.pos.x), -(t.z - tg.pos.z)) - t.yaw; while (err > Math.PI) err -= Math.PI * 2; while (err < -Math.PI) err += Math.PI * 2;
+        const a = Math.min(9, 0.5 * t.brakeMax), v = Math.min(4, Math.max(0, Math.sqrt(2 * a * Math.max(0, (t.fanW || 30) - 1.8))));
+        this.why = 'LOW FUEL - KEEPING CLEAR OF THE TARGET'; this.cmd = null;
+        return this.fire(dt, { yaw: Math.max(-1, Math.min(1, 2.5 * err - 0.35 * t.yawRate)), climb: 0, speed: Math.abs(err) < 0.8 ? v : 0.5 });
+      }
+    }
     if (this.mission !== 'HUNT' && g.manualTargetLock) { g.manualTargetLock = false; g.homingLocked = false; }
     // --- (re)plan: no plan, every 1.5 s if the route is no longer valid, or when stuck
     this.replanT -= dt;
@@ -3105,7 +3162,7 @@ class Autopilot {
         const X = g.xgrid, haz = this.hazards().hard;
         const gi = this.plan.goal, gc = gi % (GRID_SIZE * GRID_SIZE), G = GRID_SIZE, gx = gc % G, gz = (gc / G) | 0;
         const stillFrontier = (gx > 0 && !X[gi - 1]) || (gx < G - 1 && !X[gi + 1]) || (gz > 0 && !X[gi - G]) || (gz < G - 1 && !X[gi + G]);
-        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser) valid = false;   // the goal got explored on the way: pick the next one
+        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser && !this.plan.turret) valid = false;   // the goal got explored on the way: pick the next one
         if (this.plan.pickup && !this.plan.pickup.active) valid = false;
         for (const i of this.plan.tiles) if (!this.flyable(X[i]) || (haz && haz[i])) { valid = false; break; }
       }
@@ -3119,12 +3176,18 @@ class Autopilot {
       const nx = P.k + 1 < wps.length ? wps[P.k + 1] : null;
       const passed = nx && ((t.x - w.x) * (nx.x - w.x) + (t.z - w.z) * (nx.z - w.z)) > 0 && d < 3;
       if (w.vert && Math.abs(t.y - w.alt) > 0.9) break;            // over the hole: climb / descend first
+      if (w.gate) {                                                    // a laser gate: never "reached" by being near it
+        const L = g.lasers[w.gate - 1], nxw = wps[P.k + 1];
+        if (!L || L.disabled || (nxw && Math.sign(t.z - L.z) === Math.sign(nxw.z - L.z) && Math.abs(t.z - L.z) > 1.6)) { P.k++; continue; }   // already across
+        break;                                                         // still to cross: the gate logic takes it
+      }
       if (d < 1.2 || passed) P.k++; else break;
     }
     if (P.k >= wps.length) {
       this.plan = null;
       if (P.laser) { this.boxWait = { t: 0 }; this.why = 'SHOOTING A LASER SWITCH BOX'; return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
       if (P.pickup) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.replanT = 0; return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
+      if (P.turret && this.engT) { this.engT.atSpot = true; this.why = 'ENGAGING CIWS'; return this.fire(dt, { yaw: 0, climb: 0, speed: 0 }); }
       if (P.hunt) { this.replanT = 0.5; this.why = 'HUNT: LOOKING FOR THE TARGET'; return this.fire(dt, { yaw: 0.6, climb: 0, speed: 0 }); }
       this.startScan(P.goal); return this.fire(dt, { yaw: 0, climb: 0, speed: 0 });
     }
@@ -3139,7 +3202,16 @@ class Autopilot {
     const cp = this.carrot(L), w = wps[P.k];
     const err = wrap(Math.atan2(-(cp.x - t.x), -(cp.z - t.z)) - t.yaw);
     let yaw = 2.4 * err - 0.35 * t.yawRate;
-    const altT = w.alt;
+    let altT = w.alt;
+    if (!w.vert) {                                                     // rise / sink gradually along the leg (no early climb into a lintel)
+      const pa = P.k > 0 ? wps[P.k - 1] : { x: P.x0 === undefined ? t.x : P.x0, z: P.z0 === undefined ? t.z : P.z0, alt: P.alt0 === undefined ? t.y : P.alt0 };
+      if (P.x0 === undefined) { P.x0 = t.x; P.z0 = t.z; }
+      const dTot = Math.hypot(w.x - pa.x, w.z - pa.z), dLeft = Math.hypot(w.x - t.x, w.z - t.z);
+      const fr = dTot > 0.5 ? Math.max(0, Math.min(1, 1 - dLeft / dTot)) : 1;
+      altT = pa.alt + (w.alt - pa.alt) * fr;
+    }
+    if (g.xgrid && t.node >= 0 && g.xgrid[t.node] === XV.RAMP) altT = g.autoNodeAlt(t.node);   // on a ramp: follow its slope
+    altT = Math.max(t.y - t.agl + 0.9, Math.min(t.y + t.ceil - 0.9, altT));   // always inside the room
     const climb = Math.max(-1, Math.min(1, 1.4 * (altT - t.y) - 0.25 * t.vSpeed));
     // --- speed: can we still slow to each coming waypoint's limit with our measured braking? also the free distance ahead
     const a = Math.min(9, 0.5 * t.brakeMax);
@@ -3213,11 +3285,13 @@ class Autopilot {
     const g = this.g, t = this.t;
     const active = g.targets.filter((x) => x.active);
     const huntNow = active.length && (this.noFrontier || g.scanPercent() >= 100 || t.rockets <= 6 || t.hull < 30);
-    let next = 'EXPLORE', pk = null;
+    let next = 'EXPLORE', pk = null, tp = null;
     if (huntNow) next = 'HUNT';
+    else if (this.mission === 'ENGAGE' && this.engT && this.engT.tu.active && t.time - this.engT.t0 < 25) next = 'ENGAGE';
+    else if ((tp = this.planTurret(t.node))) { next = 'ENGAGE'; this.engT = { tu: tp.tu, tiles: tp.tiles, t0: t.time }; }
     else if ((pk = this.bestPickup())) next = 'PICKUP';
     if (next !== this.mission || (next === 'PICKUP' && (!this.pickNow || this.pickNow.pick !== pk.pick))) {
-      if (next !== this.mission) g.pushFeed(next === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)' : (next === 'PICKUP' ? `AUTOPILOT: PICKING UP ${pk.pick.type}` : 'AUTOPILOT: EXPLORING'), 'cyan');
+      if (next !== this.mission) g.pushFeed(next === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)' : (next === 'PICKUP' ? `AUTOPILOT: PICKING UP ${pk.pick.type}` : (next === 'ENGAGE' ? 'AUTOPILOT: ENGAGING A CIWS TURRET' : 'AUTOPILOT: EXPLORING')), 'cyan');
       this.mission = next; this.pickNow = pk; this.plan = null; this.scan = null; this.replanT = 0;
     }
   }
@@ -3235,7 +3309,7 @@ class Autopilot {
     const tiles = this.pathTo(t.node, (i) => goals.has(i));
     if (!tiles) { this.plan = null; this.why = 'NO ROUTE TO A TARGET YET'; this.mission = 'EXPLORE'; this.noFrontier = false; this.huntBlockT = t.time + 15; return; }
     if (!tiles.length) { this.plan = null; this.why = 'AT THE TARGET'; return; }
-    this.plan = { goal: tiles[tiles.length - 1], tiles, wps: this.smooth(tiles), k: 0, t0: t.time, hunt: true };
+    this.plan = { goal: tiles[tiles.length - 1], tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, hunt: true };
     g.xroute = tiles.slice(); this.why = 'ROUTE TO A PRIMARY TARGET';
   }
 
@@ -3243,7 +3317,7 @@ class Autopilot {
     const P = this.pickNow, t = this.t;
     if (!P || !P.pick.active) { this.mission = 'EXPLORE'; this.plan = null; return; }
     if (!P.tiles.length) { this.pickTried.add(P.pick); this.mission = 'EXPLORE'; this.plan = null; return; }
-    this.plan = { goal: P.tiles[P.tiles.length - 1], tiles: P.tiles, wps: this.smooth(P.tiles), k: 0, t0: t.time, pickup: P.pick };
+    this.plan = { goal: P.tiles[P.tiles.length - 1], tiles: P.tiles, wps: this.smooth(P.tiles), k: 0, t0: t.time, alt0: t.y, pickup: P.pick };
     this.g.xroute = P.tiles.slice(); this.why = 'ROUTE TO A PICKUP';
   }
 
@@ -3276,8 +3350,99 @@ class Autopilot {
     if (p && p.tiles.length) { this.done = false; this.noFrontier = false; this.failN = 0; if (this.mission === 'HUNT') this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this.why = 'NEW FRONTIER - RESUMING'; }
   }
 
+
+  // =====================================================================================================
+  // THREATS AND EVASION. Enemy bolts are aimed at where the rocket is now (no lead), fly ~78 m/s and one hit is fatal,
+  // so the answer is never to sit still while exposed and to keep moving across the line of fire.
+  // =====================================================================================================
+  threats() {
+    const g = this.g, t = this.t, out = [];
+    const range = 26 + Math.min(14, (g.difficultyTier - 1) * 0.7);
+    if (this.knownTurrets) for (const tu of this.knownTurrets) {
+      if (!tu.active) continue;
+      const d = Math.hypot(tu.pos.x - t.x, tu.pos.y - t.y, tu.pos.z - t.z);
+      if (d < range && g.los3(tu.pos.x, tu.pos.y, tu.pos.z, t.x, t.y, t.z)) out.push({ kind: 'CIWS', obj: tu, x: tu.pos.x, y: tu.pos.y, z: tu.pos.z, d });
+    }
+    for (const s of g.sentries) {
+      if (!s.active || s.dying || !s.alerted) continue;
+      const d = Math.hypot(s.pos.x - t.x, s.pos.z - t.z);
+      if (d < 16 && g.los3(s.pos.x, s.pos.y + 1.45, s.pos.z, t.x, t.y, t.z)) out.push({ kind: 'SENTRY', obj: s, x: s.pos.x, y: s.pos.y + 1.45, z: s.pos.z, d });
+    }
+    return out;
+  }
+
+  // Applied on top of the flight commands while exposed: keep moving (min 4.5 m/s unless a wall is close or we are lined up
+  // and firing), weave the heading when flying straight at / away from a shooter, and bob the altitude (shooting: bob only).
+  evade(out, firing) {
+    const g = this.g, t = this.t, TH = this.threats();
+    this.exposed = TH.length > 0;
+    if (!this.exposed) { this._evT = 0; return out; }
+    if (!this._evMsgT || t.time - this._evMsgT > 8) { this._evMsgT = t.time; g.pushFeed(`AUTOPILOT: UNDER FIRE (${TH[0].kind}) — EVADING`, 'amber'); }
+    this._evT = (this._evT || 0) + 0.016;
+    const ph = t.time;
+    // vertical bob, inside the room's floor / ceiling margins (smaller while firing so the aim holds)
+    const room = Math.max(0, Math.min(t.agl - 0.9, t.ceil - 0.9));
+    const amp = firing ? 0.35 : 0.9;
+    if (room > 0.2) out.climb = Math.max(-1, Math.min(1, out.climb + amp * Math.min(1, room / 1.2) * Math.sin(ph * 4.4)));
+    if (firing) return out;
+    // heading weave when the nearest shooter is roughly ahead or behind (radial flight barely moves across its line of fire)
+    const th = TH.reduce((a, b) => (a.d < b.d ? a : b));
+    let brg = Math.atan2(-(th.x - t.x), -(th.z - t.z)) - t.yaw; while (brg > Math.PI) brg -= Math.PI * 2; while (brg < -Math.PI) brg += Math.PI * 2;
+    const radial = Math.abs(brg) < 0.7 || Math.abs(brg) > Math.PI - 0.7;
+    if (radial && Math.min(t.probe.l, t.probe.r) > 1.4) out.yaw = Math.max(-1, Math.min(1, out.yaw + 0.55 * Math.sin(ph * 5.6)));
+    // never hover still under fire, unless a wall is close ahead
+    const room2 = t.fanW === undefined ? 30 : t.fanW;
+    const turning = this.cmd && Math.abs(this.cmd.err) > 0.6;
+    const nearBeam = g.lasers.some((l) => !l.disabled && Math.abs(t.z - l.z) < 4 && t.x > l.xMin - 1 && t.x < l.xMax + 1);
+    if (room2 > 4 && !this.scan && !turning && !nearBeam) out.speed = Math.max(out.speed, Math.min(4.5, Math.sqrt(2 * 6 * Math.max(0, room2 - 2.5))));
+    return out;
+  }
+
+  // =====================================================================================================
+  // TURRET ENGAGEMENT. CIWS turrets out-range thermal (about 30 m against 18 m) and hang from the ceiling. The gun fires level,
+  // so they are fought from their own floor: a spot 9-15 m away with a clear line, at turret height just under the ceiling.
+  // =====================================================================================================
+  planTurret(start) {
+    const g = this.g, t = this.t, G = GRID_SIZE, GG = G * G;
+    if (!this.knownTurrets || !this.knownTurrets.size) return null;
+    if (!this.turretIgnore) this.turretIgnore = new Map();
+    let bestP = null;
+    for (const tu of this.knownTurrets) {
+      if (!tu.active || (this.turretIgnore.get(tu) || 0) > t.time) continue;
+      const tf = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tu.pos.y)));
+      const goals = new Set();
+      const cr = 4, tgx = worldToGridX(tu.pos.x), tgz = worldToGridZ(tu.pos.z);
+      for (let gz = Math.max(0, tgz - cr); gz <= Math.min(G - 1, tgz + cr); gz++) for (let gx = Math.max(0, tgx - cr); gx <= Math.min(G - 1, tgx + cr); gx++) {
+        const x = gridToWorldX(gx), z = gridToWorldZ(gz), d = Math.hypot(tu.pos.x - x, tu.pos.z - z);
+        if (d < 9 || d > 15) continue;
+        const i = tf * GG + gz * G + gx;
+        if (g.los3(x, tu.pos.y - 0.3, z, tu.pos.x, tu.pos.y, tu.pos.z)) goals.add(i);
+      }
+      if (!goals.size) continue;
+      const tiles = this.pathTo(start, (i) => goals.has(i), 30);
+      if (tiles && (!bestP || tiles.length < bestP.tiles.length)) bestP = { tu, tiles };
+    }
+    return bestP;
+  }
+
   // Fire control on top of the flight commands (step 3)
-  fire(dt, out) { return this.fireControl(dt, out); }
+  fire(dt, out) {
+    out = this.fireControl(dt, out);
+    const hold = !!(this.gate || this.boxWait || this.scan || (this.engT && this.engT.atSpot));   // holding a position on purpose: bob only
+    out = this.evade(out, !!(this.shot && this.shot.onTarget) || hold);
+    return this.smoothCmd(dt, out);
+  }
+
+  // Feel: rate-limit the stick and speed so the rocket flies smoothly instead of twitching between commands
+  smoothCmd(dt, out) {
+    if (this.gate) { this._cmdPrev = { yaw: out.yaw, climb: out.climb, speed: out.speed }; return out; }   // laser gates: exact, unsmoothed commands
+    const p = this._cmdPrev || { yaw: 0, climb: 0, speed: out.speed };
+    const lim = (a, b, r) => a + Math.max(-r * dt, Math.min(r * dt, b - a));
+    const o = { yaw: lim(p.yaw, out.yaw, 5), climb: lim(p.climb, out.climb, 4), speed: out.speed < p.speed ? out.speed : lim(p.speed, out.speed, 9) };   // braking is never delayed
+    if (out.homing) o.homing = true;
+    this._cmdPrev = o;
+    return o;
+  }
 
   // =====================================================================================================
   // STEP 3: target acquisition and fire control (bracketed contacts only: sentries, CIWS turrets, laser switch boxes)
@@ -3409,7 +3574,7 @@ class Autopilot {
       `HULL ${f0(t.hull)}  AMMO ${t.ammo}  ROCKETS ${t.rockets}  ROUTE ${t.route}`,
       `CONTACTS ${t.contacts.length} (THREATS ${t.threats}): ${c}`,
       this.active && this.shot ? `FIRE: ${this.shot.kind} ${this.shot.d.toFixed(0)}m LOCK ${this.shot.lockFrames}f LEAD ${this.shot.lead.toFixed(1)}m MISS ${this.shot.latMiss.toFixed(2)}/${this.shot.vertMiss.toFixed(2)}${this.shot.onTarget ? ' ON' : ''}${this.shot.clearShot ? '' : ' BLOCKED'}${this.shot.fire ? ' FIRING' : ''}` : 'FIRE: no target',
-      this.active ? `NEW PILOT [${this.mission}${this.noFrontier ? ' NO-FRONTIER' : ''}]: ${this.why}${this.plan ? `  GOAL ${this.tileCenter(this.plan.goal).x.toFixed(0)},${this.tileCenter(this.plan.goal).z.toFixed(0)}  TILES ${this.plan.tiles.length}  LEG ${this.plan.k + 1}/${this.plan.wps.length}` : ''}${this.cmd ? `  ERR ${Math.round(this.cmd.err * 180 / Math.PI)}deg  VDES ${this.cmd.v.toFixed(1)}  LOOK ${this.cmd.L.toFixed(1)}m` : ''}${this.scan ? '  SCANNING' : ''}` : 'NEW PILOT: off (legacy autopilot)'
+      this.active ? `NEW PILOT [${this.mission}${this.noFrontier ? ' NO-FRONTIER' : ''}${this.exposed ? ' UNDER FIRE' : ''}]: ${this.why}${this.plan ? `  GOAL ${this.tileCenter(this.plan.goal).x.toFixed(0)},${this.tileCenter(this.plan.goal).z.toFixed(0)}  TILES ${this.plan.tiles.length}  LEG ${this.plan.k + 1}/${this.plan.wps.length}` : ''}${this.cmd ? `  ERR ${Math.round(this.cmd.err * 180 / Math.PI)}deg  VDES ${this.cmd.v.toFixed(1)}  LOOK ${this.cmd.L.toFixed(1)}m` : ''}${this.scan ? '  SCANNING' : ''}` : 'NEW PILOT: off (legacy autopilot)'
     ].join('\n');
   }
 }
