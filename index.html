@@ -1076,6 +1076,8 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-decoy   { width: 58px; height: 58px; right: 92px;  bottom: 62px;  font-size: 9px; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; }
 #tbtn-gun     { width: 66px; height: 66px; right: 158px; bottom: 6px;   font-size: 10px; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
 #tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
+#tbtn-land    { width: 60px; height: 60px; right: 162px; bottom: 80px; font-size: 10px; white-space: pre-line; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
+#tbtn-land.armed { background: rgba(0, 229, 255, 0.3); animation: landBlink 0.8s steps(2) infinite; }
 #tbtn-detonate, #tbtn-detonate.pressed {
   --hold: 0;
   background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
@@ -1094,6 +1096,7 @@ body.lefty #tbtn-lock { left: 0; }
 body.lefty #tbtn-cam { left: 96px; }
 body.lefty #tbtn-decoy { left: 92px; }
 body.lefty #tbtn-gun { left: 158px; }
+body.lefty #tbtn-land { left: 162px; }
 body.lefty #tbtn-detonate { left: 4px; }
 body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
 
@@ -1245,6 +1248,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="right-aim-zone" aria-label="Right Fine Aim Zone"></div>
   <div id="touch-actions">
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
+    <button class="touch-act-btn" id="tbtn-land" aria-label="Land or lift off">LAND</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Hold to detonate warhead">HOLD<br/>DETONATE</button>
@@ -1334,8 +1338,8 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
         <div><span class="ctrl-key">DECOY</span> : Lure sentries with a noise decoy</div>
         <div><span class="ctrl-key">GUN</span> : Hold to fire the rocket gun</div>
-        <div><span class="ctrl-key">LAND</span> : Slow down and ease onto a flat floor; throttle up to lift off</div>
-        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, X</div>
+        <div><span class="ctrl-key">LAND</span> : Press LAND, then ease onto a flat floor or a shaft floor; press LIFT OFF (or raise the lever) to leave</div>
+        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, G (land), X</div>
       </div>
     </details>
 
@@ -1601,6 +1605,9 @@ const LAND_TAKEOFF = 0.14;             // raise the lever past this to lift off 
 const TAKEOFF_SPOOL = 0.45;            // seconds the engine spools up on the ground before the rocket rises
 const TAKEOFF_RISE = 0.85;             // seconds to climb off the floor and pitch up
 const TAKEOFF_HEIGHT = 1.7;            // hover height reached before pulling away
+const LAND_ARM_SPEED = 8.0;            // while a landing is armed the rocket eases down to this speed
+const LAND_ARM_TIME = 14;              // an armed landing request lapses after this many seconds
+const PROBE_RANGE = 12;               // collision markers read walls, floor and roof out to this distance
 const LAND_LEAN = 0.34;                // a landed rocket settles leaning onto one fin (~7 deg camera tilt)
 // ---- ROCKET GUN ----
 const GUN_CAP_MIN = 50;                // rounds carried with no upgrade
@@ -4314,6 +4321,64 @@ class NikitaGame {
     return (k + 1) * WALL_H;
   }
 
+  // Floor and roof under/over (x, z) for a rocket at height y. Inside a shaft's opening they are the shaft's own
+  // slab and lintel; elsewhere the facility floor/ceiling. Sets this._sf (floor y), this._sc (roof y), this._gRamp.
+  localSurf(x, y, z) {
+    const c = this.cellAt(x, z);
+    this._gRamp = null; this._sf = 0; this._sc = WALL_H;
+    if (c < 0) return;
+    const f = this.floorOfY(y);
+    if (f === 0) {
+      const v = this.grid[c];
+      if (isShaft(v)) {
+        const lo = (v - CELL_SHAFT_LOW) * WALL_H / 3, hi = lo + WALL_H / 3;
+        if (y >= lo && y <= hi) { this._sf = lo; this._sc = hi; return; }   // inside the opening: it is a flat tunnel
+      }
+    }
+    this._sf = this.groundAt(f, c, x, z);
+    this._sc = this.ceilAt(f, c);
+  }
+
+  // Distances from the rocket's hull to the nearest wall/floor/roof on each side (left, right, up, down), max PROBE_RANGE.
+  updateProbes(m) {
+    const P = m.probe || (m.probe = { l: PROBE_RANGE, r: PROBE_RANGE, u: PROBE_RANGE, d: PROBE_RANGE });
+    const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);
+    const side = (sx, sz) => {
+      for (let d = 0.5; d <= PROBE_RANGE; d += 0.5) {
+        if (this.isGridSolid(m.pos.x + sx * d, m.pos.z + sz * d, m.pos.y)) {
+          // refine the last half step
+          let lo = d - 0.5, hi = d;
+          for (let i = 0; i < 4; i++) { const mid = (lo + hi) * 0.5; if (this.isGridSolid(m.pos.x + sx * mid, m.pos.z + sz * mid, m.pos.y)) hi = mid; else lo = mid; }
+          return Math.max(0, hi - MISSILE_RADIUS);
+        }
+      }
+      return PROBE_RANGE;
+    };
+    P.l = side(-rx, -rz);
+    P.r = side(rx, rz);
+    this.localSurf(m.pos.x, m.pos.y, m.pos.z);
+    P.u = Math.min(PROBE_RANGE, Math.max(0, this._sc - m.pos.y - MISSILE_RADIUS));
+    P.d = Math.min(PROBE_RANGE, Math.max(0, m.pos.y - this._sf - MISSILE_RADIUS));
+  }
+
+  // LAND button: arms or cancels a landing; on the ground it lifts off (or aborts a lift-off)
+  pressLand() {
+    const m = this.missile;
+    if (this.state !== 'PLAYING' || !m.active || m.drop > 0 || m.flipping) return;
+    if (m.landed) {
+      if (m.takeoffT >= 0) { m.takeoffT = -1; m.liftReq = false; this.pushFeed('LIFT-OFF ABORTED', 'amber'); }
+      else if (m.fuel > 0) {
+        m.takeoffT = 0; m.liftReq = true;
+        this.audio.playSpeedShift(1); this.vibrate(20);
+        this.pushFeed('ENGINE SPOOL-UP — LIFTING OFF', 'cyan');
+      }
+      return;
+    }
+    m.landReq = !m.landReq;
+    m.landReqT = 0;
+    this.pushFeed(m.landReq ? 'LANDING ARMED — EASE ONTO A FLAT SURFACE' : 'LANDING CANCELLED', m.landReq ? 'cyan' : 'amber');
+  }
+
   // Is the slab at y = k*WALL_H (between floors k-1 and k) open at (x, z)? Only above a ramp.
   slabOpen(x, z, k) {
     if (k <= 0 || k >= this.nFloors) return false;
@@ -6335,7 +6400,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6453,7 +6518,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.probe = null;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -6580,6 +6645,12 @@ class NikitaGame {
     this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.72 * power * atten);
     this._blastHostiles = 0;
 
+    // Nikita itself: any blast that reaches the rocket (clear line, within radius) sets the warhead off
+    const rk = this.missile;
+    const rocketCaught = rk.active && this.state === 'PLAYING' &&
+      rk.pos.distanceTo(epicenter) <= radius + MISSILE_RADIUS &&
+      this.los3(epicenter.x, epicenter.y, epicenter.z, rk.pos.x, rk.pos.y, rk.pos.z);
+
     for (const t of this.targets) {
       if (!t.active) continue;
       const d = t.pos.distanceTo(epicenter);
@@ -6651,6 +6722,8 @@ class NikitaGame {
 
     this.syncBarrelInstances();
     this.updateHUDText();
+
+    if (rocketCaught && rk.active) this.detonateMissile(rk.pos.clone(), 'CAUGHT IN BLAST RADIUS');
   }
 
   neutralizeSentry(sentry, blastPos) {
@@ -7243,7 +7316,7 @@ class NikitaGame {
         m.takeoffT += dt;
         const T = m.takeoffT;
         if (T < TAKEOFF_SPOOL) {
-          if (effT <= LAND_TAKEOFF || !hasFuel) { m.takeoffT = -1; this.pushFeed('LIFT-OFF ABORTED', 'amber'); }
+          if ((!m.liftReq && effT <= LAND_TAKEOFF) || !hasFuel) { m.takeoffT = -1; m.liftReq = false; this.pushFeed('LIFT-OFF ABORTED', 'amber'); }
           const sp = T / TAKEOFF_SPOOL;
           this.cameraTrauma = Math.max(this.cameraTrauma, 0.1 + 0.18 * sp);
           m.pos.y = baseY + 0.03 * sp * Math.sin(this.gameClock * 70);
@@ -7251,9 +7324,13 @@ class NikitaGame {
           m.currentSpeed = 0;
         } else {
           const u = Math.min(1, (T - TAKEOFF_SPOOL) / TAKEOFF_RISE), e = u * u * (3 - 2 * u);
-          m.pos.y = baseY + TAKEOFF_HEIGHT * e;
+          this.localSurf(m.pos.x, baseY, m.pos.z);
+          const inShaft = this._sc - this._sf < WALL_H * 0.9;
+          // never rise into a shaft's roof
+          m.pos.y = baseY + Math.min(TAKEOFF_HEIGHT, Math.max(0, this._sc - MISSILE_RADIUS - 0.05 - baseY)) * e;
           m.roll += (0 - m.roll) * Math.min(1, dt * 8);
-          m.pitch += (Math.max(0.2, Math.min(0.5, m.pitch)) - m.pitch) * Math.min(1, dt * 5);
+          const pLo = inShaft ? 0 : 0.2, pHi = inShaft ? 0.04 : 0.5;
+          m.pitch += (Math.max(pLo, Math.min(pHi, m.pitch)) - m.pitch) * Math.min(1, dt * 5);
           this.cameraTrauma = Math.max(this.cameraTrauma, 0.2 * (1 - u));
           // start moving forward in the second half of the rise
           m.currentSpeed = SPEED_MIN * 0.75 * Math.max(0, (u - 0.45) / 0.55);
@@ -7262,7 +7339,7 @@ class NikitaGame {
             if (!this.isGridSolid(nx, nz, m.pos.y)) { m.pos.x = nx; m.pos.z = nz; }
           }
           if (u >= 1) {
-            m.landed = false; m.takeoffT = -1;
+            m.landed = false; m.takeoffT = -1; m.liftReq = false;
             m.currentSpeed = SPEED_MIN * 0.75;
             _e1.set(m.pitch, m.yaw, 0, 'YXZ');
             m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(m.currentSpeed);
@@ -7270,13 +7347,14 @@ class NikitaGame {
             this.pushFeed('AIRBORNE', 'cyan');
           }
         }
-      } else if (effT > LAND_TAKEOFF && hasFuel) {
+      } else if (m.liftArmed && effT > LAND_TAKEOFF && hasFuel) {
         m.takeoffT = 0;
         this.audio.playSpeedShift(1);
         this.vibrate(20);
         this.pushFeed('ENGINE SPOOL-UP — LIFTING OFF', 'cyan');
       } else {
         // settle: a couple of small hops, a nose dip, then lean over onto one fin
+        if (effT <= LAND_TAKEOFF) m.liftArmed = true;       // the lever must come down once before it can lift off again
         const k = m.landT, imp = m.landImpact || 0.5;
         m.pos.y = baseY + 0.45 * Math.max(0.6, imp) * Math.exp(-k * 6) * Math.abs(Math.sin(k * 13));
         m.roll = m.landRoll * (1 - Math.exp(-k * 3.5)) + 0.16 * imp * Math.exp(-k * 4.5) * Math.sin(k * 17);
@@ -7286,7 +7364,12 @@ class NikitaGame {
       }
     } else {
       const leverSpeed = this.throttleSpeed(effT);
-      const targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
+      let targetSpeed = hasFuel ? (leverSpeed * this.cfg.speedMult) : 9.5;
+      if (m.landReq) {
+        m.landReqT = (m.landReqT || 0) + dt;
+        if (!hasFuel || m.landReqT > LAND_ARM_TIME) { m.landReq = false; this.pushFeed('LANDING CANCELLED', 'amber'); }
+        else targetSpeed = Math.min(targetSpeed, LAND_ARM_SPEED);
+      }
       m.currentSpeed += (targetSpeed - m.currentSpeed) * Math.min(1, dt * (hasFuel ? 6.0 : 1.2));
 
       _v2.copy(_v1).multiplyScalar(m.currentSpeed);
@@ -7440,30 +7523,36 @@ class NikitaGame {
 
         let hitNormalX = 0, hitNormalY = 0, hitNormalZ = 0, hitSurface = false, hitRamp = null;
         {
-          const mc = this.cellAt(_v3.x, _v3.z), mf = this.floorOfY(m.pos.y);
-          const gY = mc >= 0 ? this.groundAt(mf, mc, _v3.x, _v3.z) : 0, gR = this._gRamp;
-          const cY = mc >= 0 ? this.ceilAt(mf, mc) : WALL_H;
+          // local surfaces: a shaft's slab and lintel count as floor and roof once the rocket is inside its opening
+          this.localSurf(_v3.x, m.pos.y, _v3.z);
+          const gY = this._sf, gR = this._gRamp, cY = this._sc;
           if (_v3.y < gY + MISSILE_RADIUS) {
             _v3.y = gY + MISSILE_RADIUS; hitSurface = true;
             if (gR) { const sl = WALL_H / gR.len; hitNormalX = -gR.dx * sl; hitNormalZ = -gR.dz * sl; hitNormalY = 1; hitRamp = gR; }
             else {
               hitNormalY = 1;
-              const slow = m.currentSpeed <= LAND_SPEED && effT <= LAND_TAKEOFF;
+              const slow = m.currentSpeed <= LAND_SPEED;
               const falling = m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH || !hasFuel;
-              if (slow && !falling && m.drop <= 0 && !m.flipping) {
+              if (slow && !falling && m.drop <= 0 && !m.flipping && !m.landReq) {
+                // slow and gentle but no landing requested: skim along the floor without damage
+                if (m.vel.y < 0) m.vel.y = 0;
+                hitNormalY = 0;
+                hitSurface = false;
+              } else if (slow && !falling && m.drop <= 0 && !m.flipping) {
                 // touchdown: settle on the floor
                 m.landImpact = Math.min(1, Math.max(0.35, -m.vel.y / LAND_SINK + m.currentSpeed / LAND_SPEED * 0.5));
                 m.pos.set(_v3.x, gY + MISSILE_RADIUS + 0.01, _v3.z);
                 m.vel.set(0, 0, 0);
                 m.pitch = Math.max(0, m.pitch);
                 m.pitchRate = 0;
-                m.landed = true;
+                m.landed = true; m.landReq = false; m.liftReq = false;
+                m.liftArmed = effT <= LAND_TAKEOFF;
                 m.landY = gY; m.landT = 0; m.takeoffT = -1;
                 m.landRoll = (Math.random() < 0.5 ? -1 : 1) * LAND_LEAN;
                 this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.22 * m.landImpact);
                 this.audio.playScrape();
                 this.vibrate(25);
-                this.pushFeed('TOUCHDOWN — LANDED (RAISE THROTTLE TO LIFT OFF)', 'cyan');
+                this.pushFeed('TOUCHDOWN — LANDED (LIFT OFF BUTTON OR RAISE THROTTLE)', 'cyan');
                 break;
               }
               if (falling && m.drop <= 0) {
@@ -7546,6 +7635,7 @@ class NikitaGame {
       }
     }
     m.wallProximity = Math.max(0, 1 - (minWallDist - 1.0) / 5.0);
+    this.updateProbes(m);
     if (m.wallProximity > 0.25) {
       this.audio.sonarTimer -= dt;
       if (this.audio.sonarTimer <= 0) {
@@ -7970,6 +8060,27 @@ class NikitaGame {
     ctx.moveTo(cx + 10, cy); ctx.lineTo(cx + 24, cy);
     ctx.moveTo(cx, cy - 24); ctx.lineTo(cx, cy - 10);
     ctx.stroke();
+
+    // collision markers: distance from the hull to the wall (left, right), roof (up) and floor (down)
+    if (m.active && m.probe && this.state === 'PLAYING') {
+      const P = m.probe, gap = coneRadiusPx + 5;
+      const col = (d) => d < 2.5 ? '#ff3344' : (d < 5.5 ? '#ffaa00' : '#00ff88');
+      const mark = (d, ux, uy) => {
+        if (d >= PROBE_RANGE - 0.05) return;
+        const c = col(d), x0 = cx + ux * gap, y0 = cy + uy * gap;
+        ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x0 - uy * 7, y0 + ux * 7); ctx.lineTo(x0 + uy * 7, y0 - ux * 7);   // bar across the ring
+        ctx.moveTo(x0, y0); ctx.lineTo(x0 + ux * 7, y0 + uy * 7);
+        ctx.stroke();
+        ctx.font = 'bold 11px Consolas, monospace';
+        ctx.textAlign = ux < 0 ? 'right' : 'left';
+        ctx.fillText(d.toFixed(1) + 'm', ux !== 0 ? x0 + ux * 11 : x0 + 10, ux !== 0 ? y0 + 4 : y0 + uy * 4 + 4);
+      };
+      ctx.save();
+      mark(P.l, -1, 0); mark(P.r, 1, 0); mark(P.u, 0, -1); mark(P.d, 0, 1);
+      ctx.restore();
+    }
 
     if (m.wallProximity > 0.35) {
       ctx.strokeStyle = `rgba(255, 170, 0, ${m.wallProximity * 0.85})`;
@@ -8578,7 +8689,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun', 'tbtn-land'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -9016,6 +9127,18 @@ class NikitaGame {
       const gunUp = () => { this.gunHeld = false; btnGun.classList.remove('pressed'); };
       ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => btnGun.addEventListener(ev, gunUp));
     }
+    const btnLand = document.getElementById('tbtn-land');
+    if (btnLand) {
+      btnLand.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        this.audio.unlock();
+        btnLand.classList.add('pressed');
+        this.pressLand();
+      });
+      const landUp = () => btnLand.classList.remove('pressed');
+      btnLand.addEventListener('pointerup', landUp);
+      btnLand.addEventListener('pointercancel', landUp);
+    }
     const btnDecoy = document.getElementById('tbtn-decoy');
     btnDecoy.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -9104,6 +9227,7 @@ class NikitaGame {
       if (e.code === 'Equal' || e.code === 'BracketRight') stepSpeed(1);
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
+      if (e.code === 'KeyG' && !e.repeat) this.pressLand();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
       }
@@ -9311,25 +9435,29 @@ class NikitaGame {
   updateLandIndicator(m) {
     const el = this._landEl || (this._landEl = document.getElementById('hud-land'));
     if (!el) return;
-    let txt = '', cls = '';
+    const btn = this._landBtn || (this._landBtn = document.getElementById('tbtn-land'));
+    let txt = '', cls = '', lbl = 'LAND', armed = false;
     if (m.active && this.state === 'PLAYING') {
-      if (m.landed && m.takeoffT >= 0) { txt = '▲ LIFTING OFF'; cls = 'down'; }
-      else if (m.landed) { txt = '▣ LANDED · THROTTLE UP TO LIFT OFF'; cls = 'down'; }
-      else if (m.drop <= 0 && !m.flipping && m.fuel > 0 && m.currentSpeed <= LAND_SPEED && m.effThrottle <= LAND_TAKEOFF) {
-        const c = this.cellAt(m.pos.x, m.pos.z);
-        if (c >= 0) {
-          const gy = this.groundAt(this.floorOfY(m.pos.y), c, m.pos.x, m.pos.z);
-          const alt = m.pos.y - MISSILE_RADIUS - gy;
-          if (!this._gRamp && alt < 6) {
-            if (m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH) { txt = `▼ TOO STEEP — LEVEL OFF  ${alt.toFixed(1)}m`; cls = 'warn'; }
-            else { txt = `▼ LAND OK  ${alt.toFixed(1)}m`; cls = 'ok'; }
-          }
+      if (m.landed && m.takeoffT >= 0) { txt = '▲ LIFTING OFF'; cls = 'down'; lbl = 'ABORT'; }
+      else if (m.landed) { txt = '▣ LANDED · PRESS LIFT OFF'; cls = 'down'; lbl = 'LIFT\nOFF'; }
+      else if (m.drop <= 0 && !m.flipping && m.fuel > 0) {
+        this.localSurf(m.pos.x, m.pos.y, m.pos.z);
+        const alt = m.pos.y - MISSILE_RADIUS - this._sf;
+        if (m.landReq) {
+          armed = true; lbl = 'CANCEL';
+          if (this._gRamp) { txt = '▼ LANDING ARMED — RAMPS CAN\'T BE LANDED ON'; cls = 'warn'; }
+          else if (m.vel.y < -LAND_SINK || m.pitch < -LAND_PITCH) { txt = `▼ TOO STEEP — LEVEL OFF  ${alt.toFixed(1)}m`; cls = 'warn'; }
+          else if (m.currentSpeed > LAND_SPEED) txt = '▼ LANDING ARMED — SLOWING', cls = 'ok';
+          else txt = `▼ LANDING ARMED — EASE DOWN  ${alt.toFixed(1)}m`, cls = 'ok';
+        } else if (!this._gRamp && alt < 6) {
+          txt = `▼ LAND AVAILABLE  ${alt.toFixed(1)}m`; cls = 'ok';
         }
       }
     }
     this.cText(el, txt);
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
     this.cStyle(el, 'display', txt ? 'block' : 'none');
+    if (btn) { this.cText(btn, lbl); if (btn._armed !== armed) { btn._armed = armed; btn.classList.toggle('armed', armed); } }
   }
   cStyle(el, prop, v) { const k = '_s_' + prop; if (el[k] !== v) { el[k] = v; el.style[prop] = v; } }
 

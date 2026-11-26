@@ -27,14 +27,20 @@ It then launches full-screen from the home screen and works offline after the fi
 
 Installed phones pick up the new version on the next launch. If an install ever gets stuck, open the page with `?reset` appended to wipe its cache.
 
-## Landing (v2.9–2.10)
+## Landing (v2.9–2.11)
 
-- **Touch down.** With the lever near minimum (rocket at 9 m/s or slower), ease onto a flat floor with the nose no more than about 26 degrees down and you land: the rocket settles and its speed falls to 0. Ramps still let you ride up them instead.
-- **Landing indicator (v2.9.1).** When you are slow enough to land and within 6 m of a flat floor, a box under the flight panel shows ▼ LAND OK with your height. It turns to a blinking red ▼ TOO STEEP — LEVEL OFF if you are sinking too fast or diving, and shows ▣ LANDED · THROTTLE UP TO LIFT OFF once you are down.
+- **LAND button (v2.11).** Speed alone no longer lands the rocket. Press LAND (G on a keyboard) to arm a landing: the engine eases down to about 8 m/s and the next gentle touch on a flat floor (nose no more than about 26 degrees down, sinking slower than 4 m/s) sets the rocket down. Press the button again to cancel; an armed landing also lapses after 14 s. A slow, gentle touch without an armed landing just skims the floor without damage. Ramps can never be landed on.
+- **Landing indicator.** Under the flight panel: ▼ LAND AVAILABLE with your height when a flat floor is within 6 m, ▼ LANDING ARMED while armed (red ▼ TOO STEEP — LEVEL OFF if you are sinking too fast or diving), and ▣ LANDED · PRESS LIFT OFF once down.
+- **Shafts (v2.11).** A shaft's slab and lintel now count as floor and roof once the rocket is inside the opening, so you can land in a shaft the same way. Take-off inside a shaft rises only as far as the roof allows and keeps the nose level.
 - **On the ground.** The engine idles and keeps burning fuel (half the cruise burn; the EFF meter reads IDLE). You can turn on the spot and tilt the nose up to aim, and the gun still fires, so a landed rocket works as a quiet sniper post. An empty tank still self-destructs.
 - **Touchdown (v2.10).** The rocket hops once or twice, dips its nose and then leans over onto one fin (the view tilts about 7 degrees). A harder touchdown shakes the view more.
-- **Take-off (v2.10).** Raise the lever past the bottom notch: the engine spools up for half a second (the view shakes, the fin levels), the rocket rises about 1.7 m off the floor while pitching its nose up, then pulls away and is airborne after about 1.4 s. Drop the lever during the spool-up to abort. The HUD shows ▲ LIFTING OFF.
+- **Take-off.** Press LIFT OFF (the LAND button turns into it), or bring the lever to minimum once and then raise it past the bottom notch: the engine spools up for half a second (the view shakes, the fin levels), the rocket rises about 1.7 m off the floor while pitching its nose up, then pulls away and is airborne after about 1.4 s. Press the button again (or drop the lever when lifting off by lever) during the spool-up to abort.
 - **Crashing.** Dropping onto the floor (sinking faster than 4 m/s), diving steeply into it, or hitting it with the engine out detonates the warhead. A fast, shallow skim still scrapes the hull (-22%) and bounces off as before.
+
+## Collision markers and blast danger (v2.11)
+
+- **Collision markers.** Four markers around the seeker ring read the gap between the hull and the wall on the left, the wall on the right, the roof above and the floor below, out to 12 m: green over 5.5 m, amber under that, red under 2.5 m. Inside a shaft, up and down read the shaft's own slab and lintel. Markers are hidden while nothing is in range.
+- **Blast radius kills Nikita.** Every explosion whose radius reaches the rocket, with a clear line to it, sets off the warhead: fuel barrels (including chains and barrels shot by the gun), delayed blasts and so on. Walls between the blast and the rocket still protect it. This includes a landed rocket parked near a barrel.
 
 ## Rocket gun (v2.8)
 
