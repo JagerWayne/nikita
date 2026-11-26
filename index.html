@@ -1579,9 +1579,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <label class="ov-check"><span>X-Ray Wireframe Walls</span><input type="checkbox" id="ov-xray" /></label>
     <label class="ov-check"><span>Homing Auto-Pilot</span><input type="checkbox" id="ov-homing" /></label>
     <label class="ov-check"><span>Auto-Level Pitch</span><input type="checkbox" id="ov-autolevel" checked /></label>
-    <label class="ov-check"><span>Explore Map Overlay (radar)</span><input type="checkbox" id="ov-xmap" /></label>
     <label class="ov-check"><span>Autopilot Debug (telemetry)</span><input type="checkbox" id="ov-apdebug" /></label>
-    <label class="ov-check"><span>New Autopilot (off = legacy)</span><input type="checkbox" id="ov-newpilot" checked /></label>
     <label class="ov-check"><span>Invert Pitch Y-Axis</span><input type="checkbox" id="ov-invert-pitch" /></label>
     <label class="ov-check"><span>Live FPS / Draw Calls</span><input type="checkbox" id="ov-fps" /></label>
   </div>
@@ -2694,7 +2692,8 @@ class Autopilot {
     for (const l of g.lasers) if (l.boxVis && l.lockRef && l.lockRef.active) addC('LASER BOX', l, l.relayPos.x, l.relayPos.y, l.relayPos.z, false);
     contacts.sort((a, b) => a.d - b.d);
     for (const pk of g.pickups) if (pk.active && pk.mesh.userData._tv) pk._seen = true;
-    const node = g.autoNode(m);
+    let node = -1;
+    { const c0 = g.cellAt(m.pos.x, m.pos.z), f0 = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(m.pos.y))); if (c0 >= 0 && this.navOk2(f0 * GRID_SIZE * GRID_SIZE + c0)) node = f0 * GRID_SIZE * GRID_SIZE + c0; else node = g.autoNode(m); }
     this.t = {
       time: g.gameClock,
       x: m.pos.x, y: m.pos.y, z: m.pos.z, vx: v.x, vy: v.y, vz: v.z,
@@ -2712,7 +2711,7 @@ class Autopilot {
       rangeCruiseM: burnCruise > 0 ? (m.fuel / burnCruise) * vc : Infinity,
       hull: m.hull, ammo: g.gunAmmo, rockets: g.ammo, hover: !!m.hover, landed: !!m.landed,
       contacts, threats: contacts.filter((c) => c.threat).length,
-      mode: m.auto && g.auto ? g.auto.mode : (g.autoPlay ? 'WAIT' : 'MANUAL'),
+      mode: m.auto ? (this.mission || 'AUTO') : (g.autoPlay ? 'WAIT' : 'MANUAL'),
       route: g.xroute ? g.xroute.length : 0
     };
     return this.t;
@@ -2764,6 +2763,50 @@ class Autopilot {
     return { x: gridToWorldX(c % G), z: gridToWorldZ((c / G) | 0), f: (i / GG) | 0 };
   }
 
+
+  // ---- multi-floor: drop holes and atriums (no slab) link a tile to the one below; the lift is avoided ----
+  navOk2(i) {
+    const g = this.g, GG = GRID_SIZE * GRID_SIZE, f = (i / GG) | 0, c = i % GG;
+    if (f < 0 || f >= g.nFloors) return false;
+    if (g.liftCells && g.liftCells.has(c)) return false;                 // the lift takes over the rocket's height: keep out
+    return g.navOk(i) || (f > 0 && g.floors[f][c] === CELL_VOID && isWalkable(g.floors[f - 1][c]));
+  }
+  vlinks() {
+    const g = this.g;
+    if (this._vl && this._vlFor === g.floors) return this._vl;
+    const G = GRID_SIZE, GG = G * G, L = new Map();
+    const add = (a, b) => { if (!L.has(a)) L.set(a, []); L.get(a).push(b); };
+    for (let f = 1; f < g.nFloors; f++) for (let c = 0; c < GG; c++)
+      if (g.floors[f][c] === CELL_VOID && isWalkable(g.floors[f - 1][c]) && !(g.liftCells && g.liftCells.has(c))) { add(f * GG + c, (f - 1) * GG + c); add((f - 1) * GG + c, f * GG + c); }
+    this._vl = L; this._vlFor = g.floors;
+    return L;
+  }
+  links(i) {
+    const a = this.g.navLinks && this.g.navLinks.get(i), b = this.vlinks().get(i);
+    return a && b ? a.concat(b) : (a || b);
+  }
+
+  // ---- obstacle avoidance: fuel barrels (blast on contact within 1.47 m), sentries and primary targets ahead ----
+  // Climb over them where the room allows, wait until high enough, and steer aside.
+  avoid(out) {
+    const g = this.g, t = this.t, fx = -Math.sin(t.yaw), fz = -Math.cos(t.yaw), rx = -fz, rz = fx;
+    let climbTo = -Infinity, slow = Infinity, nudge = 0;
+    const check = (x, y, z, rad, overTop) => {
+      const dx = x - t.x, dz = z - t.z, f = dx * fx + dz * fz, s = dx * rx + dz * rz;
+      if (f < -1 || f > 8 || Math.abs(s) > rad + 1.2) return;
+      if (overTop !== null) climbTo = Math.max(climbTo, overTop);
+      if (f < 4.5 && overTop !== null && t.y < overTop - 0.3) slow = Math.min(slow, 1.2);
+      nudge += (s >= 0 ? 1 : -1) * (1 - Math.abs(s) / (rad + 1.2)) * (1 - Math.max(0, f) / 8);   // + = obstacle on the right: turn left
+    };
+    for (const b of g.barrels) if (b.active && Math.abs(b.pos.y - t.y) < 4) check(b.pos.x, b.pos.y, b.pos.z, 1.47, b.pos.y + 2.1);
+    for (const s of g.sentries) if (s.active && !s.dying && Math.abs(s.pos.y - t.y) < 4) check(s.pos.x, s.pos.y, s.pos.z, 1.2, s.pos.y + 3.0);
+    for (const tg of g.targets) if (tg.active && this.mission !== 'HUNT') check(tg.pos.x, tg.pos.y, tg.pos.z, tg.radius + 0.5, null);
+    if (climbTo > -Infinity) { const yT = Math.min(t.y + t.ceil - 0.5, climbTo); out.climb = Math.max(out.climb, Math.max(-1, Math.min(1, 1.6 * (yT - t.y)))); }
+    if (slow < Infinity) out.speed = Math.min(out.speed, slow);
+    if (nudge) out.yaw = Math.max(-1, Math.min(1, out.yaw + 0.6 * nudge));
+    return out;
+  }
+
   // Multi-goal A* (Dijkstra with a heap) from `start` to the frontier: explored, flyable tiles that touch unexplored ones.
   // Step costs: 1 straight, 1.41 diagonal (only when both side tiles are flyable), +0.35 next to a wall, +2.5 next to a hazard,
   // floor links (ramp ends) 2. Among the cheapest frontiers it prefers the one ahead of the nose.
@@ -2772,7 +2815,7 @@ class Autopilot {
     if (!X || start < 0) return null;
     if (g.navFor !== g.ramps) g.navLinksBuild();
     const HZ = this.hazards(), haz = HZ.hard, soft = HZ.soft;
-    const ok = (i) => this.flyable(X[i]) && g.navOk(i) && !haz[i];
+    const ok = (i) => this.flyable(X[i]) && this.navOk2(i) && !haz[i];
     const unknownN = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]); };
     const nearWall = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx < 0 || zz < 0 || xx >= G || zz >= G) return true; const v = X[i + dz * G + dx]; if (v === XV.SOLID || v === XV.CRACK) return true; } return false; };
     const nearHaz = (i) => { const c = i % GG, x = c % G, z = (c / G) | 0; for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, zz = z + dz; if (xx >= 0 && zz >= 0 && xx < G && zz < G && haz[i + dz * G + dx]) return true; } return false; };
@@ -2793,8 +2836,8 @@ class Autopilot {
       if (L) step(i - 1, 1); if (R) step(i + 1, 1); if (U) step(i - G, 1); if (D) step(i + G, 1);
       if (L && U && ok(i - 1) && ok(i - G)) step(i - G - 1, 1.414); if (R && U && ok(i + 1) && ok(i - G)) step(i - G + 1, 1.414);
       if (L && D && ok(i - 1) && ok(i + G)) step(i + G - 1, 1.414); if (R && D && ok(i + 1) && ok(i + G)) step(i + G + 1, 1.414);
-      const extra = g.navLinks.get(i);
-      if (extra) for (const n of extra) step(n, 2);
+      const extra = this.links(i);
+      if (extra) for (const n of extra) step(n, 2.5);
       if (f0 < 0) break;
     }
     if (!found.length) return null;
@@ -2836,6 +2879,7 @@ class Autopilot {
     while (k < pts.length) {
       let j = k;
       while (j + 1 < pts.length && pts[j + 1].f === af && !pts[j].keep && !pts[j + 1].keep && !pts[j].gate && !pts[j + 1].gate && this.segClear(ax, az, pts[j + 1].x, pts[j + 1].z, af, t.y)) j++;
+      if (pts[j].f !== af) pts[j].vert = true;                         // a floor change: reached only at the right height
       wps.push(pts[j]);
       ax = pts[j].x; az = pts[j].z; af = pts[j].f; k = j + 1;
     }
@@ -2843,6 +2887,7 @@ class Autopilot {
     for (let n = 0; n < wps.length; n++) {
       const w = wps[n];
       if (n === wps.length - 1) { w.vmax = 1.5; continue; }
+      if (w.vert || (wps[n + 1] && wps[n + 1].vert)) { w.vmax = 1.0; continue; }
       const a = n === 0 ? { x: t.x, z: t.z } : wps[n - 1], b = wps[n + 1];
       const h1 = Math.atan2(w.x - a.x, w.z - a.z), h2 = Math.atan2(b.x - w.x, b.z - w.z);
       let th = Math.abs(h2 - h1); if (th > Math.PI) th = Math.PI * 2 - th;
@@ -3025,6 +3070,7 @@ class Autopilot {
       const w = wps[P.k], d = Math.hypot(w.x - t.x, w.z - t.z);
       const nx = P.k + 1 < wps.length ? wps[P.k + 1] : null;
       const passed = nx && ((t.x - w.x) * (nx.x - w.x) + (t.z - w.z) * (nx.z - w.z)) > 0 && d < 3;
+      if (w.vert && Math.abs(t.y - w.alt) > 0.9) break;            // over the hole: climb / descend first
       if (d < 1.2 || passed) P.k++; else break;
     }
     if (P.k >= wps.length) {
@@ -3057,10 +3103,11 @@ class Autopilot {
     if (t.fan) v = Math.min(v, Math.sqrt(2 * a * Math.max(0, t.fan[2] - 1.8)));
     v *= Math.max(0.15, Math.min(1, 1 - Math.abs(err) / 1.0));
     if (w.keep && Math.abs(altT - t.y) > 0.5 && Math.hypot(w.x - t.x, w.z - t.z) < 4) v = Math.min(v, 0.5);   // line up with a tunnel mouth first
+    if (w.vert && Math.hypot(w.x - t.x, w.z - t.z) < 1.5) v = Math.min(v, 0.3);                               // floor change: go straight up / down
     // --- safety: keep off the side walls
     if (t.probe.l < 0.8) yaw -= 0.5 * (0.8 - t.probe.l) / 0.8;
     if (t.probe.r < 0.8) yaw += 0.5 * (0.8 - t.probe.r) / 0.8;
-    out = { yaw: Math.max(-1, Math.min(1, yaw)), climb, speed: Math.max(0, v) };
+    out = this.avoid({ yaw: Math.max(-1, Math.min(1, yaw)), climb, speed: Math.max(0, v) });
     this.cmd = { err, carrot: cp, v, L };
     g.xroute = P.tiles;
     return this.fire(dt, out);
@@ -3075,7 +3122,7 @@ class Autopilot {
     const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, N = GG * g.nFloors;
     if (!X || start < 0) return null;
     if (g.navFor !== g.ramps) g.navLinksBuild();
-    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && g.navOk(i) && !HZ.hard[i];
+    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && this.navOk2(i) && !HZ.hard[i];
     const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1), H = [];
     const push = (c, n) => { H.push([c, n]); let k = H.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (H[p][0] <= H[k][0]) break; [H[p], H[k]] = [H[k], H[p]]; k = p; } };
     const pop = () => { const top = H[0], last = H.pop(); if (H.length) { H[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < H.length && H[l][0] < H[m][0]) m = l; if (r < H.length && H[r][0] < H[m][0]) m = r; if (m === k) break; [H[m], H[k]] = [H[k], H[m]]; k = m; } } return top; };
@@ -3090,7 +3137,7 @@ class Autopilot {
       if (x > 0) step(i - 1, 1); if (x < G - 1) step(i + 1, 1); if (z > 0) step(i - G, 1); if (z < G - 1) step(i + G, 1);
       if (x > 0 && z > 0 && ok(i - 1) && ok(i - G)) step(i - G - 1, 1.414); if (x < G - 1 && z > 0 && ok(i + 1) && ok(i - G)) step(i - G + 1, 1.414);
       if (x > 0 && z < G - 1 && ok(i - 1) && ok(i + G)) step(i + G - 1, 1.414); if (x < G - 1 && z < G - 1 && ok(i + 1) && ok(i + G)) step(i + G + 1, 1.414);
-      const extra = g.navLinks.get(i); if (extra) for (const n of extra) step(n, 2);
+      const extra = this.links(i); if (extra) for (const n of extra) step(n, 2.5);
     }
     return null;
   }
@@ -3274,7 +3321,7 @@ class Autopilot {
       const c = g.cellAt(l.relayPos.x, l.relayPos.z); return c >= 0 && !!X[c];
     });
     if (!seen.length) return null;
-    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && g.navOk(i) && !HZ.hard[i];
+    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && this.navOk2(i) && !HZ.hard[i];
     const dist = new Int32Array(GG * g.nFloors).fill(-1), prev = new Int32Array(GG * g.nFloors).fill(-1), q = [start];
     dist[start] = 0;
     for (let h = 0; h < q.length; h++) {
@@ -3288,7 +3335,7 @@ class Autopilot {
       }
       const x = c % G, z = (c / G) | 0, nb = [];
       if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
-      const extra = g.navLinks && g.navLinks.get(i); if (extra) nb.push(...extra);
+      const extra = this.links(i); if (extra) nb.push(...extra);
       for (const n of nb) if (dist[n] < 0 && ok(n)) { dist[n] = dist[i] + 1; prev[n] = i; q.push(n); }
     }
     return null;
@@ -3541,7 +3588,6 @@ class NikitaGame {
     this.lastHighlightedRef = null;
 
     this.cfg = {
-      newPilot: true,          // the rewritten autopilot (Dev Override: off = legacy)
       infFuel: false,
       godMode: false,
       infBoost: false,
@@ -5266,7 +5312,7 @@ class NikitaGame {
 
   // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
   fuzeNear(p, x, y, z, dist, isPrimary) {
-    const autoOk = !this.missile.auto || (isPrimary && ((this.auto && this.auto.mode === 'HUNT' && !(this.cfg.newPilot && this.pilot && this.pilot.active)) || (this.pilot && this.pilot.active && this.pilot.mission === 'HUNT')));   // the autopilot only blows up on a primary target it is hunting
+    const autoOk = !this.missile.auto || (isPrimary && this.pilot && this.pilot.active && this.pilot.mission === 'HUNT');   // the autopilot only blows up on a primary target it is hunting
     return this.fuzeMode !== 'det' && autoOk && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
   }
 
@@ -5319,59 +5365,6 @@ class NikitaGame {
     return B;
   }
 
-  // Which node would stand next to a given unrevealed edge (so the scanner can see it), or -1
-  autoSegNode(seg) {
-    const G = GRID_SIZE, GG = G * G;
-    const nb = (f, gx, gz, face) => {
-      const nx = gx + (face === 0 ? 1 : face === 1 ? -1 : 0), nz = gz + (face === 2 ? 1 : face === 3 ? -1 : 0);
-      if (nx < 0 || nz < 0 || nx >= G || nz >= G) return -1;
-      const n = f * GG + nz * G + nx;
-      return this.navOk(n) ? n : -1;
-    };
-    if (seg >= LIFT_BASE) return -1;
-    if (seg >= RIM_BASE) {
-      const i = (seg - RIM_BASE) >> 2, side = (seg - RIM_BASE) & 3, F = (i / GG) | 0, c = i % GG, x = c % G, z = (c / G) | 0;
-      const face = side === 0 ? 1 : side === 1 ? 0 : side === 2 ? 3 : 2;    // rim side -> direction of the neighbour
-      return nb(F, x, z, face);
-    }
-    if (seg >= FEAT_BASE) {
-      const r = this.ramps[(seg - FEAT_BASE) >> 3];
-      if (!r) return -1;
-      const n = r.f * GG + this.cellAt(r.sx, r.sz);
-      return this.navOk(n) ? n : -1;
-    }
-    if (seg >= SHAFT_SEG_BASE) {
-      const c = Math.floor((seg - SHAFT_SEG_BASE) / 32);
-      return this.navOk(c) ? c : -1;                       // fly into the tunnel itself
-    }
-    const fl = Math.floor(seg / FLOOR_SEG), s2 = seg % FLOOR_SEG, face = (s2 >> 2) & 3, cell = s2 >> 4;
-    return nb(fl, cell % G, (cell / G) | 0, face);
-  }
-
-  // Breadth-first search over nodes from `start`. goal(i) -> bool. Returns the path (excluding start) or null.
-  autoBfs(start, goal, blocked) {
-    if (this.navFor !== this.ramps) this.navLinksBuild();
-    const G = GRID_SIZE, GG = G * G, NF = this.nFloors;
-    const prev = new Int32Array(GG * NF).fill(-2);
-    prev[start] = -1;
-    const q = [start];
-    let found = -1;
-    for (let h = 0; h < q.length; h++) {
-      const i = q[h];
-      if (goal(i)) { found = i; break; }
-      const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
-      const nb = [];
-      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
-      const extra = this.navLinks.get(i);
-      if (extra) nb.push(...extra);
-      for (const n of nb) if (prev[n] === -2 && this.navOk(n) && !blocked[n]) { prev[n] = i; q.push(n); }
-    }
-    if (found < 0) return null;
-    const path = [];
-    for (let i = found; i !== start && i >= 0; i = prev[i]) path.push(i);
-    return path.reverse();
-  }
-
   // AUTO button: full autopilot. It scans, grabs useful pickups, guns down sentries / turrets / laser boxes / barrels / grates,
   // hunts the primary targets with the proximity fuze, adjusts its speed to the room it has, and relaunches by itself.
   // Press again (or move the stick) to take over.
@@ -5390,49 +5383,13 @@ class NikitaGame {
     if (m.fuel <= 0 || m.landed) return;
     if (!m.hover) this.pressHover();
     m.auto = true; m.landReq = false;
-    if (this.cfg.newPilot && this.pilot) this.pilot.engage(); else if (this.pilot) this.pilot.active = false;
-    const M = this.autoMemory();                // rooms already scanned in this sector carry over from rocket to rocket
-    this.auto = { mem: M, cov: M.cov, spots: M.spots, mode: 'EXPLORE', target: -1, path: null, pi: 0, dwell: 0, tried: M.tried, triedPick: new Set(), ignore: new Set(), replanT: 0, stuckT: 0,
-      sx: m.pos.x, sz: m.pos.z, lost: 0, t0: this.gameClock, noMore: false, fire: false, aimObj: null, aimT: 0, pick: null };
-    this.pushFeed(M.spots ? `AUTOPILOT RESUMING — MAP REMEMBERED (SCAN ${this.scanPercent()}%) · HEADING FOR THE NEXT UNEXPLORED AREA` : `AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+    this.pilot.engage();
+    const known = this.xgrid ? this.xgrid.some((v) => v) : false;   // the explore map of this sector is remembered across rockets
+    this.pushFeed(known ? `AUTOPILOT RESUMING — MAP REMEMBERED (SCAN ${this.scanPercent()}%) · HEADING FOR THE NEXT UNEXPLORED AREA` : `AUTOPILOT ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
   }
 
-  // Exploration memory for the current sector (coverage of scanned rooms, spots already scanned or given up)
-  autoMemory() {
-    const key = (this.lidarKey || 'none') + '|' + this.nFloors;
-    if (!this._autoMem || this._autoMem.key !== key) {
-      this._autoMem = { key, cov: null, tried: new Set(), spots: 0, retried: false };
-      try {                                       // stored on the device with the lidar map: survives closing the app and Continue
-        const all = JSON.parse(localStorage.getItem(AUTO_MEM_KEY) || '{}'), e = all[key];
-        const GG = GRID_SIZE * GRID_SIZE;
-        if (e && typeof e.cov === 'string') {
-          const bin = atob(e.cov), cov = new Uint8Array(GG * this.nFloors);
-          for (let i = 0; i < bin.length && i * 8 < cov.length; i++) { const b = bin.charCodeAt(i); for (let k = 0; k < 8; k++) if (b & (1 << k)) cov[i * 8 + k] = 1; }
-          this._autoMem.cov = cov; this._autoMem.spots = e.spots || 1; this._autoMem.done = !!e.done;
-        }
-      } catch (_) {}
-    }
-    return this._autoMem;
-  }
-
-  // Save the exploration memory (coverage bit-packed, last 6 sectors kept)
-  autoMemorySave() {
-    const M = this._autoMem;
-    if (!M || !M.cov) return;
-    try {
-      let bin = '';
-      for (let i = 0; i < M.cov.length; i += 8) { let b = 0; for (let k = 0; k < 8; k++) if (M.cov[i + k]) b |= 1 << k; bin += String.fromCharCode(b); }
-      const all = JSON.parse(localStorage.getItem(AUTO_MEM_KEY) || '{}');
-      delete all[M.key];
-      all[M.key] = { cov: btoa(bin), spots: M.spots, done: !!M.done };
-      const keys = Object.keys(all);
-      while (keys.length > 6) delete all[keys.shift()];
-      localStorage.setItem(AUTO_MEM_KEY, JSON.stringify(all));
-    } catch (_) {}
-  }
 
   autoStop(msg, keepPlay) {
-    if (this.cfg.newPilot && this.pilot && this.pilot.active && /AUTOPILOT DONE/.test(msg || '')) { this.pilot.done = false; this.pilot.failN = 0; this.pilot.replanT = 0; return; }   // beta: the new pilot keeps looking
     const m = this.missile;
     if (!keepPlay) this.autoPlay = false;
     this.gunHeld = false;
@@ -5451,7 +5408,7 @@ class NikitaGame {
         if (this._apDbgT <= 0) { this._apDbgT = 0.2; const el = document.getElementById('ap-debug'); if (el) el.textContent = this.pilot.debugText(); }
       }
     }
-    if (this.cfg.newPilot && this.pilot && this.pilot.active && (this.pilot.done || this.pilot.noFrontier) && this.missile.auto) this.pilot.recheck(dt);
+    if (this.pilot && this.pilot.active && (this.pilot.done || this.pilot.noFrontier) && this.missile.auto) this.pilot.recheck(dt);
     if (!this.autoPlay) return;
     const m = this.missile, st = this.state;
     if (st === 'CLEAR' || st === 'FAILED' || st === 'BRIEFING') { this.autoPlay = false; return; }
@@ -5461,107 +5418,6 @@ class NikitaGame {
     if (st === 'PLAYING' && m.active && m.drop <= 0 && !m.flipping && !m.auto && !m.landed && m.fuel > 0) {
       this._autoEngT = (this._autoEngT || 0) + dt;
       if (this._autoEngT > 0.25) { this._autoEngT = 0; this.autoEngage(); }
-    }
-  }
-
-  // Free distance straight ahead (a 1.4 m wide corridor), in metres up to `max`
-  autoFwdClear(m, max) {
-    const dx = -Math.sin(m.yaw), dz = -Math.cos(m.yaw), rx = dz * -1, rz = dx;     // heading and a sideways vector
-    for (let d = 1; d <= max; d += 1) {
-      const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
-      if (this.isGridSolid(x, z, m.pos.y) || this.isGridSolid(x + rx * 0.7, z + rz * 0.7, m.pos.y) || this.isGridSolid(x - rx * 0.7, z - rz * 0.7, m.pos.y)) return d - 1;
-    }
-    return max;
-  }
-
-  // Pick what to do next. Returns a path (maybe empty) and sets A.mode / A.pick, or null to fall back to exploring.
-  autoChoose(m, node, blocked, A) {
-    const G = GRID_SIZE, GG = G * G;
-    const cellNode = (pos) => {
-      const c = this.cellAt(pos.x, pos.z); if (c < 0) return -1;
-      const f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(pos.y)));
-      return f * GG + c;
-    };
-    // fuel: a flight lasts about 50 s, so work out what the way to the nearest primary target would cost (~2% fuel per second at 5 m/s)
-    const active = this.targets.filter((t) => t.active);
-    let huntPath = null, huntCost = 0;
-    if (active.length && this.gameClock > (A.huntBlock || 0)) {
-      const goals = new Set();
-      for (const t of active) {
-        const n = cellNode(t.pos); if (n < 0) continue;
-        const c = n % GG, x = c % G, z = (c / G) | 0, f0 = n - c;
-        goals.add(n);
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, nz = z + dz; if (nx >= 0 && nz >= 0 && nx < G && nz < G) goals.add(f0 + nz * G + nx); }
-      }
-      huntPath = this.autoBfs(node, (i) => goals.has(i), blocked);
-      if (huntPath) huntCost = huntPath.length * CELL_SIZE / 4.5 * 2.0;      // about 1.8% fuel per cell at the autopilot's real average pace
-    }
-    const slack = m.fuel - huntCost;                               // fuel left over once the target is reached
-    // 1) a useful pickup close by (only with plenty of spare fuel)
-    if (m.fuel > 25 && (!huntPath || slack > 38)) {
-      const want = (p) => p.active && !A.triedPick.has(p) && (p.type === 'ROCKETS' || p.type === 'OVERCHARGE' ||
-        (p.type === 'AMMO' && this.gunAmmo < this.gunCap() * 0.7) || (p.type === 'REPAIR' && m.hull < 85));
-      const byNode = new Map();
-      for (const p of this.pickups) if (want(p)) { const n = cellNode(p.pos); if (n >= 0 && this.navOk(n) && !blocked[n]) byNode.set(n, p); }
-      if (byNode.size) {
-        const path = this.autoBfs(node, (i) => byNode.has(i), blocked);
-        if (path && path.length <= 16) { A.mode = 'PICKUP'; A.pick = byNode.get(path.length ? path[path.length - 1] : node); return path; }
-      }
-    }
-    // 2) traverse the whole reachable map first: destroying the LAST primary target ends the sector, so that one waits until nothing
-    //    reachable is left to scan (or the scan reads 100%, rockets are nearly gone, the hull is badly hurt). Exploring has priority over
-    //    killing, so no target is hunted before that.
-    const exploredEnough = this.scanPercent() >= 100 || A.noMore || (A.mem && A.mem.done) || this.ammo <= 6 || m.hull < 30;
-    if (huntPath && exploredEnough) { A.mode = 'HUNT'; return huntPath; }   // exploring comes first: targets wait until the map is done
-    return null;
-  }
-
-  // The gunner
-  // Straight run at the nearest primary target when it is in clear sight and within maxD; null otherwise
-  autoHuntApproach(m, vmax, maxD) {
-    let tt = null, td = 1e9;
-    for (const t of this.targets) if (t.active) { const d = m.pos.distanceTo(t.pos); if (d < td) { td = d; tt = t; } }
-    if (!tt || td > maxD || !this.los3(m.pos.x, m.pos.y, m.pos.z, tt.pos.x, tt.pos.y, tt.pos.z)) return null;
-    let ty = Math.atan2(-(tt.pos.x - m.pos.x), -(tt.pos.z - m.pos.z)) - m.yaw;
-    while (ty > Math.PI) ty -= Math.PI * 2; while (ty < -Math.PI) ty += Math.PI * 2;
-    return { yaw: Math.max(-1, Math.min(1, ty * 2.8)), climb: Math.max(-1, Math.min(1, (tt.pos.y - m.pos.y) * 1.4)), speed: Math.abs(ty) < 0.5 ? Math.min(vmax, Math.max(2, td - 2.5)) : 0.5 };
-  }
-
-  // ---- room-by-room exploring: go to the middle of the room, spin 360 degrees to scan the walls, move to the nearest opening
-  //      (the first spot the scan could not see past), scan again ----
-  // Mark every cell the lidar could see from the rocket's spot (a fan of horizontal rays) as covered
-  autoMarkSpot(m, A, quiet) {
-    const G = GRID_SIZE, GG = G * G, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(m.pos.y)));
-    if (!A.cov || A.cov.length !== GG * this.nFloors) A.cov = new Uint8Array(GG * this.nFloors);
-    const R = Math.min(26, this.lidarParams().range);
-    const c0 = this.cellAt(m.pos.x, m.pos.z);
-    if (c0 >= 0) A.cov[f * GG + c0] = 1;
-    for (let k = 0; k < 96; k++) {
-      const a = (k / 96) * Math.PI * 2, dx = Math.sin(a), dz = Math.cos(a);
-      for (let d = 1; d <= R; d += 1) {
-        const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
-        if (this.isGridSolid(x, z, m.pos.y)) break;
-        const c = this.cellAt(x, z);
-        if (c >= 0) A.cov[f * GG + c] = 1;
-      }
-    }
-    A.spots = (A.spots || 0) + 1;
-    if (A.mem) { A.mem.cov = A.cov; A.mem.spots = A.spots; }
-    if (!quiet) this.autoMemorySave();
-  }
-
-  // While flying: everything in plain view close by counts as explored too, so a later rocket does not come back for it
-  autoMarkPassing(m, A) {
-    const G = GRID_SIZE, GG = G * G, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(m.pos.y)));
-    if (!A.cov || A.cov.length !== GG * this.nFloors) { A.cov = new Uint8Array(GG * this.nFloors); if (A.mem) A.mem.cov = A.cov; }
-    for (let k = 0; k < 48; k++) {
-      const a = (k / 48) * Math.PI * 2, dx = Math.sin(a), dz = Math.cos(a);
-      for (let d = 1; d <= 12; d += 1) {
-        const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
-        if (this.isGridSolid(x, z, m.pos.y)) break;
-        const c = this.cellAt(x, z);
-        if (c >= 0) A.cov[f * GG + c] = 1;
-      }
     }
   }
 
@@ -5577,49 +5433,6 @@ class NikitaGame {
     return best;
   }
 
-  // The next exploring goal from the explore map: an explored, flyable tile that touches an unexplored (0) tile. Routes only over
-  // explored tiles. Among the nearest ones it prefers what lies ahead of the nose, so it does not turn around for nothing.
-  autoFrontier(node, blocked, A) {
-    const G = GRID_SIZE, GG = G * G, X = this.xgrid, m = this.missile;
-    if (!X) return [];
-    if (this.navFor !== this.ramps) this.navLinksBuild();
-    const fly = (i) => { const v = X[i]; return v === XV.OPEN || v === XV.RAMP || v === XV.SH_TOP || v === XV.SH_MID || v === XV.SH_BOT || v === XV.HOLE; };
-    const touchesUnknown = (i) => {
-      const c = i % GG, x = c % G, z = (c / G) | 0;
-      return (x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]);
-    };
-    const dist = new Int32Array(GG * this.nFloors).fill(-1), prev = new Int32Array(GG * this.nFloors).fill(-1);
-    dist[node] = 0;
-    const q = [node];
-    let bestD = -1;
-    const found = [];
-    for (let h = 0; h < q.length; h++) {
-      const i = q[h], d = dist[i];
-      if (bestD >= 0 && d > bestD + 4) break;
-      if (i !== node && touchesUnknown(i) && !A.tried.has(i)) { found.push(i); if (bestD < 0) bestD = d; }
-      const c = i % GG, x = c % G, z = (c / G) | 0;
-      const nb = [];
-      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
-      const extra = this.navLinks.get(i);
-      if (extra) nb.push(...extra);
-      for (const n of nb) if (dist[n] < 0 && fly(n) && this.navOk(n) && !blocked[n]) { dist[n] = d + 1; prev[n] = i; q.push(n); }
-    }
-    if (!found.length) {
-      if ((!X[node] || touchesUnknown(node)) && !A.tried.has(node)) return [];   // nothing plotted around yet: scan right here first
-      return null;
-    }
-    let best = found[0], bestS = 1e9;
-    for (const i of found) {
-      const c = i % GG, tx = gridToWorldX(c % G), tz = gridToWorldZ((c / G) | 0);
-      let ang = Math.atan2(-(tx - m.pos.x), -(tz - m.pos.z)) - m.yaw; while (ang > Math.PI) ang -= Math.PI * 2; while (ang < -Math.PI) ang += Math.PI * 2;
-      const sc = dist[i] + Math.abs(ang) * 2.5;                   // a turn of 90 degrees costs about 4 tiles of travel
-      if (sc < bestS) { bestS = sc; best = i; }
-    }
-    const path = [];
-    for (let i = best; i !== node && i >= 0; i = prev[i]) path.push(i);
-    return path.reverse();
-  }
-
   // Unexplored tiles left around a node (radius 4, same floor): worth a 360 scan only if there are several
   autoUnknownNear(i) {
     const G = GRID_SIZE, GG = G * G, X = this.xgrid, c = i % GG, f0 = i - c, x0 = c % G, z0 = (c / G) | 0;
@@ -5627,267 +5440,6 @@ class NikitaGame {
     let n = 0;
     for (let z = Math.max(0, z0 - 4); z <= Math.min(G - 1, z0 + 4); z++) for (let x = Math.max(0, x0 - 4); x <= Math.min(G - 1, x0 + 4); x++) if (!X[f0 + z * G + x] && this.navOk(f0 + z * G + x)) n++;
     return n;
-  }
-
-  // Before spinning at a spot: the best-placed node within 3 steps (most room around it) if clearly better than here
-  autoCenterPath(node, blocked) {
-    const G = GRID_SIZE, GG = G * G;
-    if (this.navFor !== this.ramps) this.navLinksBuild();
-    const seen = new Map([[node, 0]]), q = [node];
-    let best = node, bestV = this.autoClearance(node);
-    for (let h = 0; h < q.length; h++) {
-      const i = q[h], dd = seen.get(i);
-      if (dd >= 3) continue;
-      const c = i % GG, x = c % G, z = (c / G) | 0;
-      const nb = [];
-      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
-      for (const n of nb) {
-        if (seen.has(n) || !this.navOk(n) || blocked[n] || isShaft(this.floors[(n / GG) | 0][n % GG])) continue;
-        seen.set(n, dd + 1); q.push(n);
-        const v = this.autoClearance(n) - 0.15 * (dd + 1);
-        if (v > bestV + 0.9) { bestV = v; best = n; }
-      }
-    }
-    if (best === node) return null;
-    return this.autoBfs(node, (i) => i === best, blocked);
-  }
-
-  // What the gunner may shoot: ONLY targets wearing the [ ] brackets (sentries and CIWS turrets that thermal sees, laser control
-  // boxes seen from up to 95 m), with a clear line and in gun range. Barrels, grates and primary targets are never shot.
-  autoCandidates(m, A) {
-    const P = m.pos, list = [];
-    const consider = (obj, kind, x, y, z, minD, maxD, pri, ammoNeed) => {
-      if (A.ignore.has(obj) || this.gunAmmo < ammoNeed) return;
-      const dx = x - P.x, dy = y - P.y, dz = z - P.z, d = Math.hypot(dx, dy, dz);
-      if (d < minD || d > maxD) return;
-      if (!this.los3(P.x, P.y, P.z, x, y, z)) return;
-      let ang = Math.atan2(-dx, -dz) - m.yaw; while (ang > Math.PI) ang -= Math.PI * 2; while (ang < -Math.PI) ang += Math.PI * 2;
-      list.push({ obj, kind, x, y, z, d, ang, dy, pri, score: pri * 12 - d - Math.abs(ang) * 5 });
-    };
-    for (const s of this.sentries) if (s.active && !s.dying && s.thermalVis) consider(s, 'sentry', s.pos.x, s.pos.y + 1.2, s.pos.z, 3, 28, s.alerted ? 7 : 5, 4);
-    for (const t of this.turrets) if (t.active && t.mesh.userData._tv) consider(t, 'turret', t.pos.x, t.pos.y, t.pos.z, 3, 30, 6, 8);
-    for (const l of this.lasers) if (l.boxVis && !l.disabled && l.relayActive && l.lockRef && l.lockRef.active) consider(l, 'box', l.relayPos.x, l.relayPos.y, l.relayPos.z, 3, 36, 3, 6);
-    return list;
-  }
-
-  // The gunner: turns toward the best bracketed target, matches its height and holds the trigger while aligned.
-  // Mutates `out` ({yaw, climb, speed}) and sets A.fire.
-  autoGunner(m, dt, A, out) {
-    A.fire = false;
-    if (this.gunAmmo <= 0 || m.drop > 0) return;
-    const P = m.pos, hunting = A.mode === 'HUNT';
-    let best = null;
-    for (const c of this.autoCandidates(m, A)) if (!best || c.score > best.score) best = c;
-    if (!best) { A.aimObj = null; A.aimT = 0; return; }
-    if (A.aimObj !== best.obj) { A.aimObj = best.obj; A.aimT = 0; }
-    A.aimT += dt;
-    if (A.aimT > 7) { A.ignore.add(best.obj); A.aimObj = null; return; }        // cannot hit it (height, angle): give up on it
-    // exploring has priority: only real threats (turrets, alerted sentries) make it turn, stop and climb to fight; anything else is
-    // shot only when it happens to be lined up, without slowing down
-    const threat = best.kind === 'turret' || (best.kind === 'sentry' && best.obj.alerted);
-    if (threat && (Math.abs(best.ang) < 0.7 || best.d < 20)) {
-      out.yaw = Math.max(-1, Math.min(1, best.ang * 3.2));
-      out.speed = Math.min(out.speed, hunting ? 2.5 : 1.5);
-    }
-    const ceil = this.ceilAt(this.floorOfY(P.y), this.cellAt(P.x, P.z)), flo = this.groundAt(this.floorOfY(P.y), this.cellAt(P.x, P.z), P.x, P.z);
-    const aimY = Math.max(flo + 1.3, Math.min(ceil - 1.1, best.y));
-    if (threat) out.climb = Math.max(-1, Math.min(1, (aimY - P.y) * 1.6));
-    const tol = best.kind === 'sentry' ? 1.1 : 0.6;
-    const angTol = Math.atan2(best.kind === 'sentry' ? 0.6 : 0.7, Math.max(2, best.d)) * 0.9;
-    if ((Math.abs(best.ang) < angTol && Math.abs(aimY - P.y) < tol + 0.3) || (best.kind === 'sentry' && Math.abs(best.ang) < angTol)) A.fire = true;
-  }
-
-  // One frame of autopilot: returns { yaw, climb, speed } in stick units / m/s
-  autoSteer(m, dt) {
-    const A = this.auto, GG = GRID_SIZE * GRID_SIZE;
-    const node = this.autoNode(m);
-    if (node < 0) {
-      A.lost += dt;
-      if (A.lost > 6) this.autoStop('AUTOPILOT LOST ITS POSITION — STOPPED');
-      this.gunHeld = false;
-      return { yaw: 0, climb: 0, speed: 0 };
-    }
-    A.lost = 0;
-    A.passT = (A.passT || 0) - dt;
-    if (A.passT <= 0) { A.passT = 2; this.xHazRefresh(); }
-    if (this.xgrid) { const xi = node, xv = this.xCellVal((xi / GG) | 0, xi % GG); if (this.xgrid[xi] !== xv) { this.xgrid[xi] = xv; this.xgridDirty = true; } }
-    const out = this.autoDrive(m, dt, A, node);
-    this.xroute = A.path ? A.path.slice(A.pi) : null;           // the plotted route (9 on the explore map)
-    this.autoGunner(m, dt, A, out);
-    this.gunHeld = A.fire;
-    return out;
-  }
-
-  // Navigation: explore (scan) / pickup / hunt, with a speed that follows the free distance ahead
-  autoDrive(m, dt, A, node) {
-    const G = GRID_SIZE, GG = G * G;
-    const hold = (climbAlt) => ({ yaw: 0, climb: climbAlt === undefined ? 0 : Math.max(-1, Math.min(1, (climbAlt - m.pos.y) * 1.4)), speed: 0 });
-    const scanDone = this.scanPercent() >= 100;
-    if (scanDone) A.noMore = true;
-
-    if (A.spin) {               // scanning: one full 360-degree turn on the spot, so the lidar sweeps every wall
-      let dy = m.yaw - A.spin.last; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
-      A.spin.acc += Math.abs(dy); A.spin.last = m.yaw; A.spin.t += dt;
-      if (A.spin.acc >= Math.PI * 2 + 0.1 || A.spin.t > 14) {
-        this.autoMarkSpot(m, A);
-        A.tried.add(A.target >= 0 ? A.target : node);
-        A.spin = null; A.target = -1; A.path = null; A.replanT = 0;
-        A.elim = 5;                                             // room scanned: deal with threats still in sight (up to 5 s), then the next room
-      }
-      return { yaw: 1, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
-    }
-
-    if (A.elim > 0) {            // eliminating: hold position while bracketed hostiles are in sight (the gunner turns and fires)
-      A.elim -= dt;
-      if (this.autoCandidates(m, A).some((c) => c.kind === 'turret' || (c.kind === 'sentry' && c.obj.alerted))) return { yaw: 0, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
-      A.elim = 0;
-    }
-
-    A.replanT -= dt;
-    // re-plan every 2 s. While exploring a better goal may appear (a pickup, or the hunt starting); a pickup / hunt goal is kept until done.
-    if (A.target < 0 || !A.path || A.replanT <= 0) {
-      const blocked = this.autoBlocked();
-      if (A.mode !== 'EXPLORE' && A.target >= 0 && A.path) {            // keep the goal, refresh the way to it
-        const t = A.target;
-        const p4 = this.autoBfs(node, (i) => i === t, blocked);
-        if (p4) { A.path = p4; A.pi = 0; } else { A.target = -1; A.path = null; A.mode = 'EXPLORE'; A.replanT = 0.3; return hold(); }
-      } else {
-        const before = A.mode;
-        const cp = this.autoChoose(m, node, blocked, A);
-        if (cp) {
-          A.target = cp.length ? cp[cp.length - 1] : node; A.path = cp; A.pi = 0; A.holdN = 0;
-          if (before !== A.mode) this.pushFeed(A.mode === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS' : 'AUTOPILOT: GOING FOR A PICKUP', 'cyan');
-        } else {
-          A.mode = 'EXPLORE';
-          if (A.target >= 0 && A.path) {                                 // keep exploring toward the same edge
-            const t = A.target;
-            const p3 = this.autoBfs(node, (i) => i === t, blocked);
-            if (!p3) { A.tried.add(A.target); A.target = -1; A.path = null; return hold(); }
-            A.path = p3; A.pi = 0;
-          } else {
-            const cand = new Set();
-            this.edgeTotal();
-            for (const seg of this.edgeList) {
-              if (this.revealedSeg.has(seg)) continue;
-              const n = this.autoSegNode(seg);
-              if (n >= 0 && !A.tried.has(n)) cand.add(n);
-            }
-            let p2 = this.autoFrontier(node, blocked, A);            // room by room: the nearest opening the scans did not cover
-            if (!p2) p2 = this.autoBfs(node, (i) => cand.has(i), blocked);   // then any edge still unscanned
-            if (!p2 && A.mem && !A.mem.retried && A.tried.size) {   // before calling it done, retry every spot that was given up once
-              A.mem.retried = true; A.tried.clear();
-              p2 = this.autoFrontier(node, blocked, A) || this.autoBfs(node, (i) => cand.has(i), blocked);
-            }
-            if (p2) A.centered = false;
-            if (!p2) {
-              A.noMore = true; if (A.mem) A.mem.done = true;      // remembered for the sector: the next rocket hunts straight away
-              if (this.targets.some((t) => t.active) && this.gameClock > (A.huntBlock || 0)) {                       // nothing left to scan: the next decision is a hunt
-                A.holdN = (A.holdN || 0) + 1;
-                if (A.holdN > 12) { this.autoStop(`AUTOPILOT DONE — SCAN ${this.scanPercent()}% · THE TARGET CANNOT BE REACHED FROM HERE`); return hold(); }
-                A.replanT = 0.2; return hold();
-              }
-              // everything reachable is done. A sealed secret chamber? Go and hover at its cracked wall.
-              const sec = this.breakables.filter((b) => b.active);
-              const near = new Set();
-              for (const b of sec) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                const x = b.gx + dx, z = b.gz + dz;
-                if (x >= 0 && z >= 0 && x < G && z < G && this.navOk(z * G + x) && !isShaft(this.floors[0][z * G + x])) near.add(z * G + x);
-              }
-              if (!A.final && near.size) p2 = this.autoBfs(node, (i) => near.has(i), blocked);
-              if (p2) {
-                A.final = true;
-                this.pushFeed('SEALED AREA LEFT — HEADING TO A CRACKED WALL', 'cyan');
-              } else {
-                const sealed = this.breakables.filter((b) => b.active).length;
-                this.autoStop(`AUTOPILOT DONE — SCAN ${this.scanPercent()}%` + (sealed ? ` · ${sealed} CRACKED WALL${sealed > 1 ? 'S' : ''} STILL SEALED OR UNREACHABLE` : ' · THE REST IS BLOCKED'));
-                return hold();
-              }
-            }
-            A.target = p2.length ? p2[p2.length - 1] : node;
-            A.path = p2; A.pi = 0;
-          }
-        }
-      }
-      A.replanT = 2.0;
-    }
-
-    // follow the path
-    const wpAt = (i) => { const c = i % GG; return [gridToWorldX(c % G), gridToWorldZ((c / G) | 0)]; };
-    while (A.pi < A.path.length) {
-      const [wx, wz] = wpAt(A.path[A.pi]);
-      if (Math.hypot(wx - m.pos.x, wz - m.pos.z) < 1.1) A.pi++; else break;
-    }
-    if (A.pi >= A.path.length) {
-      if (A.mode === 'PICKUP') { if (A.pick) A.triedPick.add(A.pick); A.target = -1; A.path = null; A.mode = 'EXPLORE'; return hold(); }
-      if (A.mode === 'HUNT') {
-        const ho = this.autoHuntApproach(m, 7, 1e9);          // in the target's cell: go straight at it
-        if (ho) return ho;
-        A.huntBlock = this.gameClock + 25; A.target = -1; A.path = null; A.mode = 'EXPLORE'; A.replanT = 0;   // no line to it: explore a while and retry
-        return hold();
-      }
-      if (A.final) {
-        this.autoStop(`AUTOPILOT AT THE SEALED WALL — SCAN ${this.scanPercent()}% · BLAST IT OPEN (COSTS THIS ROCKET), THEN RELAUNCH`);
-        return hold();
-      }
-      if (!A.centered) {                                        // first the middle of the room (the best view of its walls)
-        A.centered = true;
-        const nodeNow = this.autoNode(m);
-        const cp = nodeNow >= 0 ? this.autoCenterPath(nodeNow, this.autoBlocked()) : null;
-        if (cp && cp.length) { A.target = cp[cp.length - 1]; A.path = cp; A.pi = 0; A.replanT = 2.0; return hold(); }
-      }
-      A.centered = false;
-      const nHere = this.autoNode(m);
-      if (nHere >= 0 && (this.autoClearance(nHere) <= 2 || this.autoUnknownNear(nHere) < 6)) {   // a corridor, or little left unexplored here: no spin
-        this.autoMarkSpot(m, A); A.tried.add(A.target >= 0 ? A.target : nHere); A.target = -1; A.path = null; A.replanT = 0;
-        return hold();
-      }
-      A.spin = { acc: 0, last: m.yaw, t: 0 };                   // a room: one full 360-degree scan
-      return hold();
-    }
-
-    const wp = A.path[A.pi], [tx, tz] = wpAt(wp);
-    let dYaw = Math.atan2(-(tx - m.pos.x), -(tz - m.pos.z)) - m.yaw;
-    while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-    while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-
-    // stuck for 3 s: give this goal up
-    A.stuckT += dt;
-    if (A.stuckT > 3) {
-      if (Math.hypot(m.pos.x - A.sx, m.pos.z - A.sz) < 0.6) { if (A.mode === 'EXPLORE') A.tried.add(A.target); else if (A.pick) A.triedPick.add(A.pick); A.target = -1; A.path = null; }
-      A.stuckT = 0; A.sx = m.pos.x; A.sz = m.pos.z;
-      if (!A.path) return hold();                              // gave this goal up: choose a new one next frame
-    }
-    const wAlt = this.autoNodeAlt(wp);
-    const nearShaft = (f0, i) => f0 === 0 && isShaft(this.floors[0][i % GG]);
-    // lining up with a tunnel mouth: get to the right height before moving in
-    const align = nearShaft((wp / GG) | 0, wp) && !nearShaft((node / GG) | 0, node) && Math.abs(wAlt - m.pos.y) > 0.5;   // only when entering a tunnel (leaving one, the slab stops a descent)
-
-    // speed: as fast as the straight run before the next turn and the free distance ahead allow (a flight burns ~2% fuel a second at any
-    // speed, so faster is farther), slower in turns and close to walls
-    let ds = Math.hypot(tx - m.pos.x, tz - m.pos.z);                 // length of the straight stretch of the route ahead
-    {
-      let px = tx, pz = tz, dirx = tx - m.pos.x, dirz = tz - m.pos.z;
-      const l0 = Math.hypot(dirx, dirz) || 1; dirx /= l0; dirz /= l0;
-      for (let k = A.pi + 1; k < A.path.length && ds < 40; k++) {
-        const [nx, nz] = wpAt(A.path[k]), sx = nx - px, sz = nz - pz, sl = Math.hypot(sx, sz) || 1;
-        if ((sx / sl) * dirx + (sz / sl) * dirz < 0.8) break;       // the route turns here
-        ds += sl; px = nx; pz = nz;
-      }
-    }
-    const far = A.path.length - A.pi > 4;                         // transit to a far room: fly fast; close to the scan spot: slow
-    const fc = this.autoFwdClear(m, 22), vcap = A.mode === 'HUNT' ? 16 : (far ? this.throttleSpeed(CRUISE_THROTTLE) : 7);   // transit at cruise: the most economical thrust
-    let v = Math.min(vcap, 3 + Math.sqrt(2 * 11 * Math.max(0, ds - 1.5)), fc - 2.0);
-    v = Math.max(0, v);
-    v *= Math.max(0, Math.min(1, 1 - Math.abs(dYaw) / 1.1));
-    if (v < 1.0 && Math.abs(dYaw) < 0.9 && fc > 3) v = 1.0;
-    const Pr = m.probe;
-    if (Pr) { const gap = Math.min(Pr.l, Pr.r); if (gap < 1.4) v = Math.min(v, 2.5 + Math.max(0, gap - 0.8) * 8); }
-    const vmax = vcap;
-    let out = { yaw: Math.max(-1, Math.min(1, dYaw * 2.5)), climb: Math.max(-1, Math.min(1, (wAlt - m.pos.y) * 1.4)), speed: align ? 0 : v };
-
-    // hunting: with a clear line to a primary target, go straight at it (the proximity fuze fires at 5 units)
-    if (A.mode === 'HUNT') { const ho = this.autoHuntApproach(m, vmax, 16); if (ho) out = ho; }
-    return out;
   }
 
   // HOVER button: brake and hold position in the air. Stick up/down = altitude, left/right = rotate, lever = 0..4 m/s.
@@ -7048,8 +6600,8 @@ class NikitaGame {
     return out;
   }
 
-  // Cheat overlay (Dev Override): the explore map in the radar's corner. Floors stacked: current floor 100%, others 5%.
-  renderXmapRadar() {
+  // The map: the explore map drawn as the radar's base layer. Floors stacked: current floor 100%, others 5%.
+  drawXmapBase() {
     const ctx = this.radarCtx, size = this.radarCanvas.width, G = GRID_SIZE, GG = G * G, sc = size / G, X = this.xgrid;
     const curF = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
     const COL = ['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00'];
@@ -7087,12 +6639,7 @@ class NikitaGame {
       const cmd = this.pilot.cmd;
       if (cmd && cmd.carrot) { ctx.fillStyle = '#00e5ff'; ctx.beginPath(); ctx.arc(toX(cmd.carrot.x), toZ(cmd.carrot.z), sc * 0.6, 0, Math.PI * 2); ctx.fill(); }
     }
-    // Nikita: position and heading
-    const m = this.missile, px = (m.pos.x / CELL_SIZE + G * 0.5) * sc, pz = (m.pos.z / CELL_SIZE + G * 0.5) * sc;
-    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(px, pz); ctx.lineTo(px - Math.sin(m.yaw) * sc * 2.5, pz - Math.cos(m.yaw) * sc * 2.5); ctx.stroke();
-    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(px, pz, sc * 0.7, 0, Math.PI * 2); ctx.fill();
-    ctx.font = 'bold 14px monospace'; ctx.fillStyle = '#ffdd55'; ctx.fillText('XMAP F' + (curF + 1) + '/' + this.nFloors, 6, 16);
+    ctx.font = 'bold 13px monospace'; ctx.fillStyle = 'rgba(255,221,85,0.85)'; ctx.fillText('F' + (curF + 1) + '/' + this.nFloors, 6, 15);
   }
 
   castRay(ox, oy, oz, dx, dy, dz, range) {
@@ -8346,7 +7893,7 @@ class NikitaGame {
   }
 
   launchNextMissile() {
-    try { this.lidarSnapshot(); this.autoMemorySave(); } catch (_) {}       // every respawn saves the explored map on the device
+    try { this.lidarSnapshot(); } catch (_) {}                             // every respawn saves the lidar map and the explore map on the device
     if (this.targets.length > 0 && !this.targets.some(t => t.active)) {
       document.getElementById('killcam-banner').style.display = 'none';
       this.triggerSectorClear();
@@ -9131,18 +8678,16 @@ class NikitaGame {
       if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTOPILOT STOPPED', m.fuel <= 0);   // an engine-out does not end the autopilot: it relaunches
       else if (manual) this.autoStop('AUTOPILOT OFF — MANUAL CONTROL');
       else {
-        const useNew = this.cfg.newPilot && this.pilot && this.pilot.active;     // the rewritten autopilot (Dev Override: uncheck for the legacy one)
-        const a = useNew ? (this.pilot.done ? { yaw: 0, climb: 0, speed: 0 } : this.pilot.steer(dt)) : this.autoSteer(m, dt);
+        const a = this.pilot.done ? { yaw: 0, climb: 0, speed: 0 } : this.pilot.steer(dt);   // nothing left to do: hold position (it keeps re-checking)
         if (a.homing && this.homingLocked) { m.autoSpeed = a.speed; mouseYaw = 0; }    // lock-on run: the game's homing steers, the pilot sets the speed
         else {
         yawInput = a.yaw; pitchInput = a.climb; mouseYaw = 0; m.autoSpeed = a.speed;
-        if (!useNew) { this.manualTargetLock = false; this.homingLocked = false; }
         }
       }
     }
     if (m.hover && !m.landed) { m.hoverClimb = pitchInput; pitchInput = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
-    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1) * (m.auto && this.auto && this.auto.spin ? 2.0 : 1);   // the autopilot's scan spin turns twice as fast
+    const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1) * (m.auto && this.pilot && this.pilot.scan ? 2.0 : 1);   // the autopilot's scan spin turns twice as fast
     const targetYawRate = yawInput * agility;
     const targetPitchRate = pitchInput * agility * 0.85;
     const rateResp = m.hover ? (yawInput !== 0 ? 6.0 : 3.2) : (yawInput !== 0 ? 15.0 : 12.5);   // hover: the spin builds up and coasts
@@ -10245,100 +9790,17 @@ class NikitaGame {
   /* ------------------------------------------------------------------------
      SIDE-MOUNTED SOLITON TOP-DOWN TACTICAL RADAR
      ------------------------------------------------------------------------ */
-  buildRadarBase() {
-    const size = this.radarCanvas.width;
-    const scale = size / GRID_SIZE;
-    if (!this.radarBase) {
-      this.radarBase = document.createElement('canvas');
-      this.radarBase.width = size;
-      this.radarBase.height = size;
-    }
-    const c = this.radarBase.getContext('2d');
-    c.fillStyle = '#020a07';
-    c.fillRect(0, 0, size, size);
-    const cf = this._radarFloor = this.radarFloorNow();
-    const order = [];
-    for (let f = 0; f < this.nFloors; f++) if (f !== cf) order.push(f);
-    order.push(cf);
-    for (const f of order) {
-    c.globalAlpha = f === cf ? 1 : 0.3;
-    const grid = this.floors[f], off = f * GRID_SIZE * GRID_SIZE;
-    for (let z = 0; z < GRID_SIZE; z++) {
-      for (let x = 0; x < GRID_SIZE; x++) {
-        const v = grid[z * GRID_SIZE + x];
-        const seen = this.seenCells[off + z * GRID_SIZE + x] || (f === 0 && this.radarDeepCrack(x, z, v));
-        if (!seen) continue;
-        if (v === CELL_RAMP) {
-          c.fillStyle = 'rgba(120, 255, 200, 0.4)';
-          c.fillRect(x * scale, z * scale, scale, scale);
-        } else if (v === CELL_VOID && this.floors[f - 1][z * GRID_SIZE + x] !== CELL_RAMP) {
-          c.strokeStyle = 'rgba(0, 229, 255, 0.75)'; c.lineWidth = 1;
-          c.strokeRect(x * scale + 0.5, z * scale + 0.5, scale - 1, scale - 1);
-        } else if (v === CELL_WALL || (f === 0 && this.secretHidden.has(z * GRID_SIZE + x))) {
-          c.fillStyle = '#0f2b20';
-          c.fillRect(x * scale, z * scale, scale, scale);
-        } else if (v === CELL_CRACKED) {
-          c.fillStyle = 'rgba(255, 150, 20, 0.7)';
-          c.fillRect(x * scale, z * scale, scale, scale);
-        } else if (isShaft(v)) {
-          c.fillStyle = 'rgba(0, 255, 136, 0.45)';
-          c.fillRect(x * scale, z * scale, scale, scale);
-        } else if (v === CELL_RUNWAY) {
-          c.fillStyle = 'rgba(0, 255, 136, 0.16)';
-          c.fillRect(x * scale, z * scale, scale, scale);
-        }
-      }
-    }
-    }
-    c.globalAlpha = 1;
-    // ramp arrows (uphill) on known ramps
-    for (const r of this.ramps) {
-      if (!this.seenCells[r.f * GRID_SIZE * GRID_SIZE + (r.ez + r.dz) * GRID_SIZE + (r.ex + r.dx)] && !this.seenCells[(r.f + 1) * GRID_SIZE * GRID_SIZE + r.nz * GRID_SIZE + r.nx]) continue;
-      c.globalAlpha = (r.f === cf || r.f + 1 === cf) ? 1 : 0.35;
-      const ax = (r.ex + 0.5 + r.dx) * scale, az = (r.ez + 0.5 + r.dz) * scale;
-      const bx = (r.ex + 0.5 + r.dx * RAMP_LEN) * scale, bz = (r.ez + 0.5 + r.dz * RAMP_LEN) * scale;
-      c.strokeStyle = '#aaffdd'; c.lineWidth = 1.2;
-      c.beginPath(); c.moveTo(ax, az); c.lineTo(bx, bz);
-      c.lineTo(bx - (r.dx * 3 + r.px * 2.5), bz - (r.dz * 3 + r.pz * 2.5));
-      c.moveTo(bx, bz); c.lineTo(bx - (r.dx * 3 - r.px * 2.5), bz - (r.dz * 3 - r.pz * 2.5));
-      c.stroke();
-    }
-    c.globalAlpha = 1;
-    for (const L of this.lifts) {
-      if (!this.revealedSeg.has(LIFT_BASE + this.lifts.indexOf(L) * 4)) continue;
-      const lx = (L.cx / CELL_SIZE + GRID_SIZE * 0.5) * scale, lz = (L.cz / CELL_SIZE + GRID_SIZE * 0.5) * scale;
-      c.fillStyle = 'rgba(0, 229, 255, 0.35)'; c.fillRect(lx - scale, lz - scale, scale * 2, scale * 2);
-      c.fillStyle = '#bff8ff'; c.font = `bold ${Math.max(8, scale * 1.6) | 0}px monospace`; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillText('⇕', lx, lz); c.textAlign = 'start'; c.textBaseline = 'alphabetic';
-    }
-    this.radarDirty = false;
-  }
-
-  radarFloorNow() {
-    return this.floorOfY(this.missile && this.missile.active ? this.missile.pos.y : this.lidarOrigin().y);
-  }
-
-  // Deep scan 1+: cracked walls show on the radar within 1.5x scan range even before they are scanned
-  radarDeepCrack(x, z, v) {
-    if (v !== CELL_CRACKED || this.upg.ldeep < 1) return false;
-    const o = this.lidarOrigin();
-    return Math.hypot(gridToWorldX(x) - o.x, gridToWorldZ(z) - o.z) < this.lidarParams().range * 1.5;
-  }
-
   renderSolitonRadar() {
     if (!this.radarOpen) return;
     if (this.state !== 'PLAYING' && this.state !== 'KILLCAM' && this.state !== 'RESPAWNING') return;
     this._radarTick = (this._radarTick + 1) | 0;
     if ((this._radarTick & 1) === 1) return; // ~30 fps is plenty for the minimap
-    if (this.cfg.xmapOverlay) { this.renderXmapRadar(); return; }        // Dev Override: explore map instead of the radar
     const ctx = this.radarCtx;
     const size = this.radarCanvas.width;
     const scale = size / GRID_SIZE;
 
-    if (this.nFloors > 1 && this.radarFloorNow() !== this._radarFloor) this.radarDirty = true;
-    if (this.radarDirty || !this.radarBase) this.buildRadarBase();
-    ctx.drawImage(this.radarBase, 0, 0);
-    const curF = this._radarFloor || 0;
+    this.drawXmapBase();                                               // the explore map is the map (floors stacked, route, autopilot legs)
+    const curF = this._radarFloor = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
     const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : 0.3; };
 
     const toRX = (wx) => (wx / CELL_SIZE + GRID_SIZE * 0.5) * scale;
@@ -10805,7 +10267,7 @@ class NikitaGame {
 
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        try { this.lidarSnapshot(); this.autoMemorySave(); } catch (_) {}     // app sent to the background / closed: keep the explored map
+        try { this.lidarSnapshot(); } catch (_) {}                           // app sent to the background / closed: keep the explored map
         this.resetAllInputs();
         if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
       }
@@ -11386,9 +10848,7 @@ class NikitaGame {
       if (pauseOv) pauseOv.checked = false;
     });
     document.getElementById('ov-inf-fuel').addEventListener('change', (e) => this.cfg.infFuel = e.target.checked);
-    document.getElementById('ov-newpilot').addEventListener('change', (e) => { this.cfg.newPilot = e.target.checked; if (this.missile.auto) { if (e.target.checked) this.pilot.engage(); else this.pilot.active = false; } });
     document.getElementById('ov-apdebug').addEventListener('change', (e) => { this.cfg.apDebug = e.target.checked; const el = document.getElementById('ap-debug'); if (el) el.style.display = e.target.checked ? 'block' : 'none'; });
-    document.getElementById('ov-xmap').addEventListener('change', (e) => { this.cfg.xmapOverlay = e.target.checked; this.xgridDirty = true; this.radarDirty = true; });
     document.getElementById('ov-god-mode').addEventListener('change', (e) => this.cfg.godMode = e.target.checked);
     document.getElementById('ov-inf-boost').addEventListener('change', (e) => this.cfg.infBoost = e.target.checked);
     document.getElementById('ov-homing').addEventListener('change', (e) => this.cfg.homing = e.target.checked);
@@ -11463,7 +10923,7 @@ class NikitaGame {
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
     this.cStyle(el, 'display', txt ? 'block' : 'none');
     const ab = this._autoBtn || (this._autoBtn = document.getElementById('tbtn-auto'));
-    if (ab) { const on = Boolean(this.autoPlay && (this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING')); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\n' + (m.auto && this.cfg.newPilot && this.pilot && this.pilot.active ? this.pilot.mission : (m.auto && this.auto ? this.auto.mode : 'ON')) : 'AUTO'); }
+    if (ab) { const on = Boolean(this.autoPlay && (this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING')); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\n' + (m.auto && this.pilot && this.pilot.active ? this.pilot.mission : 'ON') : 'AUTO'); }
     const hb = this._hoverBtn || (this._hoverBtn = document.getElementById('tbtn-hover'));
     if (hb) { const on = Boolean(m.active && m.hover && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
   }
