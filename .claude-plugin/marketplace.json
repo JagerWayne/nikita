@@ -1,0 +1,11 @@
+{
+  "name": "jagerwayne-tools",
+  "owner": { "name": "JagerWayne" },
+  "plugins": [
+    {
+      "name": "pwa-kit",
+      "source": "./plugins/pwa-kit",
+      "description": "Make static HTML apps and games installable, offline, self-updating PWAs on GitHub Pages (update progress bar, version display, title menu, delete save, landscape lock, bundled verifier)."
+    }
+  ]
+}
