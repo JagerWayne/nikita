@@ -1098,7 +1098,7 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #touch-actions {
   --ab: 60px; --gap: 8px;
   position: absolute; right: calc(var(--safe-r) + 92px); bottom: var(--safe-b);
-  width: calc(var(--ab) * 2 + var(--gap)); height: calc(var(--ab) * 3 + var(--gap) * 2);
+  width: calc(var(--ab) * 2 + var(--gap)); height: calc(var(--ab) * 4 + var(--gap) * 3);
   display: block; grid-template-columns: none; grid-template-rows: none;
   pointer-events: none; opacity: var(--btn-opacity);
   transform: scale(var(--btn-scale)); transform-origin: bottom right;
@@ -1115,6 +1115,8 @@ body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
 #tbtn-decoy    { --col: 1; --row: 1; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; font-size: 9px; }
 #tbtn-hover, #tbtn-land { white-space: pre-line; }
 #tbtn-land     { --col: 0; --row: 2; border-color: rgba(0, 229, 255, 0.9); color: #00e5ff; }
+#tbtn-auto     { --col: 0; --row: 3; border-color: rgba(190, 150, 255, 0.9); color: #c9a6ff; white-space: pre-line; }
+#tbtn-auto.on { background: rgba(190, 150, 255, 0.3); box-shadow: 0 0 16px rgba(190, 150, 255, 0.7); }
 #tbtn-hover    { --col: 1; --row: 2; border-color: rgba(120, 255, 170, 0.9); color: #7dffaa; }
 #tbtn-hover.on { background: rgba(120, 255, 170, 0.3); box-shadow: 0 0 16px rgba(120, 255, 170, 0.7); }
 #tbtn-land.armed { background: rgba(0, 229, 255, 0.3); animation: landBlink 0.8s steps(2) infinite; }
@@ -1290,6 +1292,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <button class="touch-act-btn" id="tbtn-lock" aria-label="Lock Highlighted Target">LOCK<br/>TGT</button>
     <button class="touch-act-btn" id="tbtn-land" aria-label="Land or lift off">LAND</button>
     <button class="touch-act-btn" id="tbtn-hover" aria-label="Hover in place">HOVER</button>
+    <button class="touch-act-btn" id="tbtn-auto" aria-label="Auto discovery">AUTO</button>
     <button class="touch-act-btn" id="tbtn-decoy">DECOY<br/>x2</button>
     <button class="touch-act-btn" id="tbtn-gun" aria-label="Fire gun (hold)">GUN<br/>HOLD</button>
     <button class="touch-act-btn" id="tbtn-detonate" aria-label="Tap to switch between proximity fuze and hold-to-detonate">PROX<br/>FUZE</button>
@@ -1406,9 +1409,10 @@ window.addEventListener('unhandledrejection', function (e) {
         <div><span class="ctrl-key">FIRE · LOCK · DET</span> : Launch, lock, blast</div>
         <div><span class="ctrl-key">DECOY</span> : Lure sentries with a noise decoy</div>
         <div><span class="ctrl-key">GUN</span> : Hold to fire the rocket gun</div>
+        <div><span class="ctrl-key">AUTO</span> : Auto-discovery: hovers around the map by itself until everything reachable is scanned (move the stick to take over)</div>
         <div><span class="ctrl-key">HOVER</span> : Hold position. Stick up/down = altitude, left/right = rotate, lever = 0 to 4 m/s</div>
         <div><span class="ctrl-key">LAND</span> : Press LAND, then ease onto a flat floor or a shaft floor; press LIFT OFF (or raise the lever) to leave</div>
-        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, G (land), H (hover), X</div>
+        <div><span class="ctrl-key">DESKTOP</span> : Mouse/WASD, Shift, L, R, Q, G (land), H (hover), V (auto-discover), X</div>
       </div>
     </details>
 
@@ -4372,6 +4376,8 @@ class NikitaGame {
     const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);
     const tight = m.wallProximity || 0;                      // 0 in open halls, up to 1 right beside a wall
 
+    if (m.hover) this.applyHoverFX(m, dt, hasFuel, spd);
+
     // 1) buffeting: smooth gusts grow with speed and in tight passages
     if (hasFuel) {
       const gAmp = (0.25 + 1.6 * sfw + 1.4 * tight * sfw) * dt * (m.hover ? 0.25 : 1);
@@ -4400,13 +4406,45 @@ class NikitaGame {
     // 4) acceleration pitch: speeding up lifts the nose, braking dips it
     const acc = (m.currentSpeed - (m._spd0 === undefined ? m.currentSpeed : m._spd0)) / Math.max(dt, 1e-3);
     m._spd0 = m.currentSpeed;
-    const kickTarget = Math.max(-0.045, Math.min(0.045, acc * 0.003));
+    let kickTarget = Math.max(-0.045, Math.min(0.045, acc * 0.003));
+    if (m.hover) kickTarget = -Math.min(1, spd / HOVER_SPEED_MAX) * 0.07 - Math.max(-0.06, Math.min(0.06, acc * 0.02));   // like a helicopter: leans into the move
 
     // 5) kicks relax toward the acceleration pitch / zero
     m.kickP = (m.kickP || 0) + (kickTarget - (m.kickP || 0)) * Math.min(1, dt * 5);
     m.kickY = (m.kickY || 0) * Math.exp(-dt * 6);
     m.kickP = Math.max(-0.18, Math.min(0.18, m.kickP));
     m.kickY = Math.max(-0.12, Math.min(0.12, m.kickY));
+  }
+
+  // Hover-only effects: breeze drift, thruster pulse, ground cushion, wall/roof wash with shake, sway
+  applyHoverFX(m, dt, hasFuel, spd) {
+    if (!hasFuel) return;
+    const t = this.gameClock, P = m.probe;
+    // a hovering rocket never sits perfectly still: a slow breeze drifts it and the thrusters pulse
+    const wx = Math.sin(t * 0.63 + 1.7) + 0.6 * Math.sin(t * 1.37), wz = Math.sin(t * 0.51 + 0.2) + 0.6 * Math.sin(t * 1.19 + 2.3);
+    m.vel.x += wx * 0.32 * dt; m.vel.z += wz * 0.32 * dt;
+    m.vel.y += Math.sin(t * 2.3) * 0.35 * dt;
+    m.roll += Math.sin(t * 1.4) * 0.0016 + Math.sin(t * 2.7 + 1) * 0.001;
+    if (!P) return;
+    // ground cushion: close to the floor the exhaust builds a pillow of air that slows a descent and lifts the nose
+    if (P.d < 1.6) {
+      const k = 1 - P.d / 1.6;
+      if (m.vel.y < 0 && !m.landReq) m.vel.y *= Math.max(0, 1 - dt * 4.5 * k);
+      m.vel.y += 0.7 * k * dt;
+      this.cameraTrauma = Math.max(this.cameraTrauma, 0.05 + 0.1 * k);
+      if (m.vel.y < -0.6 && k > 0.5) m.kickP = (m.kickP || 0) + 0.004;
+    }
+    // prop wash off walls and roof: pushes the rocket away and rattles the view
+    const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);
+    const wash = (d, ax, ay, az) => {
+      if (d >= 1.5) return;
+      const k = 1 - d / 1.5;
+      m.vel.x += ax * 1.1 * k * dt; m.vel.y += ay * 1.1 * k * dt; m.vel.z += az * 1.1 * k * dt;
+      this.cameraTrauma = Math.max(this.cameraTrauma, 0.04 + 0.1 * k);
+    };
+    wash(P.l, rx, 0, rz); wash(P.r, -rx, 0, -rz); wash(P.u, 0, -1, 0);
+    // an idle hover sways side to side with the yaw spin
+    m.kickY = (m.kickY || 0) + m.yawRate * 0.0006;
   }
 
   // Impulse from a shockwave or recoil; dir must be a unit vector pointing the way the rocket is shoved
@@ -4419,7 +4457,220 @@ class NikitaGame {
 
   // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
   fuzeNear(p, x, y, z, dist) {
-    return this.fuzeMode !== 'det' && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
+    return this.fuzeMode !== 'det' && !this.missile.auto && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
+  }
+
+  /* ------------------------------------------------------------------------
+     AUTO DISCOVERY: the rocket hovers its way around the facility until every reachable edge is outlined
+     ------------------------------------------------------------------------ */
+  navOk(i) {
+    const GG = GRID_SIZE * GRID_SIZE, f = (i / GG) | 0;
+    if (f < 0 || f >= this.nFloors) return false;
+    const v = this.floors[f][i % GG];
+    return isWalkable(v) || v === CELL_RAMP || (f === 0 && isShaft(v));
+  }
+
+  // The (floor, cell) node the rocket is in (or the nearest valid one above/below), or -1
+  autoNode(m) {
+    const GG = GRID_SIZE * GRID_SIZE, c = this.cellAt(m.pos.x, m.pos.z);
+    if (c < 0) return -1;
+    const f0 = this.floorOfY(m.pos.y);
+    for (const f of [f0, f0 - 1, f0 + 1]) if (f >= 0 && f < this.nFloors && this.navOk(f * GG + c)) return f * GG + c;
+    return -1;
+  }
+
+  autoNodeAlt(i) {
+    const G = GRID_SIZE, GG = G * G, f = (i / GG) | 0, c = i % GG;
+    if (f === 0 && isShaft(this.floors[0][c])) return (this.floors[0][c] - CELL_SHAFT_LOW) * WALL_H / 3 + WALL_H / 6;   // middle of the tunnel opening
+    if (this.floors[f][c] === CELL_RAMP) {
+      const r = this.ramps[this.rampAt.get(i)];
+      if (r) return this.rampHeight(r, gridToWorldX(c % G), gridToWorldZ((c / G) | 0)) + 1.5;
+    }
+    return f * WALL_H + 2.0;
+  }
+
+  // Cells to keep away from: turbines, bulkheads, live laser grids, barrels and grates
+  autoBlocked() {
+    const G = GRID_SIZE, GG = G * G, B = new Uint8Array(GG * this.nFloors);
+    const disc = (x, z, r, f) => {
+      const g0 = worldToGridX(x - r - 2), g1 = worldToGridX(x + r + 2), z0 = worldToGridZ(z - r - 2), z1 = worldToGridZ(z + r + 2);
+      for (let gz = Math.max(0, z0); gz <= Math.min(G - 1, z1); gz++) for (let gx = Math.max(0, g0); gx <= Math.min(G - 1, g1); gx++) {
+        if (Math.hypot(gridToWorldX(gx) - x, gridToWorldZ(gz) - z) < r + CELL_SIZE * 0.5) B[f * GG + gz * G + gx] = 1;
+      }
+    };
+    for (const t of this.turbines) disc(t.pos.x, t.pos.z, 3.2, 0);
+    for (const b of this.bulkheads) disc(b.x, b.z, 3.0, 0);
+    for (const g of this.grates) if (g.active) disc(g.pos.x, g.pos.z, 2.2, 0);
+    for (const b of this.barrels) if (b.active) disc(b.pos.x, b.pos.z, 1.8, Math.min(this.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
+    for (const l of this.lasers) {
+      if (l.disabled) continue;
+      for (let x = l.xMin - 1; x <= l.xMax + 1; x += CELL_SIZE * 0.5) disc(x, l.z, 1.2, 0);
+    }
+    return B;
+  }
+
+  // Which node would stand next to a given unrevealed edge (so the scanner can see it), or -1
+  autoSegNode(seg) {
+    const G = GRID_SIZE, GG = G * G;
+    const nb = (f, gx, gz, face) => {
+      const nx = gx + (face === 0 ? 1 : face === 1 ? -1 : 0), nz = gz + (face === 2 ? 1 : face === 3 ? -1 : 0);
+      if (nx < 0 || nz < 0 || nx >= G || nz >= G) return -1;
+      const n = f * GG + nz * G + nx;
+      return this.navOk(n) ? n : -1;
+    };
+    if (seg >= LIFT_BASE) return -1;
+    if (seg >= RIM_BASE) {
+      const i = (seg - RIM_BASE) >> 2, side = (seg - RIM_BASE) & 3, F = (i / GG) | 0, c = i % GG, x = c % G, z = (c / G) | 0;
+      const face = side === 0 ? 1 : side === 1 ? 0 : side === 2 ? 3 : 2;    // rim side -> direction of the neighbour
+      return nb(F, x, z, face);
+    }
+    if (seg >= FEAT_BASE) {
+      const r = this.ramps[(seg - FEAT_BASE) >> 3];
+      if (!r) return -1;
+      const n = r.f * GG + this.cellAt(r.sx, r.sz);
+      return this.navOk(n) ? n : -1;
+    }
+    if (seg >= SHAFT_SEG_BASE) {
+      const c = Math.floor((seg - SHAFT_SEG_BASE) / 32);
+      return this.navOk(c) ? c : -1;                       // fly into the tunnel itself
+    }
+    const fl = Math.floor(seg / FLOOR_SEG), s2 = seg % FLOOR_SEG, face = (s2 >> 2) & 3, cell = s2 >> 4;
+    return nb(fl, cell % G, (cell / G) | 0, face);
+  }
+
+  // Breadth-first search over nodes from `start`. goal(i) -> bool. Returns the path (excluding start) or null.
+  autoBfs(start, goal, blocked) {
+    if (this.navFor !== this.ramps) this.navLinksBuild();
+    const G = GRID_SIZE, GG = G * G, NF = this.nFloors;
+    const prev = new Int32Array(GG * NF).fill(-2);
+    prev[start] = -1;
+    const q = [start];
+    let found = -1;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h];
+      if (goal(i)) { found = i; break; }
+      const c = i % GG, x = c % G, z = (c / G) | 0, f0 = i - c;
+      const nb = [];
+      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
+      const extra = this.navLinks.get(i);
+      if (extra) nb.push(...extra);
+      for (const n of nb) if (prev[n] === -2 && this.navOk(n) && !blocked[n]) { prev[n] = i; q.push(n); }
+    }
+    if (found < 0) return null;
+    const path = [];
+    for (let i = found; i !== start && i >= 0; i = prev[i]) path.push(i);
+    return path.reverse();
+  }
+
+  pressAuto() {
+    const m = this.missile;
+    if (this.state !== 'PLAYING' || !m.active || m.drop > 0 || m.flipping) return;
+    if (m.auto) { this.autoStop('AUTO-DISCOVERY OFF'); return; }
+    if (m.landed) { this.pushFeed('LIFT OFF FIRST', 'amber'); return; }
+    if (m.fuel <= 0) return;
+    if (!m.hover) this.pressHover();
+    m.auto = true; m.landReq = false;
+    this.auto = { target: -1, path: null, pi: 0, dwell: 0, tried: new Set(), replanT: 0, stuckT: 0, sx: m.pos.x, sz: m.pos.z, lost: 0 };
+    this.pushFeed(`AUTO-DISCOVERY ON — SCAN ${this.scanPercent()}% · MOVE THE STICK TO TAKE OVER`, 'cyan');
+  }
+
+  autoStop(msg) {
+    const m = this.missile;
+    if (!m.auto) return;
+    m.auto = false; m.autoSpeed = 0;
+    if (msg) this.pushFeed(msg, 'amber');
+  }
+
+  // One frame of autopilot: returns { yaw, climb, speed } in stick units / m/s
+  autoSteer(m, dt) {
+    const A = this.auto, G = GRID_SIZE, GG = G * G;
+    const hold = (climbAlt) => ({ yaw: 0, climb: climbAlt === undefined ? 0 : Math.max(-1, Math.min(1, (climbAlt - m.pos.y) * 1.4)), speed: 0 });
+    const node = this.autoNode(m);
+    if (node < 0) { A.lost += dt; if (A.lost > 6) this.autoStop('AUTO-DISCOVERY LOST ITS POSITION — STOPPED'); return hold(); }
+    A.lost = 0;
+    if (this.scanPercent() >= 100) { this.autoStop('AUTO-DISCOVERY COMPLETE — SCAN 100%'); return hold(); }
+
+    if (A.dwell > 0) {          // arrived: spin slowly so the scanner sweeps every side
+      A.dwell -= dt;
+      if (A.dwell <= 0) { A.tried.add(A.target); A.target = -1; A.path = null; }
+      return { yaw: 0.7, climb: Math.max(-1, Math.min(1, (this.autoNodeAlt(node) - m.pos.y) * 1.4)), speed: 0 };
+    }
+
+    A.replanT -= dt;
+    if (A.target < 0 || !A.path || A.replanT <= 0) {
+      const blocked = this.autoBlocked();
+      if (A.target < 0) {
+        const cand = new Set();
+        this.edgeTotal();
+        for (const seg of this.edgeList) {
+          if (this.revealedSeg.has(seg)) continue;
+          const n = this.autoSegNode(seg);
+          if (n >= 0 && !A.tried.has(n)) cand.add(n);
+        }
+        let path = this.autoBfs(node, (i) => cand.has(i), blocked);
+        if (!path) {
+          // everything reachable is done. A sealed secret chamber? Go and hover at its cracked wall.
+          const sec = this.breakables.filter((b) => b.active);
+          const near = new Set();
+          for (const b of sec) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const x = b.gx + dx, z = b.gz + dz;
+            if (x >= 0 && z >= 0 && x < G && z < G && this.navOk(z * G + x) && !isShaft(this.floors[0][z * G + x])) near.add(z * G + x);
+          }
+          if (!A.final && near.size) path = this.autoBfs(node, (i) => near.has(i), blocked);
+          if (path) {
+            A.final = true;
+            this.pushFeed('SEALED AREA LEFT — HEADING TO A CRACKED WALL', 'cyan');
+          } else {
+            const sealed = this.breakables.filter((b) => b.active).length;
+            this.autoStop(`AUTO-DISCOVERY DONE — SCAN ${this.scanPercent()}%` + (sealed ? ` · ${sealed} CRACKED WALL${sealed > 1 ? 'S' : ''} STILL SEALED OR UNREACHABLE` : ' · THE REST IS BLOCKED'));
+            return hold();
+          }
+        }
+        A.target = path.length ? path[path.length - 1] : node;
+        A.path = path; A.pi = 0;
+      } else {
+        const t = A.target;
+        const path = this.autoBfs(node, (i) => i === t, blocked);
+        if (!path) { A.tried.add(A.target); A.target = -1; A.path = null; return hold(); }
+        A.path = path; A.pi = 0;
+      }
+      A.replanT = 2.0;
+    }
+
+    // follow the path
+    const wpAt = (i) => { const c = i % GG; return [gridToWorldX(c % G), gridToWorldZ((c / G) | 0)]; };
+    while (A.pi < A.path.length) {
+      const [wx, wz] = wpAt(A.path[A.pi]);
+      if (Math.hypot(wx - m.pos.x, wz - m.pos.z) < 1.1) A.pi++; else break;
+    }
+    if (A.pi >= A.path.length) {
+      if (A.final) {
+        this.autoStop(`AUTO-DISCOVERY AT THE SEALED WALL — SCAN ${this.scanPercent()}% · BLAST IT OPEN (COSTS THIS ROCKET), THEN RELAUNCH AND PRESS AUTO`);
+        return hold();
+      }
+      A.dwell = 1.2; return hold();
+    }
+
+    const wp = A.path[A.pi], [tx, tz] = wpAt(wp);
+    let dYaw = Math.atan2(-(tx - m.pos.x), -(tz - m.pos.z)) - m.yaw;
+    while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+    while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+
+    // stuck for 3 s: give this spot up
+    A.stuckT += dt;
+    if (A.stuckT > 3) {
+      if (Math.hypot(m.pos.x - A.sx, m.pos.z - A.sz) < 0.6) { A.tried.add(A.target); A.target = -1; A.path = null; }
+      A.stuckT = 0; A.sx = m.pos.x; A.sz = m.pos.z;
+    }
+    const wAlt = this.autoNodeAlt(wp);
+    const nearShaft = (f0, i) => f0 === 0 && isShaft(this.floors[0][i % GG]);
+    // lining up with a tunnel mouth (or leaving one): get to the right height before moving on
+    const align = (nearShaft((wp / GG) | 0, wp) || nearShaft((node / GG) | 0, node)) && Math.abs(wAlt - m.pos.y) > 0.5;
+    return {
+      yaw: Math.max(-1, Math.min(1, dYaw * 2.5)),
+      climb: Math.max(-1, Math.min(1, (wAlt - m.pos.y) * 1.4)),
+      speed: align ? 0 : (Math.abs(dYaw) < 0.4 ? HOVER_SPEED_MAX : (Math.abs(dYaw) < 0.9 ? 1.2 : 0.0))
+    };
   }
 
   // HOVER button: hold position in the air. Stick up/down = altitude, left/right = rotate, lever = 0..4 m/s
@@ -4429,6 +4680,7 @@ class NikitaGame {
     if (m.landed) { this.pushFeed('LIFT OFF FIRST', 'amber'); return; }
     if (m.fuel <= 0) return;
     m.hover = !m.hover;
+    if (!m.hover) this.autoStop('AUTO-DISCOVERY OFF');
     if (m.hover) {
       m.hoverSavedThr = m.throttle;
       this.setThrottle(0);
@@ -5338,20 +5590,24 @@ class NikitaGame {
     if (this._edgeTotal) return this._edgeTotal;
     const G = GRID_SIZE, GG = G * G;
     let n = 0;
+    const list = [];
     for (let fl = 0; fl < this.nFloors; fl++) {
       const grid = this.floors[fl];
       for (let c = 0; c < GG; c++) {
         const v = grid[c];
         if (v !== CELL_WALL && v !== CELL_CRACKED && !isShaft(v)) continue;
-        for (let q = 0; q < 16; q++) if (this.validSeg(fl * FLOOR_SEG + c * 16 + q)) n++;
+        for (let q = 0; q < 16; q++) { const id = fl * FLOOR_SEG + c * 16 + q; if (this.validSeg(id)) { n++; list.push(id); } }
       }
     }
     for (let c = 0; c < GG; c++) {
       if (!isShaft(this.grid[c])) continue;
-      for (let k = 0; k < 20; k++) if (this.validSeg(SHAFT_SEG_BASE + c * 32 + k)) n++;
+      for (let k = 0; k < 20; k++) { const id = SHAFT_SEG_BASE + c * 32 + k; if (this.validSeg(id)) { n++; list.push(id); } }
     }
+    for (let i = 0; i < this.ramps.length * 8; i++) list.push(FEAT_BASE + i);
+    for (let i = 0; i < this.lifts.length * 4; i++) list.push(LIFT_BASE + i);
     n += this.ramps.length * 8 + this.lifts.length * 4;
-    for (let F = 1; F < this.nFloors; F++) for (let c = 0; c < GG; c++) if (this.floors[F][c] === CELL_VOID) for (let side = 0; side < 4; side++) if (this.validRim(RIM_BASE + (F * GG + c) * 4 + side)) n++;
+    for (let F = 1; F < this.nFloors; F++) for (let c = 0; c < GG; c++) if (this.floors[F][c] === CELL_VOID) for (let side = 0; side < 4; side++) { const id = RIM_BASE + (F * GG + c) * 4 + side; if (this.validRim(id)) { n++; list.push(id); } }
+    this.edgeList = list;
     return (this._edgeTotal = Math.max(1, n));
   }
 
@@ -6331,7 +6587,7 @@ class NikitaGame {
     b.vel.copy(_v1).multiplyScalar(GUN_SPEED + (m.currentSpeed || 0));
     this.gunAmmo--;
     _v2.copy(_v1).negate();
-    this.shoveRocket(_v2, 0.45, 0.014, (Math.random() - 0.5) * 0.012);   // recoil: shoves the rocket back and kicks the nose
+    this.shoveRocket(_v2, m.hover ? 1.4 : 0.45, m.hover ? 0.03 : 0.014, (Math.random() - 0.5) * (m.hover ? 0.03 : 0.012));   // recoil: shoves the rocket back and kicks the nose
     this.cameraTrauma = Math.min(1.0, this.cameraTrauma + 0.025);
     this.gunNoiseT = 0.35;
     if ((this.gunAmmo & 1) === 0) this.audio.playGunshot();
@@ -6567,7 +6823,7 @@ class NikitaGame {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -6685,7 +6941,7 @@ class NikitaGame {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
@@ -7426,12 +7682,24 @@ class NikitaGame {
     if (m.drop > 0 || m.flipping) { yawInput = 0; pitchInput = 0; mouseYaw = 0; mousePitch = 0; }
     // hover: stick up / down climbs and descends, the nose stays level; left / right rotate on the spot
     m.hoverClimb = 0;
+    if (m.auto) {
+      const manual = Math.abs(this.touchInput.joyX) > 0.3 || Math.abs(this.touchInput.joyY) > 0.3 ||
+        this.keys['KeyA'] || this.keys['KeyD'] || this.keys['KeyW'] || this.keys['KeyS'] ||
+        this.keys['ArrowLeft'] || this.keys['ArrowRight'] || this.keys['ArrowUp'] || this.keys['ArrowDown'];
+      if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTO-DISCOVERY STOPPED');
+      else if (manual) this.autoStop('AUTO-DISCOVERY OFF — MANUAL CONTROL');
+      else {
+        const a = this.autoSteer(m, dt);
+        yawInput = a.yaw; pitchInput = a.climb; mouseYaw = 0; m.autoSpeed = a.speed;
+        this.manualTargetLock = false; this.homingLocked = false;
+      }
+    }
     if (m.hover && !m.landed) { m.hoverClimb = pitchInput; pitchInput = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
     const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1);
     const targetYawRate = yawInput * agility;
     const targetPitchRate = pitchInput * agility * 0.85;
-    const rateResp = yawInput !== 0 ? 15.0 : 12.5;
+    const rateResp = m.hover ? (yawInput !== 0 ? 6.0 : 3.2) : (yawInput !== 0 ? 15.0 : 12.5);   // hover: the spin builds up and coasts
     const pitchResp = pitchInput !== 0 ? 15.0 : 12.5;
     m.yawRate += (targetYawRate - m.yawRate) * Math.min(1, dt * rateResp);
     m.pitchRate += (targetPitchRate - m.pitchRate) * Math.min(1, dt * pitchResp);
@@ -7550,7 +7818,7 @@ class NikitaGame {
         m.pitch = Math.max(-0.02, Math.min(0.7, m.pitch));
       }
     } else {
-      const leverSpeed = m.hover ? effT * HOVER_SPEED_MAX : this.throttleSpeed(effT);
+      const leverSpeed = m.hover ? (m.auto ? m.autoSpeed : effT * HOVER_SPEED_MAX) : this.throttleSpeed(effT);
       let targetSpeed = hasFuel ? (m.hover ? leverSpeed : leverSpeed * this.cfg.speedMult) : 9.5;
       if (m.landReq) {
         m.landReqT = (m.landReqT || 0) + dt;
@@ -7881,7 +8149,7 @@ class NikitaGame {
       }
     }
 
-    this.audio.updateEngine(true, m.activeSpeedMode, m.hover ? Math.max(0.28, m.currentSpeed / this.maxSpeed()) : m.currentSpeed / this.maxSpeed(), engineOn);
+    this.audio.updateEngine(true, m.activeSpeedMode, m.hover ? Math.min(0.6, Math.max(0.28, m.currentSpeed / this.maxSpeed()) + Math.abs(m.vel.y) * 0.06) : m.currentSpeed / this.maxSpeed(), engineOn);
 
     this.cStyle(this.el.speedLines, 'opacity', m.activeSpeedMode === 3 ? '0.85' : '0');
     if (m.activeSpeedMode === 3) {
@@ -8926,7 +9194,7 @@ class NikitaGame {
       gimbal.style.bottom = '';
     }
     if (knob) knob.style.transform = 'translate3d(0px, 0px, 0px)';
-    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun', 'tbtn-land', 'tbtn-hover'].forEach(id => {
+    ['tbtn-lock', 'tbtn-decoy', 'tbtn-detonate', 'tbtn-gun', 'tbtn-land', 'tbtn-hover', 'tbtn-auto'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('pressed');
     });
@@ -9379,6 +9647,18 @@ class NikitaGame {
       btnLand.addEventListener('pointerup', landUp);
       btnLand.addEventListener('pointercancel', landUp);
     }
+    const btnAuto = document.getElementById('tbtn-auto');
+    if (btnAuto) {
+      btnAuto.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        this.audio.unlock();
+        btnAuto.classList.add('pressed');
+        this.pressAuto();
+      });
+      const autoUp = () => btnAuto.classList.remove('pressed');
+      btnAuto.addEventListener('pointerup', autoUp);
+      btnAuto.addEventListener('pointercancel', autoUp);
+    }
     const btnHover = document.getElementById('tbtn-hover');
     if (btnHover) {
       btnHover.addEventListener('pointerdown', (e) => {
@@ -9494,6 +9774,7 @@ class NikitaGame {
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyG' && !e.repeat) this.pressLand();
       if (e.code === 'KeyH' && !e.repeat) this.pressHover();
+      if (e.code === 'KeyV' && !e.repeat) this.pressAuto();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();
       }
@@ -9738,6 +10019,8 @@ class NikitaGame {
     this.cText(el, txt);
     if (el._cls !== cls) { el._cls = cls; el.className = cls; }
     this.cStyle(el, 'display', txt ? 'block' : 'none');
+    const ab = this._autoBtn || (this._autoBtn = document.getElementById('tbtn-auto'));
+    if (ab) { const on = Boolean(m.active && m.auto && this.state === 'PLAYING'); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\nON' : 'AUTO'); }
     const hb = this._hoverBtn || (this._hoverBtn = document.getElementById('tbtn-hover'));
     if (hb) { const on = Boolean(m.active && m.hover && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
     if (btn) { this.cText(btn, lbl); if (btn._armed !== armed) { btn._armed = armed; btn.classList.toggle('armed', armed); } }
