@@ -13,11 +13,10 @@ export class AudioEngine {
     this.sonarTimer = 0;
   }
 
+  /* Safe to call on every user gesture: the context is created once, afterwards each call only wakes it up if the
+     browser (autoplay policy, tab switch, phone call) left it suspended or interrupted. */
   unlock() {
-    if (this.initialized) {
-      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
-      return;
-    }
+    if (this.initialized) { this.resume(); return; }
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
     this.ctx = new AudioCtx();
@@ -51,6 +50,20 @@ export class AudioEngine {
     } catch (_) {}
 
     this.initialized = true;
+    this.resume();
+  }
+
+  resume() {
+    const c = this.ctx;
+    if (!c || c.state === 'running' || c.state === 'closed') return;
+    try { const p = c.resume(); if (p && p.catch) p.catch(() => {}); } catch (_) {}   // blocked until the next gesture: unlock() tries again
+  }
+
+  /* The page went to the background: silence everything, including the motor loops that only the (stopped) frame loop would fade. */
+  suspend() {
+    const c = this.ctx;
+    if (!c || c.state !== 'running') return;
+    try { const p = c.suspend(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
   }
 
   // Rocket motor: four layers, all driven from updateEngine()

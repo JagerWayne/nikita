@@ -2,13 +2,48 @@
 
 A 3D tactical guided-missile simulation for phones (and desktop). Fly a wire-guided Nikita warhead through 100 procedurally generated facility sectors, destroy the primary targets, avoid sentries, lasers, turbines, CIWS turrets, ECM fields and sliding bulkheads.
 
-Single-file game (`index.html`) built on [Three.js](https://threejs.org/) r187, bundled in `vendor/three-0.187.0/` so the game has no external dependencies and works offline.
+Plain HTML, CSS and ES modules (no build step) on [Three.js](https://threejs.org/) r187, bundled in `vendor/three-0.187.0/` so the game has no external dependencies and works offline.
 
 ## Play
 
 GitHub Pages: https://jagerwayne.github.io/nikita/
 
 Use landscape. Gyro tilt flight needs HTTPS, which the Pages link provides.
+
+## Project layout (v2.31.1)
+
+```
+index.html            markup (HUD, menus, modals), the import map and the script/link tags. No inline CSS or JS.
+css/                  main.css (tokens, effects), hud.css (HUD + touch controls), overlays.css (modals, drawer),
+                      mobile.css (thumb-zone overrides). Linked in this order; later files override earlier ones.
+js/main.js            entry module: checks Three.js can load (offline / old-browser message), then starts the game
+js/game.js            NikitaGame: constructor, main loop, fixed-step simulation, sector flow; mixes in the groups below
+js/input.js           keyboard, mouse, touch, gyro, fullscreen, orientation, input reset
+js/level.js           sector generation, floors, ramps, lifts and the spawners for targets, hazards, pickups
+js/flight.js          rocket physics, hover and landing, speed lever, camera, autopilot glue
+js/combat.js          launch, detonation and blast damage, the gun, seeker lock, kill cam
+js/enemies.js         sentries and their navigation, decoys, facility objects (lasers, turbines, turrets)
+js/lidar.js           lidar scan, explored-map memory, IndexedDB persistence
+js/progress.js        score, rewards, pickups, upgrades, save data
+js/ui.js              menus, prefs, intro call, upgrade screen, HUD text helpers
+js/hud.js             canvas HUD and soliton radar
+js/constants.js       tuning numbers, cell types, speed modes (no dependencies)
+js/math.js            scratch THREE objects, seeded PRNG, grid conversions
+js/textures.js  js/audio.js  js/vfx.js  js/autopilot.js   procedural textures, Web Audio synth, pooled VFX, the autopilot
+js/pwa.js             classic script: service worker, INSTALL APP, update check, boot watchdog
+js/boot/              version.js, files.js (cache manifest), sizes.js (generated), diagnostics.js, share-config.js
+js/share.js           Share Game dialog (link + QR)
+sw.js                 service worker;  vendor/  Three.js and the QR library;  tools/  release helpers
+```
+
+`NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
+
+## v2.31.1: stability fixes
+
+- Audio is suspended when the tab or app goes to the background and resumed when it returns; the engine drone no longer keeps playing in a background desktop tab. The audio unlock now runs on every tap or key press (it is idempotent), so sound comes back after a phone call or an OS audio interruption.
+- The frame time can no longer be negative on the first frame, and one rendered frame runs at most 8 simulation steps (a backlog beyond that is dropped instead of chased).
+- Arrow keys and Space are no longer passed on to a focused slider or button while flying.
+- Window, visual-viewport and orientation resize events are merged into one resize per frame, and the canvases are only reallocated when the size or pixel ratio really changed.
 
 ## Install (v1.0)
 
@@ -27,7 +62,7 @@ It then launches full-screen from the home screen and works offline after the fi
 
 **Releasing an update:**
 1. Change the files.
-2. Add any new static file to `js/boot/files.js`, then run `node tools/make-sizes.mjs` (writes `js/boot/sizes.js`, the file sizes behind the progress bar) and `node tools/check-deps.mjs` (is a vendored library behind? upgrade it into a new `vendor/<name>-<version>/` folder and update `files.js`, the import map and `vendor/README.md`).
+2. Add any new static file (every `css/` and `js/` file too) to `js/boot/files.js`, then run `node tools/make-sizes.mjs` (writes `js/boot/sizes.js`, the file sizes behind the progress bar) and `node tools/check-deps.mjs` (is a vendored library behind? upgrade it into a new `vendor/<name>-<version>/` folder and update `files.js`, the import map and `vendor/README.md`).
 3. Bump `APP_VERSION` in `js/boot/version.js` (the only version number; it names the offline cache and the `sw.js?v=` URL).
 4. Push to `main`.
 

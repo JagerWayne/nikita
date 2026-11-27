@@ -4,6 +4,7 @@ export const GRID_SIZE = 64;
 export const CELL_SIZE = 4.0;
 export const WALL_H = 7.2;
 export const FIXED_DT = 1 / 60;
+export const MAX_STEPS_PER_FRAME = 8;   // simulation steps allowed in one rendered frame (guards against a catch-up spiral)
 export const SUBSTEPS = 4;
 export const MISSILE_RADIUS = 0.42;
 export const MAX_SALVO = 40;          // rockets issued at the start of a fresh sector

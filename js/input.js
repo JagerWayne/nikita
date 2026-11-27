@@ -242,6 +242,9 @@ export const inputMethods = {
         try { this.lidarSnapshot(); } catch (_) {}                           // app sent to the background / closed: keep the explored map
         this.resetAllInputs();
         if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
+        this.audio.suspend();
+      } else {
+        this.audio.resume();
       }
     });
     window.addEventListener('blur', () => {
@@ -249,13 +252,11 @@ export const inputMethods = {
       if (this.state === 'PLAYING' || this.state === 'KILLCAM' || this.state === 'READY' || this.state === 'RESPAWNING') this.setPaused(true);
     });
 
-    const unlockOnce = () => {
-      this.audio.unlock();
-      window.removeEventListener('pointerdown', unlockOnce);
-      window.removeEventListener('touchend', unlockOnce);
-    };
-    window.addEventListener('pointerdown', unlockOnce, { passive: true });
-    window.addEventListener('touchend', unlockOnce, { passive: true });
+    // unlock() is idempotent and stays cheap, so these listeners are never removed: after an interruption
+    // (phone call, OS audio takeover) the next tap brings the sound back.
+    const unlockAudio = () => this.audio.unlock();
+    window.addEventListener('pointerdown', unlockAudio, { passive: true });
+    window.addEventListener('touchend', unlockAudio, { passive: true });
 
     // Remember the last pointer type (mouse vs touch) and drop focus from toggles/buttons after use,
     // so keyboard flight controls keep working after touching a menu control.
@@ -627,6 +628,7 @@ export const inputMethods = {
       const kt = e.target;
       if (kt && kt.tagName === 'INPUT' && (kt.type === 'text' || kt.type === 'number')) return;
       this.audio.unlock();
+      if (this.state === 'PLAYING' && (e.code === 'Space' || e.code.startsWith('Arrow'))) e.preventDefault();   // keep a focused slider/button from reacting to flight keys
       this.keys[e.code] = true;
 
       if (e.code === 'Tab') {

@@ -4,7 +4,7 @@ import { AudioEngine } from './audio.js';
 import { Autopilot } from './autopilot.js';
 import {
   CARRY_CAP, CRUISE_THROTTLE, DECOYS_PER_SECTOR, FIXED_DT, GRID_SIZE, GUN_CAP_MIN, HEAR_MIN, MAX_LEVELS,
-  MAX_ROCKETS, MAX_SALVO, POINTS_BONUS, POINTS_PER_PACKAGE, REWARD_BONUS
+  MAX_ROCKETS, MAX_SALVO, MAX_STEPS_PER_FRAME, POINTS_BONUS, POINTS_PER_PACKAGE, REWARD_BONUS
 } from './constants.js';
 import { _c1 } from './math.js';
 import { createProceduralTextures } from './textures.js';
@@ -322,7 +322,7 @@ export class NikitaGame {
     this.bindEvents();
     this.loadPrefs();
     this.setupPlatformUI();
-    this.onResize();
+    this.applyResize();
     this.generateLevel(1, this.seedStr);
 
     this.lastTime = performance.now();
@@ -510,7 +510,7 @@ export class NikitaGame {
   loop(now) {
     if (this.stopped) return;
     requestAnimationFrame((t) => this.loop(t));
-    const rawDt = Math.min(0.05, (now - this.lastTime) * 0.001);
+    const rawDt = Math.max(0, Math.min(0.05, (now - this.lastTime) * 0.001));   // never negative (the first rAF timestamp can be older than lastTime)
     this.lastTime = now;
 
     this.fpsFrames++;
@@ -540,10 +540,12 @@ export class NikitaGame {
     }
 
     this.accumulator += rawDt * this.cfg.timeScale;
-    while (this.accumulator >= FIXED_DT) {
+    let steps = 0;
+    while (this.accumulator >= FIXED_DT && steps++ < MAX_STEPS_PER_FRAME) {
       this.stepSimulation(FIXED_DT);
       this.accumulator -= FIXED_DT;
     }
+    if (this.accumulator >= FIXED_DT) this.accumulator = 0;   // step cap hit: drop the backlog instead of chasing it next frame
 
     this.updateCamera(rawDt);
     this.updateLidar(rawDt);
@@ -589,17 +591,29 @@ export class NikitaGame {
     this.lastStartedTier = this.difficultyTier;
   }
 
+  /* Resize events (window, visualViewport, orientation) arrive in bursts, e.g. while a phone's URL bar animates.
+     They are coalesced into one resize per animation frame. */
   onResize() {
+    if (this._resizeRaf) return;
+    this._resizeRaf = requestAnimationFrame(() => { this._resizeRaf = 0; this.applyResize(); });
+  }
+
+  /* Immediate resize. The canvases are only reallocated when the size or pixel ratio really changed. */
+  applyResize() {
+    if (this.stopped) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, (this.prefs && this.prefs.lowSpec) ? 1 : 2);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(w, h);
-    this.hudCanvas.width = Math.floor(w * dpr);
-    this.hudCanvas.height = Math.floor(h * dpr);
-    this.hudCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (w !== this._rw || h !== this._rh || dpr !== this._rdpr) {
+      this._rw = w; this._rh = h; this._rdpr = dpr;
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setPixelRatio(dpr);
+      this.renderer.setSize(w, h);
+      this.hudCanvas.width = Math.floor(w * dpr);
+      this.hudCanvas.height = Math.floor(h * dpr);
+      this.hudCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
     this.checkOrientation();
   }
 }
