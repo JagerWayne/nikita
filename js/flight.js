@@ -149,7 +149,8 @@ export const flightMethods = {
 
   // Proximity fuze test: armed, past the launch drop, within FUZE_RANGE of the point, and not behind a wall
   fuzeNear(p, x, y, z, dist, isPrimary) {
-    const autoOk = !this.missile.auto || (isPrimary && this.pilot && this.pilot.active && this.pilot.mission === 'HUNT');   // the autopilot only blows up on a primary target it is hunting
+    const autoOk = !this.missile.auto || (isPrimary && this.pilot && this.pilot.active && this.pilot.mission === 'HUNT') ||   // the autopilot only blows up on a primary target it is hunting...
+      Boolean(this.pilot && this.pilot.active && this.pilot.lastGasp);   // ...or on its last-gasp target when the fuel is nearly gone
     return this.fuzeMode !== 'det' && autoOk && dist < FUZE_RANGE && this.missile.drop <= 0 && this.los3(p.x, p.y, p.z, x, y, z);
   },
 
@@ -237,6 +238,8 @@ export const flightMethods = {
     if (!keepPlay) this.autoPlay = false;
     this.gunHeld = false;
     if (this.pilot) this.pilot.active = false;
+    if (m.dash) { m.dash = false; m.hover = true; }
+    m.ramp = false;       // a dash ends in hover
     if (!m.auto) return;
     m.auto = false; m.autoSpeed = 0;
     if (msg) this.pushFeed(msg, 'amber');
@@ -249,6 +252,11 @@ export const flightMethods = {
       this.pilot.breachFire = false;
       const m = this.missile;
       if (this.state === 'PLAYING' && m.active && m.auto && m.drop <= 0) this.detonateMissile(m.pos, 'AUTOPILOT: BREACHING CHARGE');
+    }
+    if (this.pilot && this.pilot.pulseFire) {                  // last gasp: the fuel is nearly gone, the pulse converts what is left into a score
+      this.pilot.pulseFire = false;
+      const m = this.missile;
+      if (this.state === 'PLAYING' && m.active && m.auto && m.drop <= 0) this.detonateMissile(m.pos, 'AUTOPILOT: LAST-GASP PULSE');
     }
     if (this.pilot) {
       this.pilot.sense(dt);                                    // flight telemetry, every frame
@@ -388,6 +396,7 @@ export const flightMethods = {
 
     let effT = holdBoost ? 1 : (holdCrawl ? 0 : m.throttle);
     if (!canBoost && effT > CRUISE_THROTTLE) effT = CRUISE_THROTTLE;   // overdrive locked while recharging
+    if (m.auto && m.dash) effT = Math.max(0, Math.min(1, ((m.autoSpeed || 0) - SPEED_MIN) / Math.max(1, this.maxSpeed() - SPEED_MIN)));   // dash flight (no hover): the lever follows the autopilot, not the manual lever
     if (m.hover && m.fuel <= 0) { m.hover = false; this.pushFeed('HOVER LOST — ENGINE OUT', 'red'); }
     m.effThrottle = m.hover ? 0.04 + effT * 0.08 : effT;     // a hovering rocket is quiet
     if (!m.hover && effT > this.stats.maxThrottle) this.stats.maxThrottle = effT;
@@ -401,9 +410,11 @@ export const flightMethods = {
 
     const profile = blendProfile(m.hover ? 0 : effT, _profile);
 
-    if (!this.cfg.infFuel) {
+    {
       // Fuel model: drag-like burn = base x (0.5 + 0.5 (v / v_cruise)^2), so cruise gives the most distance per tank;
       // turning costs extra, and the engine burns nothing while cold (launch drop), cut (flip) or out of fuel.
+      // The model runs from the rocket's real velocity every step, manual or autonomous (m.auto): the HUD efficiency gauge and the
+      // burn read-out follow it even with infinite fuel, where only the drain below is skipped.
       const vc = this.throttleSpeed(CRUISE_THROTTLE);
       const vr = m.vel.length() / Math.max(1, vc);
       const turn = Math.min(1, (Math.abs(m.yawRate) + Math.abs(m.pitchRate)) / 2.5);
@@ -411,6 +422,8 @@ export const flightMethods = {
       // efficiency: distance per fuel relative to the best possible (straight flight at cruise) = 1.0
       m.eff = burning ? (m.landed ? -2 : vr / (0.5 + 0.5 * vr * vr + 0.3 * turn)) : -1;
       m.fuelBurn = burning ? 2.4 * (0.5 + 0.5 * vr * vr + 0.3 * turn) * (this.modifier === 'LOW FUEL' ? 1.6 : 1) * this.fuelBurnMult() / (1 + 0.15 * (this.nFloors - 1)) * (m.hover ? 1.3 : 1) : 0;
+    }
+    if (!this.cfg.infFuel) {
       if (this.nFloors > 1) {
         // first visit to each upper floor in a sector pays a small scouting bonus
         const fNow = this.floorOfY(m.pos.y);
@@ -577,16 +590,20 @@ export const flightMethods = {
       const manual = Math.abs(this.touchInput.joyX) > 0.3 || Math.abs(this.touchInput.joyY) > 0.3 ||
         this.keys['KeyA'] || this.keys['KeyD'] || this.keys['KeyW'] || this.keys['KeyS'] ||
         this.keys['ArrowLeft'] || this.keys['ArrowRight'] || this.keys['ArrowUp'] || this.keys['ArrowDown'];
-      if (!m.hover || m.landed || m.fuel <= 0) this.autoStop('AUTOPILOT STOPPED', m.fuel <= 0);   // an engine-out does not end the autopilot: it relaunches
+      if ((!m.hover && !m.dash) || m.landed || m.fuel <= 0) this.autoStop('AUTOPILOT STOPPED', m.fuel <= 0);   // an engine-out does not end the autopilot: it relaunches
       else if (manual) this.autoStop('AUTOPILOT OFF — MANUAL CONTROL');
       else {
         const a = this.pilot.done ? { yaw: 0, climb: 0, speed: 0 } : this.pilot.steer(dt);   // nothing left to do: hold position (it keeps re-checking)
+        const wantDash = !this.pilot.done && this.pilot.dash && !a.homing;              // tunnel: hover off, fly on; hover back on when it ends
+        if (wantDash !== Boolean(m.dash)) { m.dash = wantDash; m.hover = !wantDash; }
+        m.ramp = wantDash && this.pilot.ramp;                                           // ramp climb: the nose follows the slope
         if (a.homing && this.homingLocked) { m.autoSpeed = a.speed; mouseYaw = 0; }    // lock-on run: the game's homing steers, the pilot sets the speed
         else {
         yawInput = a.yaw; pitchInput = a.climb; mouseYaw = 0; m.autoSpeed = a.speed;
         }
       }
     }
+    if (m.dash) pitchInput = 0;                                                       // dash: the nose stays level (auto-level), hover is off
     if (m.hover && !m.landed) { m.hoverClimb = pitchInput; pitchInput = 0; mousePitch = 0; }
     const homingTurnBoost = this.homingLocked ? 1.65 : 1.0;
     const agility = 2.15 * profile.turnMult * this.cfg.agilityMult * homingTurnBoost * (m.hover ? 0.6 : 1) * (m.auto && this.pilot && this.pilot.scan ? 2.0 : 1);   // the autopilot's scan spin turns twice as fast
@@ -601,6 +618,7 @@ export const flightMethods = {
     m.pitch = wrapPi(m.pitch + m.pitchRate * dt + mousePitch);   // no pitch limit: loops are possible if there is room
 
     if (m.hover) m.pitch += (0 - m.pitch) * Math.min(1, dt * 3.5);
+    else if (m.ramp) m.pitch += (this.pilot.rampPitch - m.pitch) * Math.min(1, dt * 4);   // autonomous ramp climb: pitch up the slope
     else if (this.cfg.autoLevel && hasFuel && pitchInput === 0 && Math.abs(mousePitch) < 0.0005 && !this.cfg.homing && !this.homingLocked && Math.abs(m.pitch) < 1.2) {
       m.pitch += (0 - m.pitch) * Math.min(1, dt * 1.85);
     }
@@ -1178,6 +1196,9 @@ export const flightMethods = {
       this.thrusterCore.scale.set(0.5, 0.7 * thr, 0.5); this.thrusterCore.position.z = this._exitZ + 0.12 * thr;
       this.thrusterMat.opacity = 0.5; this.thrusterCoreMat.opacity = 0.65;
     }
+    // hover RCS jets: only while hovering (the autopilot's hover included) and airborne; they hide when landed, dashing or out of fuel
+    const hov = m.hover && !m.dash && m.fuel > 0 && m.drop <= 0 && !m.landed;
+    this.rcs.update(dt, hov, m.hoverClimb || 0, m.yawRate || 0, m.vel.x * Math.cos(m.yaw) - m.vel.z * Math.sin(m.yaw), performance.now());
   },
 
   // C key / CAM button: nose camera <-> chase camera (saved with the other preferences)

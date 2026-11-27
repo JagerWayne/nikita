@@ -20,6 +20,7 @@ const FIRE_SPEC = {                                                       // per
   'LASER BOX': { ...TUNE.fire['LASER BOX'], need: GUN_HITS.box },
   'BARREL': { ...TUNE.fire.BARREL, need: 1 }                              // barrels go up in one round
 };
+const LG_WHY = { 'FUEL BARREL': 'LAST GASP: FUEL BARREL', 'CIWS TURRET': 'LAST GASP: CIWS TURRET', 'SENTRY': 'LAST GASP: SENTRY', 'CRACKED WALL': 'LAST GASP: CRACKED WALL' };   // fixed strings: nothing built per step
 const FIRE_TIER = { 'LASER BOX': 2, 'CIWS': 3, 'SENTRY': 3, 'BARREL': 4 };   // fire control ranks targets by mission tier
 
 /* ==========================================================================
@@ -40,7 +41,12 @@ export class Autopilot {
     this._prevSpd = 0; this._accEma = 0; this._fanT = 0; this._fan = null;
     this.FAN = [-60, -30, 0, 30, 60];      // forward clearance fan (degrees off the nose)
     this.knownTurrets = new Set(); this.knownList = [];
-    this.stuck = { t: 0, x: 0, z: 0 };
+    this.stuck = { t: 0, x: 0, y: 0, z: 0, yaw: 0 };
+    this.blocked = new Map();              // route tiles kept out of plans for a while after a stall: tile -> game time it expires
+    this._nudgeT = 0; this._nudgeYaw = 0; this._nudgeClimb = 0;   // clearance nudge after a stall
+    this.lastGasp = false; this._lgT = 0; this._lgKind = ''; this._lgX = 0; this._lgY = 0; this._lgZ = 0; this._lgObj = null; this._lgBest = Infinity;   // last-gasp scoring run
+    this.dash = false; this.dash2 = false; this.ramp = false; this.rampPitch = 0;  // shaft dash and ramp climb: flies without hover (flight.js reads it)
+    this.pulseFire = false;                // set when the last-gasp pulse should go off; flight.js detonates at the start of the next step
     // ---- everything below is allocated once and reused: the per-step path (sense, steer, fire) creates no objects ----
     this._fanRad = this.FAN.map((deg) => deg * Math.PI / 180);
     this._fanBuf = new Float64Array(this.FAN.length);
@@ -167,7 +173,9 @@ export class Autopilot {
   engage() {
     this.active = true; this.done = false; this.plan = null; this.scan = null; this.replanT = 0; this.failN = 0; this.engagedAt = this.g.gameClock;
     this.tried = this.tried && this._triedKey === this.g.lidarKey ? this.tried : new Set(); this._triedKey = this.g.lidarKey;
-    this.stuck.t = 0; this.stuck.x = 0; this.stuck.z = 0; this.cmd = null; this.why = 'ENGAGED';
+    this.stuck.t = 0; this.stuck.x = 0; this.stuck.y = 0; this.stuck.z = 0; this.stuck.yaw = 0; this.cmd = null; this.why = 'ENGAGED';
+    this.dash = false; this.dash2 = false; this._nudgeT = 0; this.lastGasp = false; this._lgObj = null; this._lgT = 0; this.pulseFire = false;
+    if (this._blKey !== this.g.lidarKey) { this.blocked.clear(); this._blKey = this.g.lidarKey; }
     this.fc = null; this._clearTracks(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
     this.mission = 'EXPLORE'; this.noFrontier = false; this.pickObj = null; this.pickEnergy = false; this._decT = 0; this.gate = null; this.engT = null; this._prevOn = false; this.exposed = false;
     if (this._tiKey !== this.g.lidarKey) { this.turretIgnore = new Map(); this._tiKey = this.g.lidarKey; }
@@ -198,6 +206,7 @@ export class Autopilot {
     }
     for (let _i7 = 0, _a7 = g.bulkheads; _i7 < _a7.length; _i7++) { const b = _a7[_i7]; this._disc(hard, b.x, b.z, 3.0, 0);
     }
+    if (this.blocked.size) this.blocked.forEach((until, i) => { if (until > now) { if (i < n) hard[i] = 1; } else this.blocked.delete(i); });   // tiles a stall was blamed on
     for (let li = 0; li < g.lasers.length; li++) {                       // laser grids: timed gates (a grid that would not open: avoided for a while)
       const l = g.lasers[li];
       if (l.disabled || l.mode === 'PULSE_GATE') continue;
@@ -550,6 +559,8 @@ export class Autopilot {
     const g = this.g, m = g.missile, t = this.t || this.sense(dt);
     if (!t) return this.mk(0, 0, 0);
     let out = this.mk(0, 0, 0);
+    this.ramp = false;
+    this.dash = false;                      // set below when the guidance wants to fly on without hover (tunnels)
     // --- at a firing spot (turret, sentry or barrel): face it, match its height, let fire control kill it (12 s at most)
     if ((this.mission === 'ENGAGE' || this.mission === 'CLEAR_BARREL') && this.engT && this.engT.atSpot) {
       const E = this.engT, tu = E.tu, alive = this._alive(E.kind, tu);
@@ -609,6 +620,9 @@ export class Autopilot {
     this._decT -= dt;
     if (this._decT <= 0) { this._decT = TUNE.decideEvery; if (!(this.huntBlockT > t.time)) this.decide(); }
     if (this.mission === 'HUNT') { const ht = this.huntTerminal(); if (ht) { this.cmd = null; return ht.homing ? ht : this.fire(dt, ht); } }
+    // nearly dry with no repair kit in reach: spend the last of the burn on a score (not while hunting: the primary target is the score)
+    if (this.mission !== 'HUNT') { const lg = this.lastGaspSteer(dt, t); if (lg) { this.cmd = null; return this.fire(dt, lg); } }
+    else if (this.lastGasp) this.lastGasp = false;
     // running out of fuel next to a primary target: the engine-out crash blast (8 m) would end the sector early. Keep clear.
     if (this.mission !== 'HUNT' && t.burn > 0 && t.rangeSec < 8) {
       let tg = null, td = 13;
@@ -664,9 +678,15 @@ export class Autopilot {
     // --- laser grid ahead: timed crossing. Waiting for a gap is holding a position on purpose, so it is never "stuck".
     const gc = this.gateControl(dt);
     if (gc) { this.cmd = null; g.xroute = P.tiles; this._holdStuck(t); return this.fire(dt, gc); }
-    // --- stuck: under 0.8 m of progress in 3 s
+    // --- stuck: under 0.8 m of progress (and no real turn) in 1.2 s. The tile ahead is blocked, the rocket is nudged toward the open side and a new route is planned.
     const SK = this.stuck; SK.t += dt;
-    if (SK.t > TUNE.stuckAfter) { if (Math.hypot(t.x - SK.x, t.z - SK.z) < TUNE.stuckMinMove) { this._onStuck(P); this.plan = null; this.why = 'STUCK - NEW GOAL'; } SK.t = 0; SK.x = t.x; SK.z = t.z; if (!this.plan) return out; }
+    if (SK.t > TUNE.stuckAfter) {
+      if (Math.hypot(t.x - SK.x, t.y - SK.y, t.z - SK.z) < TUNE.stuckMinMove && Math.abs(wrapAngle(t.yaw - SK.yaw)) < TUNE.stuckTurn) {
+        this._onStuck(P, t); this.plan = null; this.why = 'STUCK - NEW GOAL';
+      }
+      this._holdStuck(t);
+      if (!this.plan) return this.mk(0, 0, 0);
+    }
     // --- guidance: chase a look-ahead point; heading and altitude PD
     const L = Math.max(TUNE.lookMin, Math.min(TUNE.lookMax, TUNE.lookPerSpeed * t.speed + TUNE.lookBase));
     const cp = this.carrot(L), w = wps[P.k];
@@ -703,7 +723,31 @@ export class Autopilot {
     if (t.probe.l < TUNE.wallMargin) yaw -= TUNE.wallGain * (TUNE.wallMargin - t.probe.l) / TUNE.wallMargin;       // wall on the left: turn right
     if (t.probe.r < TUNE.wallMargin) yaw += TUNE.wallGain * (TUNE.wallMargin - t.probe.r) / TUNE.wallMargin;
     { const gap = Math.min(t.probe.l, t.probe.r); if (gap < TUNE.wallMargin) v = Math.min(v, TUNE.wallSlowBase + TUNE.wallSlowGain * Math.max(0, gap - TUNE.wallSlowGap)); }   // close to a side wall: slow down
+    { // shaft dash: hover only gets the rocket to the tunnel's height; then it flies on without it, and stays off past the exit while the way is clear
+      const was = this.dash2;
+      this.dash = !!(w.shaft && !w.vert && t.fan && t.fanW >= TUNE.dashClear && Math.abs(err) < (was ? TUNE.dashHoldErr : TUNE.dashErr) && Math.abs(w.alt - t.y) < (was ? TUNE.dashHoldAlt : TUNE.dashAltTol)) ||
+        !!(was && !w.vert && t.fan && t.fanW >= TUNE.dashClear && Math.abs(err) < TUNE.dashHoldErr && Math.abs(w.alt - t.y) < TUNE.dashAltTol && !this.gate && ph === null);
+      // ramp climb: on an ascending ramp leg, lined up, hover goes off so the nose pitches up the slope and the thrust carries the rocket up it;
+      // hover comes back as soon as the rocket is off the ramp or has levelled out at the top
+      const onRamp = g.xgrid && t.node >= 0 && g.xgrid[t.node] === XV.RAMP, wasR = this.ramp;
+      this.ramp = !!(onRamp && !w.vert && !this.gate && ph === null && w.alt - t.y > (wasR ? TUNE.rampLevelOut : TUNE.rampMinRise) && Math.abs(err) < (wasR ? TUNE.rampHoldErr : TUNE.rampErr));
+      if (this.ramp) {
+        this.dash = true; this.dash2 = true;
+        this.rampPitch = Math.max(0, Math.min(TUNE.rampPitchMax, Math.atan(TUNE.rampSlope) + TUNE.rampPitchGain * (altT - t.y)));
+        // the forward fan is useless on a slope (its level rays hit the incline): the speed is bounded by what is left of the ramp instead
+        let left = dWp;
+        for (let n = P.k; n + 1 < wps.length && g.xgrid[wps[n + 1].i] === XV.RAMP; n++) left += Math.hypot(wps[n + 1].x - wps[n].x, wps[n + 1].z - wps[n].z);
+        v = Math.max(v, Math.min(TUNE.rampSpeed, Math.sqrt(2 * a * (left + TUNE.rampCoast))));
+      }
+      this.dash2 = this.dash;
+      if (this.dash && !this.ramp) v = Math.max(v, Math.min(TUNE.dashSpeed, Math.sqrt(2 * a * Math.max(0, t.fanW - TUNE.fanMargin))));
+    }
     out = this.avoid(this.mk(clamp1(yaw), climb, Math.max(0, v)));
+    if (this._nudgeT > 0) {                                            // after a stall: a short push toward the open side and the roomier height
+      this._nudgeT -= dt;
+      out.yaw = clamp1(out.yaw + this._nudgeYaw); out.climb = clamp1(out.climb + this._nudgeClimb);
+      out.speed = Math.max(out.speed, Math.min(TUNE.stuckNudgeSpeed, t.fan ? t.fan[2] * 0.3 : 0));
+    }
     const C = this._cmdS; C.err = err; C.v = v; C.L = L; this.cmd = C;
     g.xroute = P.tiles;
     return this.fire(dt, out);
@@ -822,6 +866,59 @@ export class Autopilot {
     this.why = 'HUNT: LOCKED - WARHEAD RUN';
     const o = this.mk(0, climb, Math.min(t.cruise, Math.max(3, td))); o.homing = true;   // homing steers; the fuze fires at 5 units
     return o;
+  }
+
+  // ---- Last gasp. Under lastGaspSec of burn left and no repair kit in reach: run at the nearest known score (fuel barrel, CIWS turret,
+  // sentry, cracked wall) and set the pulse off before the tank runs dry, instead of stalling mid-corridor. Targets whose blast would
+  // reach a primary target are skipped (that would end the sector). Returns flight commands, or null when it does not apply.
+  lastGaspSteer(dt, t) {
+    const g = this.g, m = g.missile;
+    if (!(t.burn > 0 && t.rangeSec < TUNE.lastGaspSec) || (this.mission === 'PICKUP' && this.pickEnergy)) { this.lastGasp = false; this._lgObj = null; return null; }
+    this._lgT -= dt;
+    if (this._lgT <= 0 || (this.lastGasp && !this._lgAlive())) {
+      this._lgT = TUNE.lastGaspEvery;
+      const was = this.lastGasp; this._lgPick(t);
+      if (this.lastGasp && !was) g.pushFeed(`AUTOPILOT: FUEL NEARLY OUT — LAST RUN AT ${this._lgKind}`, 'amber');
+    }
+    if (!this.lastGasp) return null;
+    const x = this._lgX, y = this._lgY, z = this._lgZ, dx = x - t.x, dy = y - t.y, dz = z - t.z, d = Math.hypot(dx, dy, dz);
+    const brg = wrapAngle(Math.atan2(-dx, -dz) - t.yaw), wall = this._lgKind === 'CRACKED WALL';
+    this.why = LG_WHY[this._lgKind];
+    const reach = wall ? 0.6 * g.blastRadiusBase() + 2.4 - TUNE.breachReachMargin : TUNE.lastGaspPulse;
+    if (d <= reach && (wall ? Math.abs(brg) < 0.8 : g.fuzeNear(m.pos, x, y, z, d, false))) { this.pulseFire = true; return this.mk(0, 0, 0); }
+    const a = Math.min(TUNE.brakeCap, TUNE.brakeFrac * t.brakeMax);
+    let v = TUNE.lastGaspSpeed;
+    if (Math.abs(brg) > 1.0) v = 1.5; else if (Math.abs(brg) > 0.5) v = 3;      // turn onto it first, but do not stall
+    else if (t.fan && t.fanW < d - 1) v = Math.min(v, Math.max(TUNE.crawlSpeed, Math.sqrt(2 * a * Math.max(0, t.fanW - TUNE.fanMargin))));   // a wall behind the target is no reason to slow down: the pulse goes off short of it
+    const yT = Math.max(t.y - t.agl + TUNE.roomMargin, Math.min(t.y + t.ceil - TUNE.roomMargin, y));
+    return this.mk(clamp1(3 * brg - TUNE.yawDamp * t.yawRate), clamp1(1.6 * (yT - t.y)), v);
+  }
+
+  _lgAlive() { const o = this._lgObj; return !!(o && o.active && !o.dying); }
+
+  // nearest candidate within what the remaining burn can reach, with a clear line and clear of the primary targets' blast
+  _lgPick(t) {
+    const g = this.g, X = g.xgrid;
+    this.lastGasp = false; this._lgObj = null;
+    if (this._findPickup(true)) return;                                  // a repair kit is in reach: the mission ladder fetches it
+    const reachM = t.rangeSec * TUNE.lastGaspReachSpeed + TUNE.lastGaspPulse, safe = g.blastRadiusBase() + TUNE.lastGaspPrimaryGap;
+    this._lgBest = Infinity;
+    for (let i = 0; i < this.knownBarrels.length; i++) { const b = this.knownBarrels[i]; if (b.active) this._lgTry('FUEL BARREL', b, b.pos.x, b.pos.y, b.pos.z, t, reachM, safe); }
+    for (let i = 0; i < this.knownList.length; i++) { const tu = this.knownList[i]; if (tu.active) this._lgTry('CIWS TURRET', tu, tu.pos.x, tu.pos.y, tu.pos.z, t, reachM, safe); }
+    for (let i = 0; i < this.knownSentries.length; i++) { const s = this.knownSentries[i]; if (s.active && !s.dying) this._lgTry('SENTRY', s, s.pos.x, s.pos.y + 1.2, s.pos.z, t, reachM, safe); }
+    if (X && g.breakables) for (let i = 0; i < g.breakables.length; i++) { const bw = g.breakables[i]; if (bw.active && X[bw.gz * GRID_SIZE + bw.gx] === XV.CRACK) this._lgTry('CRACKED WALL', bw, bw.pos.x, bw.pos.y, bw.pos.z, t, reachM, safe); }
+    this.lastGasp = this._lgObj !== null;
+  }
+
+  _lgTry(kind, obj, x, y, z, t, reachM, safe) {
+    const g = this.g, dx = x - t.x, dy = y - t.y, dz = z - t.z, d = Math.hypot(dx, dy, dz);
+    if (d >= this._lgBest || d > reachM) return;
+    const turnT = Math.max(0, Math.abs(wrapAngle(Math.atan2(-dx, -dz) - t.yaw)) - 0.5) / TUNE.lastGaspTurnRate;   // time to swing onto it, then to cover the distance
+    if (turnT + Math.max(0, d - TUNE.lastGaspPulse) / (TUNE.lastGaspSpeed * 0.7) > t.rangeSec) return;                // cannot get there before the fuel is gone
+    for (let i = 0; i < g.targets.length; i++) { const tg = g.targets[i]; if (tg.active && Math.hypot(tg.pos.x - x, tg.pos.y - y, tg.pos.z - z) < safe) return; }
+    const k = kind === 'CRACKED WALL' && d > 0 ? Math.max(0, d - 1.8) / d : 1;     // a wall is solid: look at the face, not its middle
+    if (!g.los3(t.x, t.y, t.z, t.x + dx * k, t.y + dy * k, t.z + dz * k)) return;
+    this._lgBest = d; this._lgObj = obj; this._lgKind = kind; this._lgX = x; this._lgY = y; this._lgZ = z;
   }
 
   // After a hand-over: look again every 5 s; if new frontier appeared (a grid went down, a door opened), take back control
@@ -997,7 +1094,10 @@ export class Autopilot {
     out.speed = Math.min(out.speed, TUNE.aimSpeedCap);
     // predicted miss: sideways (from the heading error) and vertical against the height we can actually reach
     const latMiss = Math.abs(Math.sin(yawErr)) * best.d, vertMiss = Math.abs(t.y - aimY);
-    const clearShot = g.los3(t.x, t.y, t.z, best.x, best.y, best.z) && !this.barrelInLine(best.x, best.y, best.z);
+    // strict direct line of sight: from the rocket to the predicted aim point AND to the contact itself, and no barrel in the way. A contact
+    // seen only through a wall (thermal / penetration sensors, _tv) is never shot at.
+    const aimPX = ax, aimPY = best.y, aimPZ = az;
+    const clearShot = g.los3(t.x, t.y, t.z, aimPX, aimPY, aimPZ) && g.los3(t.x, t.y, t.z, best.x, best.y, best.z) && !this.barrelInLine(aimPX, aimPY, aimPZ);
     const onTarget = latMiss < sp.hitR * TUNE.hitFrac && vertMiss < sp.vert;
     F.pause = Math.max(0, F.pause - dt);
     let fire = false;
@@ -1046,10 +1146,18 @@ export class Autopilot {
   }
 
   // The pilot is holding a position on purpose (laser gate, scan, switch box, turret spot): that is not being stuck
-  _holdStuck(t) { const S = this.stuck; S.t = 0; S.x = t.x; S.z = t.z; }
+  _holdStuck(t) { const S = this.stuck; S.t = 0; S.x = t.x; S.y = t.y; S.z = t.z; S.yaw = t.yaw; }
 
-  // No progress on plan P: drop what it was going for. A pickup is given up after a few tries (a frontier tile at once, as before).
-  _onStuck(P) {
+  // No progress on plan P: block the tile ahead for a while, set up the clearance nudge, drop what the plan was going for.
+  // A pickup is given up after a few tries (a frontier tile at once, as before).
+  _onStuck(P, t) {
+    const tiles = P.tiles; let at = -1;
+    for (let i = 0; i < tiles.length; i++) if (tiles[i] === t.node) { at = i; break; }
+    const ahead = at >= 0 ? at + 1 : Math.min(1, tiles.length - 1);
+    if (ahead >= 0 && ahead < tiles.length - 1 && tiles[ahead] !== t.node) { this.blocked.set(tiles[ahead], t.time + TUNE.stuckBlockFor); this._hz = null; }   // never the goal itself (tried handles that)
+    this._nudgeT = TUNE.stuckNudgeFor;
+    this._nudgeYaw = (t.probe.l >= t.probe.r ? 1 : -1) * TUNE.stuckNudgeYaw;       // positive yaw turns left
+    this._nudgeClimb = (t.ceil >= t.agl ? 1 : -1) * TUNE.stuckNudgeClimb;
     if (P.pickup) {
       const n = (this.pickStuck.get(P.pickup) || 0) + 1; this.pickStuck.set(P.pickup, n);
       if (n >= TUNE.pickupStuckMax) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.pickObj = null; }

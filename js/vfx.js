@@ -418,3 +418,59 @@ export class VFXSystem {
     }
   }
 }
+
+/* Hover RCS thruster plumes on the flown rocket: four preallocated cones (two down jets under the airframe, a left and a right
+   lateral jet at the nose) parented to the rocket group. Visual only: update() runs in the render path, allocates nothing and writes
+   only these meshes. Down jets follow the climb demand, the lateral jets the yaw rate and sideways drift. */
+export class RcsPlumes {
+  constructor(parent) {
+    this.group = new THREE.Group();
+    this.group.visible = false;
+    parent.add(this.group);
+    const geo = new THREE.ConeGeometry(0.5, 1, 8, 1, true);
+    geo.translate(0, 0.5, 0);                                  // base on the nozzle (y = 0), tip trailing along +y
+    // x, y, z of the nozzle, then the rotation that points the plume away from the airframe, then base length / width
+    const spec = [
+      [0, -0.13, -0.4, Math.PI, 0, 0.55, 0.075], [0, -0.13, 0.4, Math.PI, 0, 0.55, 0.075],   // down jets (rocket forward is -z)
+      [0.13, 0, -0.42, 0, -Math.PI / 2, 0.38, 0.055], [-0.13, 0, -0.42, 0, Math.PI / 2, 0.38, 0.055]   // right and left lateral jets
+    ];
+    this.jets = [];
+    for (let i = 0; i < spec.length; i++) {
+      const s = spec[i];
+      const mat = new THREE.MeshBasicMaterial({ color: i < 2 ? 0x9fe8ff : 0xffd8a0, blending: THREE.AdditiveBlending, transparent: true, opacity: 0, depthWrite: false });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(s[0], s[1], s[2]);
+      mesh.rotation.set(s[3], 0, s[4]);
+      mesh.visible = false;
+      this.group.add(mesh);
+      this.jets.push({ mesh, mat, len: s[5], width: s[6], level: 0 });
+    }
+    this.geo = geo;
+  }
+
+  // on: hover is active and the rocket is airborne. climb: stick (-1..1, up positive). yawRate rad/s (left positive). side m/s (right positive).
+  update(dt, on, climb, yawRate, side, time) {
+    const k = 1 - Math.exp(-dt * 14), J = this.jets;
+    const down = on ? (climb >= 0 ? Math.min(1, 0.28 + climb * 0.72) : Math.max(0.1, 0.28 + climb * 0.18)) : 0;   // hover holds the rocket up; more thrust to climb
+    const right = on ? Math.min(1, Math.max(0, yawRate) * 0.9 + Math.max(0, side) * 0.4) : 0;                      // right jet pushes the nose / drift left
+    const left = on ? Math.min(1, Math.max(0, -yawRate) * 0.9 + Math.max(0, -side) * 0.4) : 0;
+    let any = false;
+    for (let i = 0; i < J.length; i++) {
+      const j = J[i], tgt = i < 2 ? down : (i === 2 ? right : left);
+      j.level += (tgt - j.level) * k;
+      if (j.level < 0.03) { j.mesh.visible = false; continue; }
+      any = true;
+      const flick = 1 + 0.12 * Math.sin(time * 0.05 + i * 1.7), l = j.level;
+      j.mesh.visible = true;
+      j.mesh.scale.set(j.width * (0.7 + 0.3 * l), j.len * (0.25 + 0.75 * l) * flick, j.width * (0.7 + 0.3 * l));
+      j.mat.opacity = 0.25 + 0.65 * l;
+    }
+    this.group.visible = any;
+  }
+
+  dispose() {
+    this.group.removeFromParent();
+    for (let i = 0; i < this.jets.length; i++) this.jets[i].mat.dispose();
+    this.geo.dispose();
+  }
+}

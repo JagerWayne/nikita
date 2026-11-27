@@ -7,6 +7,7 @@ import {
 } from './constants.js';
 import { PULSE_BEAM_YS, twinPhase } from './hazards.js';
 import { RocketModel } from './rocketmodel.js';
+import { RcsPlumes } from './vfx.js';
 import {
   PROBE_DIRS, _dummy, _v5, gridToWorldX, gridToWorldZ, hashSeedString, mulberry32, worldToGridX, worldToGridZ
 } from './math.js';
@@ -91,6 +92,7 @@ export const levelMethods = {
     this.thrusterCore.position.z = 1.02;
     this.missileGroup.add(this.thrusterCore);
     this.placeExhaust();
+    this.rcs = new RcsPlumes(this.missileGroup);   // hover RCS jets (pooled meshes, driven from the chase camera path)
 
     this.scene.add(this.missileGroup);
   },

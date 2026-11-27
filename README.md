@@ -39,6 +39,17 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.33.2: faster autopilot, floors dim, punchier sound
+
+- **Autopilot stalls**: wedged for 1.2 s (under 0.8 m of progress and no real turn) and it blocks the tile ahead for 20 s, nudges toward the open side and plans a different route (timed laser gates still pause the timer).
+- **Last gasp**: under 3.5 s of fuel with no repair kit in reach, it runs at the nearest barrel, turret, sentry or cracked wall and sets the pulse off before the tank is dry, instead of stalling. Targets whose blast would reach a primary target are skipped.
+- **Tunnels and ramps without hover**: hover only gets the rocket to the tunnel's height; it then flies on without it, and stays off past the exit while the way is clear. On an ascending ramp hover goes off and the nose follows the slope (about 40% faster up in a test); hover returns at the top.
+- **Firing needs a clear line**: the gun only fires with an open line to the predicted aim point and to the contact. Targets seen through walls by thermal are never shot at.
+- **Floors**: on multi-floor sectors every floor you are not on (lidar dots, outlines, thermal objects, barrels, radar) is drawn at 5%; the floor you are on at 100%.
+- **HUD efficiency gauge** now follows the real speed and burn while the autopilot flies, also with infinite fuel.
+- **RCS jets**: small down and side thruster plumes show in the chase camera while hovering, scaled by climb and turning.
+- **Sound**: crisper autocannon rounds (transient snap plus noise crack) and heavier blasts (sub-bass 110 to 28 Hz thump, resonant punch, filtered noise tail), slightly different each time.
+
 ## v2.33.1: autopilot works through a fixed order of jobs
 
 The autopilot now chooses what to do in a strict order, checked once a second: **explore** the map first, then **shut down laser grids** (a switch box it can see right now is shot at once, even while exploring), **clear turrets and sentries** from a firing spot, **detonate fuel barrels** from outside the blast of the whole barrel cluster, **collect pickups**, **blast cracked walls open**, and finally **hunt the primary targets**. If nothing is left in the earlier jobs it goes straight to the hunt. Low fuel (fetch a repair kit) and nearly no rockets or hull (go for the targets) still override everything.

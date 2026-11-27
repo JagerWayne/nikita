@@ -1,6 +1,6 @@
 /* Canvas HUD and soliton radar rendering for NikitaGame. */
 import {
-  CELL_SIZE, DECOY_LIFE, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES
+  CELL_SIZE, DECOY_LIFE, FLOOR_DIM_VIS, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES
 } from './constants.js';
 import { _v1, _v2 } from './math.js';
 
@@ -288,14 +288,17 @@ export const hudMethods = {
     const E = this.el;
     this.cText(E.speedReadout, `${m.vel.length().toFixed(1)} u/s`);
     this.updateLandIndicator(m);
-    this.fuelBurnAvg = (this.fuelBurnAvg || 2.4) + ((m.fuelBurn || 0) - (this.fuelBurnAvg || 2.4)) * 0.05;
-    const fuelSecs = this.fuelBurnAvg > 0.05 ? Math.min(999, Math.round(m.fuel / this.fuelBurnAvg)) : 999;
+    // autonomous flight (m.auto): the gauges follow the real velocity and the burn model every frame (m.eff / m.fuelBurn come from the
+    // actual speed, not from the manual lever) and settle faster, so they move while the autopilot accelerates and cruises
+    const live = Boolean(m.auto && this.pilot && this.pilot.active);
+    this.fuelBurnAvg = (this.fuelBurnAvg || 2.4) + ((m.fuelBurn || 0) - (this.fuelBurnAvg || 2.4)) * (live ? 0.15 : 0.05);
+    const fuelSecs = this.fuelBurnAvg > 0.05 && !this.cfg.infFuel ? Math.min(999, Math.round(m.fuel / this.fuelBurnAvg)) : 999;
     this.cText(E.valFuel, `${Math.round(m.fuel)}% ${fuelSecs < 999 ? fuelSecs + 's' : ''}`);
     this.cStyle(E.valFuel, 'color', fuelSecs < 8 ? '#ff3344' : (m.fuel < 20 ? '#ffaa00' : ''));
     this.cStyle(E.fillFuel, 'width', `${Math.round(m.fuel)}%`);
     const coasting = m.eff === undefined || m.eff < 0;
     if (this.effAvg === undefined) this.effAvg = 1;
-    if (!coasting) this.effAvg += (m.eff - this.effAvg) * 0.08;
+    if (!coasting) this.effAvg += (m.eff - this.effAvg) * (live ? 0.25 : 0.08);
     const effPct = Math.round(Math.max(0, Math.min(1, this.effAvg)) * 100);
     this.cText(E.valEff, m.eff === -2 ? 'IDLE' : coasting ? 'COAST' : `${effPct >= 90 ? 'ECO' : (effPct >= 70 ? 'OK' : 'WASTE')} ${effPct}%`);
     this.cStyle(E.fillEff, 'width', `${coasting ? 0 : effPct}%`);
@@ -330,7 +333,7 @@ export const hudMethods = {
 
     this.drawXmapBase();                                               // the explore map is the map (floors stacked, route, autopilot legs)
     const curF = this._radarFloor = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
-    const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : 0.3; };
+    const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : FLOOR_DIM_VIS; };
 
     const toRX = (wx) => (wx / CELL_SIZE + GRID_SIZE * 0.5) * scale;
     const toRZ = (wz) => (wz / CELL_SIZE + GRID_SIZE * 0.5) * scale;
@@ -537,6 +540,6 @@ export const hudMethods = {
     const ab = this._autoBtn || (this._autoBtn = document.getElementById('tbtn-auto'));
     if (ab) { const on = Boolean(this.autoPlay && (this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING')); if (ab._on !== on) { ab._on = on; ab.classList.toggle('on', on); } this.cText(ab, on ? 'AUTO\n' + (m.auto && this.pilot && this.pilot.active ? this.pilot.mission : 'ON') : 'AUTO'); }
     const hb = this._hoverBtn || (this._hoverBtn = document.getElementById('tbtn-hover'));
-    if (hb) { const on = Boolean(m.active && m.hover && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
+    if (hb) { const on = Boolean(m.active && (m.hover || m.dash) && this.state === 'PLAYING'); if (hb._on !== on) { hb._on = on; hb.classList.toggle('on', on); } this.cText(hb, on ? 'HOVER\nON' : 'HOVER'); }
   },
 };

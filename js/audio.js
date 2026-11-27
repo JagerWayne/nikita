@@ -11,6 +11,7 @@ export class AudioEngine {
     this.initialized = false;
     this.muted = false;
     this.sonarTimer = 0;
+    this._jit = 0x9e3779b9;   // private xorshift state for per-trigger pitch jitter: audio never touches Math.random (the simulation's stream)
   }
 
   /* Safe to call on every user gesture: the context is created once, afterwards each call only wakes it up if the
@@ -180,9 +181,34 @@ export class AudioEngine {
     this.tone(990, 0, 0.24, 0.3, 0.05);
   }
 
+  // deterministic jitter in [-1, 1) from a private xorshift32 (not Math.random)
+  jitter() { let x = this._jit; x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; this._jit = x; return x / 2147483648 - 1; }
+
+  // Shaped noise burst: band-pass / low-pass filtered noise with a fast attack and an exponential decay
+  noiseBurst(type, f0, f1, q, start, dur, vol, attack = 0.003) {
+    if (!this.initialized) return;
+    const c = this.ctx, t = c.currentTime + start, src = c.createBufferSource(), g = c.createGain(), f = c.createBiquadFilter();
+    src.buffer = this.noiseBuffer; src.loop = true; f.type = type; f.Q.value = q;
+    f.frequency.setValueAtTime(f0, t);
+    if (f1 && f1 !== f0) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t, (this.jitter() * 0.5 + 0.5) * 1.5); src.stop(t + dur + 0.03);
+  }
+
+  // Autocannon round: a crisp transient snap (pitched-down square-ish click + band-passed noise crack) over the body of the shot,
+  // each round a touch different in pitch so a burst sounds mechanical, not like one looped tone
   playGunshot() {
-    this.tone(520, 150, 0, 0.07, 0.045, 0.004);
-    this.tone(260, 80, 0, 0.09, 0.03, 0.004);
+    if (!this.initialized) return;
+    const j = this.jitter(), c = this.ctx, t = c.currentTime;
+    const osc = c.createOscillator(), g = c.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(1500 * (1 + 0.06 * j), t); osc.frequency.exponentialRampToValueAtTime(170, t + 0.028);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.03, t + 0.0015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.032);
+    osc.connect(g); g.connect(this.master); osc.start(t); osc.stop(t + 0.045);
+    this.noiseBurst('bandpass', 2600 * (1 + 0.08 * j), 1100, 1.4, 0, 0.05, 0.075, 0.001);
+    this.tone(520 * (1 + 0.04 * j), 150, 0, 0.07, 0.04, 0.003);
+    this.tone(240 * (1 + 0.04 * j), 70, 0, 0.1, 0.035, 0.003);
   }
 
   playScrape() {
@@ -190,12 +216,16 @@ export class AudioEngine {
     this.tone(497, 190, 0, 0.17, 0.035, 0.006);
   }
 
+  // Blast / impact: a sub-bass thump (110 -> 28 Hz), a resonant mid punch and a low-passed noise tail. Pitch and timing jitter a little per
+  // trigger so chained blasts do not stack into one identical sound; levels are capped per layer so several together do not clip.
   playExplosion(power = 1.0) {
-    const dur = 0.7 + power * 0.5;
-    this.tone(95, 26, 0, dur, Math.min(0.34, 0.2 * power), 0.01);
-    this.tone(58, 22, 0.02, dur * 1.1, Math.min(0.26, 0.15 * power), 0.015);
-    this.tone(190, 55, 0, dur * 0.55, Math.min(0.16, 0.09 * power), 0.008);
-    this.tone(310, 90, 0.01, dur * 0.3, Math.min(0.08, 0.05 * power), 0.006);
+    const p = Math.max(0.2, Math.min(2.5, power)), dur = 0.7 + p * 0.5, j = this.jitter(), k = 1 + 0.07 * j;
+    this.tone(110 * k, 28, 0, dur, Math.min(0.3, 0.2 * p), 0.008);                  // sub-bass pitch-drop thump
+    this.tone(58 * k, 22, 0.02, dur * 1.1, Math.min(0.22, 0.14 * p), 0.015);        // chamber boom underneath
+    this.tone(230 * k, 62, 0, dur * 0.45, Math.min(0.14, 0.09 * p), 0.006);         // mid punch ...
+    this.noiseBurst('bandpass', 420 * k, 160, 5, 0, dur * 0.3, Math.min(0.12, 0.07 * p), 0.004);   // ... with a resonant ring
+    this.tone(330 * k, 90, 0.01, dur * 0.25, Math.min(0.07, 0.045 * p), 0.005);
+    this.noiseBurst('lowpass', 3200 * k, 180, 0.7, 0.01, dur * 1.15, Math.min(0.2, 0.12 * p), 0.012);   // shaped noise tail
   }
 
   playLaserArm() {

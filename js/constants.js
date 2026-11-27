@@ -59,6 +59,7 @@ export const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels acros
 export const MAX_FLOORS = 3;                  // multi-floor sectors: 2 floors from tier 4, 3 from tier 7
 export const VOX_Y = Math.ceil(WALL_H * MAX_FLOORS / VOX);
 export const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
+export const FLOOR_DIM_VIS = 0.05;           // multi-floor sectors: floors other than the one the rocket is on are drawn at this visibility (the active floor at 1.0)
 export const LIDAR_KEY_PREFIX = 'M';          // 'M' = multi-floor map format (older single-floor maps are ignored)
 export const FLOOR_SEG = 1 << 16;             // edge ids: floor f adds f * FLOOR_SEG
 export const FEAT_BASE = 1 << 25;             // edge ids at or above this are ramp outlines (8 per ramp)
@@ -154,7 +155,9 @@ export const AUTOPILOT_TUNING = Object.freeze({
   hazardEvery: 2,            // hazard layers (turbines, bulkheads, laser grids, turret cover)
   fanEvery: 0.1,             // forward clearance fan
   // --- timers and give-ups
-  stuckAfter: 3, stuckMinMove: 0.8,           // less than 0.8 m of progress in 3 s = stuck
+  stuckAfter: 1.2, stuckMinMove: 0.8,         // less than 0.8 m of progress (any direction) in 1.2 s = stuck; a turn of stuckTurn rad also counts as progress
+  stuckTurn: 1.0, stuckBlockFor: 20,          // heading change that is not "stuck"; how long the blocked tile ahead is kept out of routes
+  stuckNudgeFor: 0.5, stuckNudgeYaw: 0.6, stuckNudgeClimb: 0.5, stuckNudgeSpeed: 1.2,   // clearance nudge after a stall: yaw / climb added toward the open side, minimum speed
   scanMax: 10, boxWaitMax: 8, spotMax: 12,    // 360 scan, shooting a switch box, fighting a turret from its spot
   engageMax: 25,                              // longest a turret engagement is kept as the mission
   gateMax: 25, gateBlockFor: 30,              // a laser gate that will not open: give up, avoid that grid for a while
@@ -180,6 +183,12 @@ export const AUTOPILOT_TUNING = Object.freeze({
   // --- energy reserve: below this cruise range, a seen repair kit becomes the priority
   energyReserveM: 120,                        // metres of range left at cruise speed
   energyPickupMaxCost: 40, energyRangeShare: 0.7,   // a low-fuel detour may cost up to 40 tiles and never more than 70% of the range left
+  // --- last gasp: nearly out of fuel with no repair kit in reach, the remaining burn is spent on a score (barrel, turret, sentry, cracked wall)
+  lastGaspSec: 3.5,                           // burn time left (seconds) below which the last-gasp run starts
+  lastGaspEvery: 0.25,                        // target re-pick cadence while it is active
+  lastGaspTurnRate: 1.2, lastGaspSpeed: 10, lastGaspReachSpeed: 6,    // run speed (m/s) and the speed assumed when judging what is still reachable
+  lastGaspPulse: FUZE_RANGE - 0.5,            // pulse (proximity detonation) range for barrels, turrets and sentries
+  lastGaspPrimaryGap: 3,                      // never pick a target whose blast (radius + this) would reach a primary target: that ends the sector
   // --- faster on wide-open straights (the braking envelope and the clearance cap still apply on top)
   straightThrottle: 0.7,                      // top speed there, as a lever position (cruise is CRUISE_THROTTLE, 0.378)
   straightOpenMin: 12, straightOpenFull: 24,  // clear distance ahead (and to the next waypoint) where the extra speed starts / is full
@@ -201,6 +210,9 @@ export const AUTOPILOT_TUNING = Object.freeze({
   breachLure: 40, breachLureFor: 180,         // a wall blown open in the last 3 min pulls the explorer to the frontier behind it
   pulsePlaneBand: 1.6,                        // inside this distance of a 3-line grid's beam plane the gap height is always held
   pickupStuckMax: 2,                          // stuck this many times on the way to one pickup: give it up
+  dashSpeed: 12, dashClear: 11, dashErr: 0.2, dashHoldErr: 0.35, dashAltTol: 0.35, dashHoldAlt: 0.7,   // shaft dash: at a tunnel's height with a clear run, hover goes off and the rocket flies on at this speed (m/s); it stays off past the exit until a turn, a stop or a height change is needed
+  rampSlope: 0.3, rampPitchGain: 0.25, rampPitchMax: 0.5, rampSpeed: 12, rampCoast: 4,   // ramp climb (hover off): slope = rise / run of a ramp, pitch = atan(slope) + gain * height error (rad), run speed, metres past the ramp's end it may still brake over
+  rampMinRise: 0.5, rampLevelOut: 0.25, rampErr: 0.3, rampHoldErr: 0.5,                 // hover goes off with this much height still to climb, comes back at the top below this height; heading error limits (rad)
   shaftLineUp: 4,                             // within this distance of a tunnel mouth, hold its height (and crawl until there)
   // --- fire control
   aimYawGain: 3.0, aimClimbGain: 1.6, aimSpeedCap: 1.5,   // steer onto the lead point and slow right down

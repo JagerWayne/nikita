@@ -169,7 +169,7 @@ export const combatMethods = {
     m.pos.copy(this.spawnPos);
     m.yaw = 0; m.pitch = 0; m.roll = 0; m.drop = 0;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.dash = false; m.ramp = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     this.launchAim.yaw = 0; this.launchAim.pitch = 0;
     this.missileGroup.visible = false;
@@ -288,7 +288,7 @@ export const combatMethods = {
     m.currentSpeed = LAUNCH_DROP_SPEED;
     m.drop = LAUNCH_DROP_TIME;
     m.flipping = false; m.flipUsed = false; m.burnT = 0;
-    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
+    m.landed = false; m.takeoffT = -1; m.landReq = false; m.liftReq = false; m.hover = false; m.dash = false; m.ramp = false; m.hoverClimb = 0; m.auto = false; m.autoSpeed = 0; m.probe = null; m.kickP = 0; m.kickY = 0; m._spd0 = undefined;
     this.updateFlipButton();
     _e1.set(m.pitch, m.yaw, 0, 'YXZ');
     m.vel.copy(_fwd).applyEuler(_e1).multiplyScalar(LAUNCH_DROP_SPEED);
