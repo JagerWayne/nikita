@@ -40,6 +40,10 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v3.0.1: lidar outlines are back
+
+The scan drew outlines only around shafts: on the new 128 grid the wall, floor and ceiling edges got ids that read as an upper floor and were thrown away. They draw again; maps saved by 3.0.0 are rebuilt.
+
 ## v3.0.0: bigger single-floor sectors, hidden fuel docks, new engine effects, 3D title
 
 - **Sectors are one floor and grow with the campaign**: 64 x 64 for sectors 1-20, then 80, 96 and 112, and 128 x 128 from sector 81. Ramps, lifts and upper floors are gone; tunnels, dead-end shafts and secret chambers stay on the main floor.

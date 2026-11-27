@@ -67,8 +67,8 @@ export const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels acros
 export const MAX_FLOORS = 1;                  // single-floor sectors only (v3.0)
 export const VOX_Y = Math.ceil(WALL_H * MAX_FLOORS / VOX);
 export const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
-export const LIDAR_KEY_PREFIX = 'N';          // 'N' = v3.0 map format (128 grid, single floor): older saved maps are ignored
-export const FLOOR_SEG = 1 << 16;             // edge ids: floor f adds f * FLOOR_SEG
+export const LIDAR_KEY_PREFIX = 'O';          // 'O' = v3.0.1 map format (128 grid, single floor, wide edge ids): older saved maps are ignored
+export const FLOOR_SEG = GRID_SIZE * GRID_SIZE * 16;   // edge ids: cell * 16 + piece, floor f adds f * FLOOR_SEG (2^18 for the 128 grid; must stay below SHAFT_SEG_BASE)
 export const FEAT_BASE = 1 << 25;             // edge ids at or above this are ramp outlines (8 per ramp)
 export const RAMP_LEN = 6;
 export const RIM_BASE = 1 << 26;              // edge ids at or above this: rims of floor openings (holes, atriums, lifts)

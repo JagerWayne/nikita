@@ -15,7 +15,7 @@ self.APP_SIZES = {
  "js/pwa.js": 15692,
  "js/main.js": 1339,
  "js/game.js": 27581,
- "js/constants.js": 21302,
+ "js/constants.js": 21403,
  "js/math.js": 3465,
  "js/hazards.js": 3079,
  "js/hangar.js": 25412,
