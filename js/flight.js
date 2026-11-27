@@ -1088,13 +1088,14 @@ export const flightMethods = {
 
       // nose camera, always upright (world-up), never banks or inverts
       this.missileGroup.visible = false;
-      this.camera.position.copy(m.pos);
+      const rp = this.renderPose;   // interpolated between the last two fixed steps (see updateRenderPose)
+      this.camera.position.copy(rp.pos);
       // the view is the rocket's nose: it shows the rocket's own wobble and banks gently with steering (max ~10°)
-      _e1.set(m.pitch + (m.wobP || 0) + (m.brakeP || 0), m.yaw + (m.wobY || 0), 0, 'YXZ');
+      _e1.set(rp.pitch, rp.yaw, 0, 'YXZ');
       _v1.copy(_fwd).applyEuler(_e1);
       this.camera.up.set(0, 1, 0);
-      this.camera.lookAt(m.pos.x + _v1.x, m.pos.y + _v1.y, m.pos.z + _v1.z);
-      this.camRoll = Math.max(-0.18, Math.min(0.18, m.roll * 0.35));
+      this.camera.lookAt(rp.pos.x + _v1.x, rp.pos.y + _v1.y, rp.pos.z + _v1.z);
+      this.camRoll = Math.max(-0.18, Math.min(0.18, rp.roll * 0.35));
       this.camera.rotateZ(this.camRoll);
     }
 
@@ -1103,6 +1104,30 @@ export const flightMethods = {
       this.camera.position.x += (Math.random() - 0.5) * shake;
       this.camera.position.y += (Math.random() - 0.5) * shake;
     }
+  },
+
+  /* Render interpolation. The simulation runs at a fixed 60 Hz; on 90/120/144 Hz screens most frames contain no new step,
+     so the nose camera is drawn between the previous and the current step instead of standing still on one of them.
+     Both functions only write this.prevPose / this.renderPose: the physics state (missile.pos, angles) is never changed. */
+  snapshotRenderPose() {
+    const m = this.missile, p = this.prevPose;
+    p.pos.copy(m.pos);
+    p.pitch = m.pitch + (m.wobP || 0) + (m.brakeP || 0);
+    p.yaw = m.yaw + (m.wobY || 0);
+    p.roll = m.roll;
+  },
+
+  updateRenderPose(alpha) {
+    const m = this.missile, p = this.prevPose, r = this.renderPose;
+    const pitch = m.pitch + (m.wobP || 0) + (m.brakeP || 0), yaw = m.yaw + (m.wobY || 0);
+    const dPitch = wrapPi(pitch - p.pitch), dYaw = wrapPi(yaw - p.yaw), dRoll = wrapPi(m.roll - p.roll);
+    // a launch, respawn or other teleport is not motion: show the new pose at once instead of sweeping across the map
+    if (!m.active || p.pos.distanceToSquared(m.pos) > 6.25 || Math.abs(dPitch) > 1 || Math.abs(dYaw) > 1 || Math.abs(dRoll) > 1) alpha = 1;
+    else alpha = alpha < 0 ? 0 : (alpha > 1 ? 1 : alpha);
+    r.pos.lerpVectors(p.pos, m.pos, alpha);
+    r.pitch = p.pitch + dPitch * alpha;
+    r.yaw = p.yaw + dYaw * alpha;
+    r.roll = p.roll + dRoll * alpha;
   },
 
   throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (this.maxSpeed() - SPEED_MIN); },

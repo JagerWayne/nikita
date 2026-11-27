@@ -10,7 +10,7 @@ GitHub Pages: https://jagerwayne.github.io/nikita/
 
 Use landscape. Gyro tilt flight needs HTTPS, which the Pages link provides.
 
-## Project layout (v2.31.1)
+## Project layout (v2.31.2)
 
 ```
 index.html            markup (HUD, menus, modals), the import map and the script/link tags. No inline CSS or JS.
@@ -37,6 +37,10 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 ```
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
+
+## v2.31.2: smooth camera on 90/120/144 Hz screens
+
+The simulation still runs at a fixed 60 Hz (seeded sectors play out exactly as before). The nose camera is now drawn between the previous and the current simulation step, so on high-refresh screens it no longer stands still on every other frame. `js/game.js` stores the pose each step starts from (`snapshotRenderPose`) and, once per frame, blends it by the position inside the step (`updateRenderPose` in `js/flight.js`); only the camera reads the blended pose, `missile.pos` and the physics are never touched. A launch or respawn shows the new pose at once. The cost is that the picture runs up to one 60 Hz step (about 17 ms) behind the simulation.
 
 ## v2.31.1: stability fixes
 

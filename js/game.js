@@ -192,6 +192,10 @@ export class NikitaGame {
     this.sentriesNeutralized = 0;
     this.missionTime = 0;
 
+    // Render interpolation (visual only, never read by the simulation): the pose the last fixed step started from,
+    // and the pose blended between that and missile.pos/angles by the frame's position inside the step.
+    this.prevPose = { pos: new THREE.Vector3(), pitch: 0, yaw: 0, roll: 0 };
+    this.renderPose = { pos: new THREE.Vector3(), pitch: 0, yaw: 0, roll: 0 };
     this.missile = {
       active: false,
       pos: new THREE.Vector3(),
@@ -350,6 +354,8 @@ export class NikitaGame {
       this.hitStopTimer -= dt;
       return;
     }
+
+    this.snapshotRenderPose();   // pose at the start of this step: the "previous" end of the render interpolation
 
     const effectiveDt = this.state === 'KILLCAM' ? dt * 0.25 : dt;
 
@@ -547,6 +553,8 @@ export class NikitaGame {
     }
     if (this.accumulator >= FIXED_DT) this.accumulator = 0;   // step cap hit: drop the backlog instead of chasing it next frame
 
+    // Where the frame falls between the last two fixed steps (0..1). Only the rendered pose uses it; missile.pos is untouched.
+    this.updateRenderPose(this.accumulator / FIXED_DT);
     this.updateCamera(rawDt);
     this.updateLidar(rawDt);
     this.renderer.render(this.scene, this.camera);
