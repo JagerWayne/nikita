@@ -157,7 +157,7 @@ export class Autopilot {
     this.fc = null; this._clearTracks(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
     this.mission = 'EXPLORE'; this.noFrontier = false; this.pickNow = null; this._decT = 0; this.gate = null; this.engT = null; this._prevOn = false; this.exposed = false;
     if (this._tiKey !== this.g.lidarKey) { this.turretIgnore = new Map(); this._tiKey = this.g.lidarKey; }
-    if (this._pkKey !== this.g.lidarKey) { this.pickTried = new Set(); this._pkKey = this.g.lidarKey; }
+    if (this._pkKey !== this.g.lidarKey) { this.pickTried = new Set(); this.pickStuck = new Map(); this._pkKey = this.g.lidarKey; }
     if (this._boxKey !== this.g.lidarKey) { this.boxTried = new Set(); this._boxKey = this.g.lidarKey; }
   }
 
@@ -371,7 +371,7 @@ export class Autopilot {
   // Each waypoint carries a target altitude and a speed limit from the turn it makes.
   smooth(tiles) {
     const g = this.g, t = this.t, X = g.xgrid, GG = GRID_SIZE * GRID_SIZE;
-    const pts = tiles.map((i) => { const p = this.tileCenter(i); return { x: p.x, z: p.z, f: p.f, i, alt: g.autoNodeAlt(i), keep: X[i] === XV.SH_TOP || X[i] === XV.SH_MID || X[i] === XV.SH_BOT || X[i] === XV.RAMP, gate: this.hazards().gate[i] }; });
+    const pts = tiles.map((i) => { const p = this.tileCenter(i); return { x: p.x, z: p.z, f: p.f, i, alt: g.autoNodeAlt(i), keep: X[i] === XV.SH_TOP || X[i] === XV.SH_MID || X[i] === XV.SH_BOT || X[i] === XV.RAMP, shaft: X[i] === XV.SH_TOP || X[i] === XV.SH_MID || X[i] === XV.SH_BOT, gate: this.hazards().gate[i] }; });
     const wps = [];
     let ax = t.x, az = t.z, af = t.floor, k = 0;
     while (k < pts.length) {
@@ -641,7 +641,7 @@ export class Autopilot {
     if (gc) { this.cmd = null; g.xroute = P.tiles; this._holdStuck(t); return this.fire(dt, gc); }
     // --- stuck: under 0.8 m of progress in 3 s
     const SK = this.stuck; SK.t += dt;
-    if (SK.t > TUNE.stuckAfter) { if (Math.hypot(t.x - SK.x, t.z - SK.z) < TUNE.stuckMinMove) { this.tried.add(P.goal); this.plan = null; this.why = 'STUCK - NEW GOAL'; } SK.t = 0; SK.x = t.x; SK.z = t.z; if (!this.plan) return out; }
+    if (SK.t > TUNE.stuckAfter) { if (Math.hypot(t.x - SK.x, t.z - SK.z) < TUNE.stuckMinMove) { this._onStuck(P); this.plan = null; this.why = 'STUCK - NEW GOAL'; } SK.t = 0; SK.x = t.x; SK.z = t.z; if (!this.plan) return out; }
     // --- guidance: chase a look-ahead point; heading and altitude PD
     const L = Math.max(TUNE.lookMin, Math.min(TUNE.lookMax, TUNE.lookPerSpeed * t.speed + TUNE.lookBase));
     const cp = this.carrot(L), w = wps[P.k];
@@ -654,6 +654,7 @@ export class Autopilot {
       const dTot = Math.hypot(w.x - paX, w.z - paZ), dLeft = Math.hypot(w.x - t.x, w.z - t.z);
       const fr = dTot > 0.5 ? Math.max(0, Math.min(1, 1 - dLeft / dTot)) : 1;
       altT = paAlt + (w.alt - paAlt) * fr;
+      if (w.shaft && dLeft < TUNE.shaftLineUp) altT = w.alt;      // a tunnel mouth in the wall: climb / sink to it before going in
     }
     if (g.xgrid && t.node >= 0 && g.xgrid[t.node] === XV.RAMP) altT = g.autoNodeAlt(t.node);   // on a ramp: follow its slope
     altT = Math.max(t.y - t.agl + TUNE.roomMargin, Math.min(t.y + t.ceil - TUNE.roomMargin, altT));   // always inside the room
@@ -668,7 +669,7 @@ export class Autopilot {
     }
     if (t.fan) v = Math.min(v, Math.max(t.fan[2] > 3 ? TUNE.crawlSpeed : 0, Math.sqrt(2 * a * Math.max(0, t.fanW - TUNE.fanMargin))));   // hull-wide clearance ahead; a clear centre line still allows a crawl
     v *= Math.max(TUNE.turnSpeedFloor, Math.min(1, 1 - Math.abs(err) / 1.0));
-    if (w.keep && Math.abs(altT - t.y) > 0.5 && Math.hypot(w.x - t.x, w.z - t.z) < 4) v = Math.min(v, 0.5);   // line up with a tunnel mouth first
+    if (w.keep && Math.abs(altT - t.y) > 0.5 && Math.hypot(w.x - t.x, w.z - t.z) < TUNE.shaftLineUp) v = Math.min(v, 0.5);   // line up with a tunnel mouth first
     if (w.vert && Math.hypot(w.x - t.x, w.z - t.z) < 1.5) v = Math.min(v, 0.3);                               // floor change: go straight up / down
     if (ph !== null && Math.abs(t.y - ph) > 0.3) { let lz = 99; for (let _i22 = 0, _a22 = g.lasers; _i22 < _a22.length; _i22++) { const l = _a22[_i22]; if (l.mode === 'PULSE_GATE' && !l.disabled) lz = Math.min(lz, Math.abs(t.z - l.z));
 } if (lz < 3.5) v = Math.min(v, 0.8); }   // not at the gap height yet: ease in
@@ -764,6 +765,13 @@ export class Autopilot {
   newPickupPlan() {
     const P = this.pickNow, t = this.t;
     if (!P || !P.pick.active) { this.mission = 'EXPLORE'; this.plan = null; return; }
+    if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }
+    // decide() found this route when it chose the pickup, possibly from somewhere else: search again from here
+    const goal = this.tileOf(P.pick.pos), goals = this._pickGoals;
+    goals.clear(); if (goal >= 0) goals.set(goal, P.pick);
+    const tiles = goal >= 0 ? this.pathTo(t.node, this._goalPick) : null;
+    if (!tiles) { this.pickTried.add(P.pick); this.mission = 'EXPLORE'; this.plan = null; this.why = 'PICKUP OUT OF REACH'; return; }
+    P.tiles = tiles;
     if (!P.tiles.length) { this.pickTried.add(P.pick); this.mission = 'EXPLORE'; this.plan = null; return; }
     this.plan = { goal: P.tiles[P.tiles.length - 1], tiles: P.tiles, wps: this.smooth(P.tiles), k: 0, t0: t.time, alt0: t.y, pickup: P.pick };
     this.g.xroute = P.tiles.slice(); this.why = 'ROUTE TO A PICKUP';
@@ -1070,6 +1078,16 @@ export class Autopilot {
 
   // The pilot is holding a position on purpose (laser gate, scan, switch box, turret spot): that is not being stuck
   _holdStuck(t) { const S = this.stuck; S.t = 0; S.x = t.x; S.z = t.z; }
+
+  // No progress on plan P: drop what it was going for. A pickup is given up after a few tries (a frontier tile at once, as before).
+  _onStuck(P) {
+    if (P.pickup) {
+      const n = (this.pickStuck.get(P.pickup) || 0) + 1; this.pickStuck.set(P.pickup, n);
+      if (n >= TUNE.pickupStuckMax) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.pickNow = null; }
+      return;
+    }
+    this.tried.add(P.goal);
+  }
 
   // The reused command struct: every steer() result is written here
   mk(yaw, climb, speed) { const o = this._w; o.yaw = yaw; o.climb = climb; o.speed = speed; o.homing = false; return o; }

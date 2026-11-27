@@ -177,6 +177,8 @@ export const AUTOPILOT_TUNING = Object.freeze({
   costDiag: 1.414, costWall: 0.35, costHazard: 2.5, costSoft: 3, costGate: 12, costDanger: 6, costLink: 2.5,
   frontierBearing: 2.5, frontierDanger: 25, frontierSlack: 32,
   pickupMaxCost: 18,                          // a pickup is only fetched if its route costs at most this
+  pickupStuckMax: 2,                          // stuck this many times on the way to one pickup: give it up
+  shaftLineUp: 4,                             // within this distance of a tunnel mouth, hold its height (and crawl until there)
   // --- fire control
   aimYawGain: 3.0, aimClimbGain: 1.6, aimSpeedCap: 1.5,   // steer onto the lead point and slow right down
   hitFrac: 0.8,                               // fire when the predicted sideways miss is under this fraction of the hit radius

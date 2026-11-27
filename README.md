@@ -39,6 +39,15 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.31.4: autopilot no longer stalls at tunnels and pickups
+
+The autopilot kept stopping and replanning ("STUCK - NEW GOAL"): 269 times across 9 test sectors. Two bugs caused 97% of it:
+
+- **Tunnel mouths.** On the way to a tunnel opening high in a wall, the target height rose only as the rocket moved forward, but the wall under the opening stopped forward movement. The rocket hovered below the opening forever. Within 4 m of a tunnel mouth it now climbs (or sinks) to the opening first, then goes in.
+- **Old pickup routes.** When it picked up an item, the pilot kept the route it had found when it first chose that item. After a stop it re-used that route, which could start somewhere else behind a wall, and stalled again every 3 s. The route is now searched again from where the rocket is. A pickup it still cannot reach after 2 stops is given up (before, the failure went into the wrong list and it kept trying).
+
+In the same 9 sectors: stops went from 269 to 15. Sector 1 now clears in about 3.3 min of flight instead of 7.2. Sectors 2 and 5 now clear within the 8.3 min test (before, neither did). Sectors 8 and 14 reach 91% and 92% scan instead of 39% and 58%.
+
 ## v2.31.3: autopilot fixes, refresh-rate independence
 
 - **Same flight on every screen.** The lidar exploration (rays, explore map, scan %, thermal contacts, map hazards) now runs in the fixed 60 Hz step from the rocket's own pose, not once per rendered frame from the camera. With autopilot on, a seeded sector now plays out step for step the same on 60, 120 and 144 Hz screens. Before, they diverged early (about 15 s into the test run). On 120 Hz+ screens the lidar also does half the work it used to.
