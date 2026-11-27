@@ -1132,6 +1132,14 @@ export const flightMethods = {
       }
     }
 
+    if (m.active && this.state === 'PLAYING') {      // main flame, smoke trail and wash dust (visual only)
+      const burning = m.fuel > 0 && m.drop <= 0 && !m.landed && !m.flipping;
+      const thr = burning ? 0.35 + 0.85 * Math.min(1, (m.currentSpeed || 0) / this.maxSpeed()) + (m.burnT > 0 ? 0.4 : 0) : 0;
+      const now = performance.now();
+      this.thrust.update(dt, burning && this.camChase, thr, m.activeSpeedMode, now);
+      this.thrust.emit(dt, this.renderPose, m, thr, burning, this.camChase, now);
+    }
+
     if (this.cameraTrauma > 0.001) {
       const shake = this.cameraTrauma * this.cameraTrauma * 0.42;
       this.camera.position.x += (Math.random() - 0.5) * shake;
@@ -1187,15 +1195,6 @@ export const flightMethods = {
     // the rocket itself, at the same interpolated pose, with a flame that follows thrust
     const G = this.missileGroup;
     G.visible = true; G.position.copy(rp.pos); G.rotation.set(rp.pitch, rp.yaw, rp.roll, 'YXZ');
-    const on = m.fuel > 0 && m.drop <= 0 && !m.landed;
-    const thr = on ? 0.35 + 0.85 * Math.min(1, (m.currentSpeed || 0) / this.maxSpeed()) + (m.burnT > 0 ? 0.4 : 0) : 0;
-    this.thrusterCone.visible = this.thrusterCore.visible = thr > 0;
-    if (thr > 0) {
-      // seen from behind the flame must not hide the rocket: thinner, shorter and dimmer than its full size
-      this.thrusterCone.scale.set(0.55, 0.7 * thr, 0.55); this.thrusterCone.position.z = this._exitZ + 0.3 * thr;
-      this.thrusterCore.scale.set(0.5, 0.7 * thr, 0.5); this.thrusterCore.position.z = this._exitZ + 0.12 * thr;
-      this.thrusterMat.opacity = 0.5; this.thrusterCoreMat.opacity = 0.65;
-    }
     // hover RCS jets: only while hovering (the autopilot's hover included) and airborne; they hide when landed, dashing or out of fuel
     const hov = m.hover && !m.dash && m.fuel > 0 && m.drop <= 0 && !m.landed;
     this.rcs.update(dt, hov, m.hoverClimb || 0, m.yawRate || 0, m.vel.x * Math.cos(m.yaw) - m.vel.z * Math.sin(m.yaw), performance.now());

@@ -3,8 +3,9 @@ import {
   AUTO_MEM_KEY, CACHE_ROCKETS, GUN_CAP_MAX, GUN_CAP_MIN, GUN_PICKUP, GUN_STEPS, MAX_LEVELS, MAX_ROCKETS,
   MODIFIER_CAP_BONUS, MULT_SLOW, PACKAGE_ROCKETS, POINTS, POINTS_BONUS, POINTS_PER_PACKAGE, REWARDS,
   REWARD_CAP_BASE, REWARD_CAP_PER_TIER, SAVE_KEY, SPEED_MAX, SPEED_MIN, SPEED_START_CAP, SPEED_STEP,
-  UPG_MAX_LEVEL, XMAP_KEY
+  UPG_MAX_LEVEL, XMAP_KEY, DOCK_MAX_SPEED, DOCK_RATE
 } from './constants.js';
+import { _v1, _v2, hash01 } from './math.js';
 
 export const progressMethods = {
 
@@ -36,8 +37,8 @@ export const progressMethods = {
         this.pushFeed('POWER-UP: BOOST CELL — UNLIMITED BOOST 8s', 'cyan');
         break;
       case 'REPAIR':
-        m.hull = 100; m.fuel = 100;
-        this.pushFeed('POWER-UP: REPAIR KIT — HULL + FUEL RESTORED', 'cyan');
+        m.hull = 100;                                   // fuel comes only from the hidden recharge docks (v3.0)
+        this.pushFeed('POWER-UP: REPAIR KIT — HULL RESTORED', 'cyan');
         break;
       case 'STEALTH':
         this.power.stealth = 12;
@@ -52,12 +53,40 @@ export const progressMethods = {
     this.updateHUDText();
   },
 
+  // Fuel recharge dock: the rocket hovering slowly over the pad is refuelled. The ring spins, the beacon pulses, and while charging the glow
+  // brightens, energy arcs jump from the ring to the rocket and the charging hum plays. Visual randomness is hash noise (never Math.random).
+  updateDock(pk, dt) {
+    const d = pk.dock, m = this.missile, t = this.gameClock, wx = pk.pos.x, wz = pk.pos.z;
+    d.ring.rotation.z += dt * (d.charging ? 2.4 : 0.8); d.inner.rotation.z -= dt * (d.charging ? 3.4 : 1.3);
+    const near = m.active && this.state === 'PLAYING' && m.drop <= 0 && Math.hypot(m.pos.x - wx, m.pos.z - wz) < pk.radius && Math.abs(m.pos.y - pk.pos.y) < 2.6;
+    const on = near && m.fuel < 100 && m.vel.length() < DOCK_MAX_SPEED;
+    if (on) {
+      if (!d.charging) this.pushFeed('FUEL DOCK: RECHARGING', 'cyan');
+      m.fuel = Math.min(100, m.fuel + DOCK_RATE * dt);
+      m.fuelOut = -1; m.fuelWarned = m.fuel < 20;
+      if (m.fuel >= 100) this.pushFeed('FUEL DOCK: TANK FULL', 'cyan');
+      d.arcT = (d.arcT || 0) - dt;
+      if (d.arcT <= 0) {                                  // an energy arc from the ring to the hull
+        d.arcT = 0.05; d.arcN = (d.arcN || 0) + 1;
+        const a = hash01(t * 7.13 + d.arcN) * Math.PI * 2;
+        _v1.set(wx + Math.cos(a) * 1.9, 0.25, wz + Math.sin(a) * 1.9);
+        _v2.set(m.pos.x - _v1.x, m.pos.y - 0.2 - _v1.y, m.pos.z - _v1.z).normalize().multiplyScalar(5 + 4 * hash01(d.arcN * 3.7));
+        this.vfx.spawnSpark(_v1, _v2, 0.3, hash01(d.arcN * 1.9) < 0.5 ? 0x66f0ff : 0xffffff, 0.55, 0);
+      }
+    }
+    d.charging = on;
+    const k = on ? 1 : 0.45 + 0.15 * Math.sin(t * 3 + wx);
+    d.glowMats[0].opacity = 0.55 + 0.45 * k; d.glowMats[1].opacity = 0.4 + 0.5 * k; d.glowMats[2].opacity = on ? 0.75 : 0.18 + 0.2 * k;
+    this.audio.setDockHum(on ? 1 : 0, m.fuel / 100);
+  },
+
   updatePickups(dt) {
     const t = this.gameClock;
     this.crackMat.emissiveIntensity = 0.62 + Math.sin(t * 3.2) * 0.22;
     const m = this.missile;
     for (const pk of this.pickups) {
       if (!pk.active) continue;
+      if (pk.type === 'DOCK') { this.updateDock(pk, dt); continue; }
       pk.mesh.position.y = pk.baseY + Math.sin(t * 2.2 + pk.phase) * 0.18;
       pk.core.rotation.y += dt * 2.4;
       pk.core.rotation.x += dt * 1.1;

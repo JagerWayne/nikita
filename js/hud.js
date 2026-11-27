@@ -1,6 +1,6 @@
 /* Canvas HUD and soliton radar rendering for NikitaGame. */
 import {
-  CELL_SIZE, DECOY_LIFE, FLOOR_DIM_VIS, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES
+  CELL_SIZE, DECOY_LIFE, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES
 } from './constants.js';
 import { _v1, _v2 } from './math.js';
 
@@ -329,11 +329,12 @@ export const hudMethods = {
     if ((this._radarTick & 1) === 1) return; // ~30 fps is plenty for the minimap
     const ctx = this.radarCtx;
     const size = this.radarCanvas.width;
-    const scale = size / GRID_SIZE;
+    const scale = size / (this.gridN || GRID_SIZE);
 
-    this.drawXmapBase();                                               // the explore map is the map (floors stacked, route, autopilot legs)
+    this.drawXmapBase();                                               // the explore map is the map (route, autopilot legs)
+    ctx.save(); ctx.translate(-(this.gridOff || 0) * scale, -(this.gridOff || 0) * scale);   // the sector's window of the 128 grid
     const curF = this._radarFloor = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
-    const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : FLOOR_DIM_VIS; };
+    const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : 0.05; };
 
     const toRX = (wx) => (wx / CELL_SIZE + GRID_SIZE * 0.5) * scale;
     const toRZ = (wz) => (wz / CELL_SIZE + GRID_SIZE * 0.5) * scale;
@@ -437,11 +438,6 @@ export const hudMethods = {
     }
 
     ctx.globalAlpha = 1;
-    if (this.nFloors > 1) {
-      ctx.font = 'bold 11px monospace';
-      ctx.fillStyle = '#aaffdd';
-      ctx.fillText(`FLOOR ${curF + 1}/${this.nFloors}`, 5, 13);
-    }
     for (const d of this.decoyObjs) {
       ctx.strokeStyle = 'rgba(51, 221, 255, 0.8)';
       ctx.lineWidth = 1.2;
@@ -485,6 +481,7 @@ export const hudMethods = {
       ctx.lineTo(mx - Math.sin(this.missile.yaw) * 10, mz - Math.cos(this.missile.yaw) * 10);
       ctx.stroke();
     }
+    ctx.restore();
   },
 
   updateSpeedBadgeUI() {

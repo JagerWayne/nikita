@@ -1,6 +1,14 @@
 /* Game constants: grid, physics, balance numbers, cell types, speed modes and storage keys. No dependencies. */
 
-export const GRID_SIZE = 64;
+export const GRID_SIZE = 128;             // the largest sector: every grid array is this size. A sector uses a centred window of SECTOR_SIZES (64 to 128) inside it, the rest stays solid
+export const SECTOR_SIZES = [64, 80, 96, 112, 128];
+/* Sector size by level: 64 for levels 1-20, then 80 / 96 / 112 for each further 20 levels, 128 from level 81 */
+export const sectorSizeFor = (level) => SECTOR_SIZES[Math.max(0, Math.min(SECTOR_SIZES.length - 1, Math.floor((level - 1) / 20)))];
+/* Fuel recharge docks hidden in side alcoves: none on the smallest map, two on the largest, one in between */
+export const dockCountFor = (size) => (size <= 64 ? 0 : (size >= 128 ? 2 : 1));
+export const DOCK_RADIUS = 2.4;               // charging radius around a dock pad (metres, horizontal)
+export const DOCK_MAX_SPEED = 3.5;            // the rocket must be slower than this to charge
+export const DOCK_RATE = 16;                  // fuel % per second while charging
 export const CELL_SIZE = 4.0;
 export const WALL_H = 7.2;
 export const FIXED_DT = 1 / 60;
@@ -56,11 +64,10 @@ export const PACKAGE_ROCKETS = 5;
 export const LIDAR_CAP = 100000;              // max dots kept / drawn per sector
 export const VOX = 0.8;                       // memory resolution: one dot per 0.8-unit cube of surface
 export const VOX_N = Math.ceil((GRID_SIZE * CELL_SIZE) / VOX);   // voxels across the facility (x and z)
-export const MAX_FLOORS = 3;                  // multi-floor sectors: 2 floors from tier 4, 3 from tier 7
+export const MAX_FLOORS = 1;                  // single-floor sectors only (v3.0)
 export const VOX_Y = Math.ceil(WALL_H * MAX_FLOORS / VOX);
 export const VOX_HALF = GRID_SIZE * CELL_SIZE * 0.5;
-export const FLOOR_DIM_VIS = 0.05;           // multi-floor sectors: floors other than the one the rocket is on are drawn at this visibility (the active floor at 1.0)
-export const LIDAR_KEY_PREFIX = 'M';          // 'M' = multi-floor map format (older single-floor maps are ignored)
+export const LIDAR_KEY_PREFIX = 'N';          // 'N' = v3.0 map format (128 grid, single floor): older saved maps are ignored
 export const FLOOR_SEG = 1 << 16;             // edge ids: floor f adds f * FLOOR_SEG
 export const FEAT_BASE = 1 << 25;             // edge ids at or above this are ramp outlines (8 per ramp)
 export const RAMP_LEN = 6;
@@ -182,7 +189,7 @@ export const AUTOPILOT_TUNING = Object.freeze({
   pickupMaxCost: 18,                          // a pickup is only fetched if its route costs at most this
   // --- energy reserve: below this cruise range, a seen repair kit becomes the priority
   energyReserveM: 120,                        // metres of range left at cruise speed
-  energyPickupMaxCost: 40, energyRangeShare: 0.7,   // a low-fuel detour may cost up to 40 tiles and never more than 70% of the range left
+  energyPickupMaxCost: 90, energyRangeShare: 0.8, dockMargin: 1.8, dockHoldMax: 14,   // a low-fuel detour to a recharge dock may cost up to 90 tiles and never more than 70% of the range left
   // --- last gasp: nearly out of fuel with no repair kit in reach, the remaining burn is spent on a score (barrel, turret, sentry, cracked wall)
   lastGaspSec: 3.5,                           // burn time left (seconds) below which the last-gasp run starts
   lastGaspEvery: 0.25,                        // target re-pick cadence while it is active

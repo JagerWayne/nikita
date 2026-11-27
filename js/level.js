@@ -2,12 +2,12 @@
 import * as THREE from 'three';
 import {
   CELL_CRACKED, CELL_FLOOR, CELL_RAMP, CELL_RUNWAY, CELL_SHAFT_LOW, CELL_SIZE, CELL_VOID, CELL_WALL,
-  DECOYS_PER_SECTOR, GRID_SIZE, ROCKET_MODEL_SCALE, LEVELS_PER_TIER, LIDAR_KEY_PREFIX, LIFT_BASE, MAX_LEVELS, MAX_TETHER_PTS,
-  MODIFIER_INFO, POINTS_BONUS, RAMP_LEN, RIM_BASE, SENTRY_VISION, WALL_H, isShaft, isWalkable, isWallLike
+  DECOYS_PER_SECTOR, GRID_SIZE, sectorSizeFor, dockCountFor, DOCK_RADIUS, ROCKET_MODEL_SCALE, LEVELS_PER_TIER, LIDAR_KEY_PREFIX, LIFT_BASE, MAX_LEVELS, MAX_TETHER_PTS,
+  MODIFIER_INFO, POINTS_BONUS, RIM_BASE, SENTRY_VISION, WALL_H, isShaft, isWalkable, isWallLike
 } from './constants.js';
 import { PULSE_BEAM_YS, twinPhase } from './hazards.js';
 import { RocketModel } from './rocketmodel.js';
-import { RcsPlumes } from './vfx.js';
+import { RcsPlumes, ThrusterFX } from './vfx.js';
 import {
   PROBE_DIRS, _dummy, _v5, gridToWorldX, gridToWorldZ, hashSeedString, mulberry32, worldToGridX, worldToGridZ
 } from './math.js';
@@ -76,21 +76,7 @@ export const levelMethods = {
     this.missileGroup.add(mdl);
     this._chasePos = new THREE.Vector3(); this._chaseLook = new THREE.Vector3(); this._chaseOk = false;
 
-    this.thrusterMat = new THREE.MeshBasicMaterial({
-      color: 0xff7722, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.88, depthWrite: false
-    });
-    this.thrusterCone = new THREE.Mesh(new THREE.ConeGeometry(0.19, 1.05, 12), this.thrusterMat);
-    this.thrusterCone.rotation.x = Math.PI * 0.5;
-    this.thrusterCone.position.z = 1.24;
-    this.missileGroup.add(this.thrusterCone);
-
-    this.thrusterCoreMat = new THREE.MeshBasicMaterial({
-      color: 0xffffdd, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.95, depthWrite: false
-    });
-    this.thrusterCore = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.62, 10), this.thrusterCoreMat);
-    this.thrusterCore.rotation.x = Math.PI * 0.5;
-    this.thrusterCore.position.z = 1.02;
-    this.missileGroup.add(this.thrusterCore);
+    this.thrust = new ThrusterFX(this.missileGroup, this.vfx);   // main flame, smoke trail and wash dust (js/vfx.js)
     this.placeExhaust();
     this.rcs = new RcsPlumes(this.missileGroup);   // hover RCS jets (pooled meshes, driven from the chase camera path)
 
@@ -104,8 +90,7 @@ export const levelMethods = {
 
   placeExhaust() {
     this._exitZ = -this.rocketModel.tailX(this.upg) * ROCKET_MODEL_SCALE;   // model -X (tail) is +Z here
-    this.thrusterCone.position.z = this._exitZ + 0.4;
-    this.thrusterCore.position.z = this._exitZ + 0.16;
+    this.thrust.setExit(this._exitZ);
   },
 
   initWireTether() {
@@ -235,6 +220,7 @@ export const levelMethods = {
     this.pendingBlasts = [];
     this.breakables = [];
     this.pickups = [];
+    this.docks = [];
     this.decoyObjs = [];
     this.decoys = DECOYS_PER_SECTOR;
     this.stats = { maxThrottle: 0 };
@@ -245,31 +231,36 @@ export const levelMethods = {
     this.floorsReached = new Set();
     this.rooms = [];
     this.grid.fill(CELL_WALL);
+    // sector size: a centred N x N window of the 128 grid (64 early, 128 late); everything outside it stays solid rock
+    const N = sectorSizeFor(this.level), o = (GRID_SIZE - N) >> 1, half = N >> 1, areaK = (N / 64) * (N / 64);
+    this.gridN = N; this.gridOff = o;
+    this.spawnCell = { x: o + half, z: o + N - 8 };
+    const cLo = o + 2, cHi = o + N - 3;                  // carve limits (inclusive)
 
     const carveRect = (x0, z0, w, h, val = CELL_FLOOR) => {
       for (let z = z0; z < z0 + h; z++) {
         for (let x = x0; x < x0 + w; x++) {
-          if (x > 1 && x < GRID_SIZE - 2 && z > 1 && z < GRID_SIZE - 2) {
+          if (x >= cLo && x <= cHi && z >= cLo && z <= cHi) {
             this.grid[z * GRID_SIZE + x] = val;
           }
         }
       }
     };
 
-    const spawnRoom = { x: 29, z: 53, w: 7, h: 7, cx: 32, cz: 56, isSpawn: true };
+    const spawnRoom = { x: o + half - 3, z: o + N - 11, w: 7, h: 7, cx: o + half, cz: o + N - 8, isSpawn: true };
     this.rooms.push(spawnRoom);
     carveRect(spawnRoom.x, spawnRoom.z, spawnRoom.w, spawnRoom.h, CELL_FLOOR);
-    carveRect(31, 42, 3, 14, CELL_RUNWAY);
-    const hubRoom = { x: 27, z: 36, w: 11, h: 7, cx: 32, cz: 39, isHub: true };
+    carveRect(o + half - 1, o + N - 22, 3, 14, CELL_RUNWAY);
+    const hubRoom = { x: o + half - 5, z: o + N - 28, w: 11, h: 7, cx: o + half, cz: o + N - 25, isHub: true };
     this.rooms.push(hubRoom);
     carveRect(hubRoom.x, hubRoom.z, hubRoom.w, hubRoom.h, CELL_FLOOR);
 
-    const desiredRooms = Math.min(18, 7 + Math.floor(tier * 0.6) + Math.floor(rng() * 3));
-    for (let attempt = 0; attempt < 220 && this.rooms.length < desiredRooms; attempt++) {
+    const desiredRooms = Math.round(Math.min(18, 7 + Math.floor(tier * 0.6) + Math.floor(rng() * 3)) * areaK);
+    for (let attempt = 0; attempt < 220 * areaK && this.rooms.length < desiredRooms; attempt++) {
       const w = 5 + Math.floor(rng() * (tier >= 10 ? 6 : 7));
       const h = 5 + Math.floor(rng() * (tier >= 10 ? 6 : 7));
-      const x = 3 + Math.floor(rng() * (GRID_SIZE - w - 6));
-      const z = 3 + Math.floor(rng() * (46 - h));
+      const x = o + 3 + Math.floor(rng() * (N - w - 6));
+      const z = o + 3 + Math.floor(rng() * (N - 18 - h));
       let overlap = false;
       for (const r of this.rooms) {
         if (x < r.x + r.w + 2 && x + w + 2 > r.x && z < r.z + r.h + 2 && z + h + 2 > r.z) {
@@ -290,7 +281,7 @@ export const levelMethods = {
       for (let x = x1; x !== x2; x += dx) {
         for (let o = lo; o <= hi; o++) {
           const gz = z1 + o;
-          if (x > 1 && x < GRID_SIZE - 2 && gz > 1 && gz < GRID_SIZE - 2) {
+          if (x >= cLo && x <= cHi && gz >= cLo && gz <= cHi) {
             if (this.grid[gz * GRID_SIZE + x] === CELL_WALL) this.grid[gz * GRID_SIZE + x] = CELL_FLOOR;
           }
         }
@@ -299,7 +290,7 @@ export const levelMethods = {
       for (let z = z1; z !== z2; z += dz) {
         for (let o = lo; o <= hi; o++) {
           const gx = x2 + o;
-          if (gx > 1 && gx < GRID_SIZE - 2 && z > 1 && z < GRID_SIZE - 2) {
+          if (gx >= cLo && gx <= cHi && z >= cLo && z <= cHi) {
             if (this.grid[z * GRID_SIZE + gx] === CELL_WALL) this.grid[z * GRID_SIZE + gx] = CELL_FLOOR;
           }
         }
@@ -323,7 +314,8 @@ export const levelMethods = {
 
     this.placeBreakables(numericSeed, tier);
     this.placeShafts(numericSeed, tier);
-    this.buildFloors(numericSeed, tier);
+    this.buildFloors();
+    this.placeDocks(numericSeed);
 
     let wallCount = 0, floorCount = 0, runwayCount = 0;
     for (let z = 0; z < GRID_SIZE; z++) {
@@ -458,11 +450,11 @@ export const levelMethods = {
       });
     }
 
-    this.spawnPos.set(gridToWorldX(32), 2.3, gridToWorldZ(56));
+    this.spawnPos.set(gridToWorldX(this.spawnCell.x), 2.3, gridToWorldZ(this.spawnCell.z));
 
     const candidateRooms = this.rooms.slice(2).sort((a, b) => {
-      const da = Math.hypot(a.cx - 32, a.cz - 56);
-      const db = Math.hypot(b.cx - 32, b.cz - 56);
+      const da = Math.hypot(a.cx - this.spawnCell.x, a.cz - this.spawnCell.z);
+      const db = Math.hypot(b.cx - this.spawnCell.x, b.cz - this.spawnCell.z);
       return db - da;
     });
     const targetNames = ['POWER TRANSFORMER', 'SECURITY MAINFRAME', 'BLAST DOOR GENERATOR', 'REACTOR CAPACITOR'];
@@ -471,12 +463,6 @@ export const levelMethods = {
       const rm = candidateRooms[i % candidateRooms.length] || hubRoom;
       const ox = (i >= candidateRooms.length ? (rng() - 0.5) * 6 : 0);
       const oz = (i >= candidateRooms.length ? (rng() - 0.5) * 6 : 0);
-      const tf = i % this.nFloors;
-      if (tf > 0) {
-        const up = this.pickFloorCell(tf, rng, i);
-        this.spawnPrimaryTarget(gridToWorldX(up[0]), gridToWorldZ(up[1]), targetNames[i % targetNames.length], i, tf * WALL_H);
-        continue;
-      }
       const tx = gridToWorldX(rm.cx) + ox;
       const tz = gridToWorldZ(rm.cz) + oz;
       this.spawnPrimaryTarget(tx, tz, targetNames[i % targetNames.length], i);
@@ -485,10 +471,9 @@ export const levelMethods = {
     const sentryCount = Math.min(this.maxSentries, Math.round((3 + tier * 2) * (this.modifier === 'HEAVY SECURITY' ? 1.5 : 1)));
     const patrolRooms = this.rooms.slice(1);
     for (let i = 0; i < sentryCount; i++) {
-      const sf = i % this.nFloors;
-      const fRooms = sf === 0 ? patrolRooms : this.liveRooms(sf);
-      const rm = fRooms[Math.floor(i / this.nFloors) % fRooms.length];
-      const sy = sf * WALL_H;
+      const sf = 0;
+      const rm = patrolRooms[i % patrolRooms.length];
+      const sy = 0;
       const wps = [
         new THREE.Vector3(gridToWorldX(rm.x + 1), sy, gridToWorldZ(rm.z + 1)),
         new THREE.Vector3(gridToWorldX(rm.x + rm.w - 2), sy, gridToWorldZ(rm.z + 1)),
@@ -527,9 +512,8 @@ export const levelMethods = {
 
     const barrelCount = Math.min(this.maxBarrels, 8 + tier * 2);
     for (let i = 0; i < barrelCount; i++) {
-      const bf = i % this.nFloors;
-      const bRooms = bf === 0 ? patrolRooms : this.liveRooms(bf);
-      const rm = bRooms[Math.floor(rng() * bRooms.length)];
+      const bf = 0;
+      const rm = patrolRooms[Math.floor(rng() * patrolRooms.length)];
       let bgx = rm.x + 1 + Math.floor(rng() * Math.max(1, rm.w - 2));
       let bgz = rm.z + 1 + Math.floor(rng() * Math.max(1, rm.h - 2));
       if (!isWalkable(this.floors[bf][bgz * GRID_SIZE + bgx])) { bgx = rm.cx; bgz = rm.cz; }
@@ -540,10 +524,10 @@ export const levelMethods = {
     this.gunAmmo = this.gunCap();
     {
       const ar = mulberry32((numericSeed ^ 0xA3301CE5) >>> 0);
-      const crates = Math.min(12, 5 + Math.floor(tier / 3)) + 2 * (this.nFloors - 1);
+      const crates = Math.min(12, 5 + Math.floor(tier / 3));
       for (let i = 0; i < crates; i++) {
-        const cf = i % this.nFloors;
-        const cRooms = cf === 0 ? this.rooms.slice(1) : this.liveRooms(cf);
+        const cf = 0;
+        const cRooms = this.rooms.slice(1);
         for (let k = 0; k < 20; k++) {
           const rm = cRooms[Math.floor(ar() * cRooms.length)];
           const gx = rm.x + 1 + Math.floor(ar() * Math.max(1, rm.w - 2)), gz = rm.z + 1 + Math.floor(ar() * Math.max(1, rm.h - 2));
@@ -599,12 +583,6 @@ export const levelMethods = {
       }
     }
 
-    // CIWS turrets hang from the ceiling over every atrium: they cover both floors of the hall
-    for (const at of (tier >= 5 ? this.atriums.slice(0, tier >= 7 ? 9 : 1) : [])) {
-      const cxg = at.x0 + Math.floor(at.w / 2), czg = at.z0 + Math.floor(at.h / 2);
-      const top = this.ceilAt(at.f, czg * GRID_SIZE + cxg);
-      this.spawnTurret(gridToWorldX(cxg), top - 1.15, gridToWorldZ(czg));
-    }
     const hazardRooms = this.rooms.slice(2);
     if (hazardRooms.length > 0) {
       if (tier >= 4) {
@@ -654,7 +632,7 @@ export const levelMethods = {
     this.lidarBegin(`${LIDAR_KEY_PREFIX}${this.level}:${this.seedStr}`);
     this.seenOpen = 0;
     for (let i = 0; i < GG * this.nFloors; i++) if (this.seenCells[i] && this.cellCountsOpen(i)) this.seenOpen++;
-    if (this.nFloors > 1) this.pushFeed(`MULTI-LEVEL SECTOR: ${this.nFloors} FLOORS — RAMPS${this.lifts.length ? ', A LIFT' : ''} AND OPEN HALLS`, 'cyan');
+    this.pushFeed(`SECTOR ${N} x ${N}${this.docks.length ? ` — ${this.docks.length} HIDDEN FUEL DOCK${this.docks.length > 1 ? 'S' : ''}` : ''}`, 'cyan');
     this.updateHUDText();
   },
 
@@ -860,272 +838,19 @@ export const levelMethods = {
      MULTI-FLOOR SECTORS: upper floors, ramps, and 3D solidity helpers.
      Floor f spans y = f*WALL_H .. (f+1)*WALL_H. Slabs between floors are open only above a ramp (CELL_VOID).
      ------------------------------------------------------------------------ */
-  buildFloors(numericSeed, tier) {
-    const G = GRID_SIZE;
-    this.nFloors = tier >= 7 ? 3 : (tier >= 4 ? 2 : 1);
+  // v3.0: every sector is a single floor. (The multi-floor data the lidar, map and autopilot read stays, with one floor and no links.)
+  buildFloors() {
+    this.nFloors = 1;
     this.floors = [this.grid];
     this.floorRooms = [this.rooms];
     this.ramps = [];
     this.rampAt = new Map();
     this.rampProtect = new Set();
-    for (let f = 1; f < this.nFloors; f++) {
-      const g = new Uint8Array(G * G).fill(CELL_WALL);
-      this.floors.push(g);
-      this.floorRooms.push(this.genUpperFloor(g, mulberry32((numericSeed ^ Math.imul(0x3D7A11B5, f)) >>> 0), tier));
-    }
-    for (let f = 0; f + 1 < this.nFloors; f++) {
-      const rr = mulberry32((numericSeed ^ Math.imul(0x51ED27, f + 1)) >>> 0);
-      for (let k = 0; k < 2; k++) this.placeRamp(f, rr);
-    }
     this.lifts = [];
     this.liftCells = new Set();
     this.extraNeed = [];
     this.atriums = [];
-    if (this.nFloors > 1) {
-      const ro = mulberry32((numericSeed ^ 0x0A7B1E55) >>> 0);
-      for (let f = 1; f < this.nFloors; f++) {
-        this.placeAtrium(f, ro);
-        const holes = 2 + Math.floor(ro() * 2);
-        for (let k = 0; k < holes; k++) this.placeHole(f, ro);
-      }
-      this.placeLift(ro);
-    }
-    for (let f = 0; f < this.nFloors; f++) this.repairFloor(f);
   },
-
-  genUpperFloor(g, rng, tier) {
-    const G = GRID_SIZE, rooms = [];
-    const carve = (x0, z0, w, h) => {
-      for (let z = z0; z < z0 + h; z++) for (let x = x0; x < x0 + w; x++) if (x > 1 && x < G - 2 && z > 1 && z < G - 2) g[z * G + x] = CELL_FLOOR;
-    };
-    const want = Math.min(14, 6 + Math.floor(tier * 0.35) + Math.floor(rng() * 3));
-    for (let a = 0; a < 260 && rooms.length < want; a++) {
-      const w = 5 + Math.floor(rng() * 6), h = 5 + Math.floor(rng() * 6);
-      const x = 3 + Math.floor(rng() * (G - w - 6)), z = 3 + Math.floor(rng() * (G - h - 6));
-      if (rooms.some((r) => x < r.x + r.w + 2 && x + w + 2 > r.x && z < r.z + r.h + 2 && z + h + 2 > r.z)) continue;
-      const rm = { x, z, w, h, cx: Math.floor(x + w * 0.5), cz: Math.floor(z + h * 0.5) };
-      rooms.push(rm);
-      carve(x, z, w, h);
-    }
-    const corridor = (x1, z1, x2, z2, width) => {
-      const lo = -Math.floor((width - 1) / 2), hi = Math.floor(width / 2);
-      for (let x = x1; x !== x2; x += (x2 >= x1 ? 1 : -1)) for (let o = lo; o <= hi; o++) carve(x, z1 + o, 1, 1);
-      for (let z = z1; z !== z2 + (z2 >= z1 ? 1 : -1); z += (z2 >= z1 ? 1 : -1)) for (let o = lo; o <= hi; o++) carve(x2 + o, z, 1, 1);
-    };
-    for (let i = 1; i < rooms.length; i++) {
-      let best = rooms[0], bd = 1e9;
-      for (let j = 0; j < i; j++) { const d = Math.hypot(rooms[i].cx - rooms[j].cx, rooms[i].cz - rooms[j].cz); if (d < bd) { bd = d; best = rooms[j]; } }
-      corridor(rooms[i].cx, rooms[i].cz, best.cx, best.cz, tier >= 12 ? 2 : 3);
-      if (i > 2 && rng() < 0.3) { const alt = rooms[Math.floor(rng() * i)]; corridor(rooms[i].cx, rooms[i].cz, alt.cx, alt.cz, 2); }
-    }
-    return rooms;
-  },
-
-  // A ramp: entrance cell (floor f) -> RAMP_LEN ramp cells -> exit cell on floor f+1. It runs in its own 1-cell tube.
-  placeRamp(f, rng) {
-    const G = GRID_SIZE, GG = G * G, lo = this.floors[f], up = this.floors[f + 1];
-    const at = (g, x, z) => (x < 0 || z < 0 || x >= G || z >= G) ? -1 : g[z * G + x];
-    const prot = (fl, x, z) => this.rampProtect.has(fl * GG + z * G + x);
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    let best = null, bestS = 1e9;
-    for (let tries = 0; tries < 2500; tries++) {
-      const ex = 3 + Math.floor(rng() * (G - 6)), ez = 3 + Math.floor(rng() * (G - 6));
-      if (lo[ez * G + ex] !== CELL_FLOOR || prot(f, ex, ez)) continue;
-      if (f === 0 && (ez > 44 || this.secretHidden.has(ez * G + ex))) continue;
-      const [dx, dz] = dirs[Math.floor(rng() * 4)];
-      const px = -dz, pz = dx;
-      let score = 0, ok = true;
-      for (let i = 0; i <= RAMP_LEN + 3 && ok; i++) {
-        const cx = ex + dx * i, cz = ez + dz * i;
-        if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) { ok = false; break; }
-        if (i > RAMP_LEN + 1) {   // a straight run-out on the upper floor past the exit
-          const u = at(up, cx, cz);
-          if (prot(f + 1, cx, cz) || u === CELL_VOID || u === CELL_RAMP) ok = false;
-          continue;
-        }
-        const tube = i >= 1 && i <= RAMP_LEN;
-        const cells = tube ? [[cx, cz], [cx + px, cz + pz], [cx - px, cz - pz]] : [[cx, cz]];
-        for (const [x, z] of cells) {
-          if (i >= 1) {   // lower floor: the tube should be cut into rock
-            const v = at(lo, x, z);
-            if (prot(f, x, z) || (f === 0 && this.secretHidden.has(z * G + x)) || (v !== CELL_WALL && v !== CELL_FLOOR)) { ok = false; break; }
-            if (v === CELL_FLOOR) score += 3;
-          }
-          const u = at(up, x, z);  // upper floor: void + walls over the tube, wall over the entrance, open exit
-          if (prot(f + 1, x, z) || u === CELL_VOID || u === CELL_RAMP) { ok = false; break; }
-          if (i <= RAMP_LEN && u !== CELL_WALL) score += 1;
-        }
-      }
-      if (!ok) continue;
-      for (const r of this.ramps) if (r.f === f && Math.hypot(r.ex - ex, r.ez - ez) < 16) score += 8;
-      if (score < bestS) { bestS = score; best = { ex, ez, dx, dz, px, pz }; if (score === 0) break; }
-    }
-    if (!best) return;
-    const { ex, ez, dx, dz, px, pz } = best, id = this.ramps.length;
-    const P = (fl, x, z) => this.rampProtect.add(fl * GG + z * G + x);
-    for (let i = 1; i <= RAMP_LEN; i++) {
-      const cx = ex + dx * i, cz = ez + dz * i;
-      lo[cz * G + cx] = CELL_RAMP; up[cz * G + cx] = CELL_VOID;
-      this.rampAt.set(f * GG + cz * G + cx, id);
-      P(f, cx, cz); P(f + 1, cx, cz);
-      for (const sd of [1, -1]) {
-        const sx = cx + px * sd, sz = cz + pz * sd;
-        lo[sz * G + sx] = CELL_WALL; up[sz * G + sx] = CELL_WALL;
-        P(f, sx, sz); P(f + 1, sx, sz);
-      }
-    }
-    const nx = ex + dx * (RAMP_LEN + 1), nz = ez + dz * (RAMP_LEN + 1);
-    lo[nz * G + nx] = CELL_WALL; P(f, nx, nz);
-    up[ez * G + ex] = CELL_WALL; P(f + 1, ex, ez); P(f, ex, ez);
-    up[nz * G + nx] = CELL_FLOOR; P(f + 1, nx, nz);
-    for (let i = 1; i <= 2; i++) { const rx = nx + dx * i, rz = nz + dz * i; up[rz * G + rx] = CELL_FLOOR; P(f + 1, rx, rz); }
-    this.ramps.push({ id, f, ex, ez, dx, dz, px, pz, nx, nz,
-      sx: gridToWorldX(ex) + dx * CELL_SIZE * 0.5, sz: gridToWorldZ(ez) + dz * CELL_SIZE * 0.5, len: RAMP_LEN * CELL_SIZE });
-  },
-
-  // Make sure every room and ramp mouth on a floor can be reached; carve 1-cell connectors where a ramp cut a path.
-  repairFloor(f) {
-    const G = GRID_SIZE, GG = G * G, g = this.floors[f];
-    // walking connectivity (sentries cannot cross openings); the rocket can always fly where they walk
-    const pass = (v) => isWalkable(v) || (f === 0 && (v === CELL_CRACKED || isShaft(v)));
-    const flood = () => {
-      const seen = new Uint8Array(GG), st = [];
-      const add = (x, z) => { const c = z * G + x; if (!seen[c] && pass(g[c])) { seen[c] = 1; st.push(c); } };
-      if (f === 0) add(32, 56);
-      for (const r of this.ramps) if (r.f === f - 1) add(r.nx, r.nz);
-      while (st.length) {
-        const c = st.pop(), x = c % G, z = (c / G) | 0;
-        if (x > 0) add(x - 1, z); if (x < G - 1) add(x + 1, z); if (z > 0) add(x, z - 1); if (z < G - 1) add(x, z + 1);
-      }
-      return seen;
-    };
-    const need = [];
-    for (const rm of this.floorRooms[f] || []) need.push([rm.cx, rm.cz]);
-    for (const r of this.ramps) if (r.f === f) need.push([r.ex, r.ez]);
-    for (const e of this.extraNeed || []) if (e[2] === f) need.push([e[0], e[1]]);
-    for (let pass2 = 0; pass2 < need.length; pass2++) {
-      const seen = flood();
-      const miss = need.find(([x, z]) => isWalkable(g[z * G + x]) && !seen[z * G + x] && !(f === 0 && this.secretHidden.has(z * G + x)));
-      if (!miss) return;
-      // Dijkstra from the unreached cell to the reached area; carving rock costs more, turns cost a little
-      const dist = new Float32Array(GG * 4).fill(1e9), prev = new Int32Array(GG * 4).fill(-1);
-      const q = [];
-      const s0 = miss[1] * G + miss[0];
-      for (let d = 0; d < 4; d++) { dist[s0 * 4 + d] = 0; q.push([0, s0 * 4 + d]); }
-      const D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      let goal = -1;
-      while (q.length) {
-        let bi = 0; for (let i = 1; i < q.length; i++) if (q[i][0] < q[bi][0]) bi = i;
-        const [cd, st] = q[bi]; q[bi] = q[q.length - 1]; q.pop();
-        if (cd > dist[st]) continue;
-        const c = st >> 2, dir = st & 3;
-        if (seen[c]) { goal = st; break; }
-        const x = c % G, z = (c / G) | 0;
-        for (let nd = 0; nd < 4; nd++) {
-          const nx = x + D[nd][0], nz = z + D[nd][1];
-          if (nx < 2 || nz < 2 || nx > G - 3 || nz > G - 3) continue;
-          const n = nz * G + nx, v = g[n];
-          if (this.rampProtect.has(f * GG + n) && !seen[n]) continue;
-          if (v === CELL_VOID || v === CELL_RAMP) continue;
-          const nc = cd + (pass(v) ? 1 : 3) + (nd !== dir ? 2 : 0), ns = n * 4 + nd;
-          if (nc < dist[ns]) { dist[ns] = nc; prev[ns] = st; q.push([nc, ns]); }
-        }
-      }
-      if (goal < 0) return;
-      for (let st = goal; st >= 0; st = prev[st]) { const c = st >> 2; if (g[c] === CELL_WALL) g[c] = CELL_FLOOR; }
-    }
-  },
-
-
-  // Can cell (x, z) on floor f become an opening (no slab) over open floor below?
-  openable(f, x, z) {
-    const G = GRID_SIZE, GG = G * G, c = z * G + x;
-    if (x < 3 || z < 3 || x > G - 4 || z > G - 4) return false;
-    if (this.rampProtect.has(f * GG + c) || this.rampProtect.has((f - 1) * GG + c)) return false;
-    const below = this.floors[f - 1][c], here = this.floors[f][c];
-    if (!isWalkable(below) || here === CELL_VOID || here === CELL_RAMP) return false;
-    if (f - 1 === 0 && (this.secretHidden.has(c) || below === CELL_RUNWAY || z > 50)) return false;
-    return true;
-  },
-
-  // Atrium: a room-sized opening over a room below, making one double-height hall.
-  placeAtrium(f, rng) {
-    const G = GRID_SIZE, below = this.floorRooms[f - 1] || [];
-    const cand = below.filter((r) => !r.isSpawn && r.w >= 5 && r.h >= 5);
-    for (let tries = 0; tries < 12 && cand.length; tries++) {
-      const rm = cand[Math.floor(rng() * cand.length)];
-      const w = Math.min(rm.w - 2, 3 + Math.floor(rng() * 3)), h = Math.min(rm.h - 2, 3 + Math.floor(rng() * 3));
-      const x0 = rm.x + 1 + Math.floor(rng() * (rm.w - 1 - w)), z0 = rm.z + 1 + Math.floor(rng() * (rm.h - 1 - h));
-      let ok = true;
-      for (let z = z0; z < z0 + h && ok; z++) for (let x = x0; x < x0 + w && ok; x++) if (!this.openable(f, x, z)) ok = false;
-      if (!ok) continue;
-      let walk = 0;
-      for (let z = z0; z < z0 + h; z++) for (let x = x0; x < x0 + w; x++) { if (isWalkable(this.floors[f][z * G + x])) walk++; this.floors[f][z * G + x] = CELL_VOID; }
-      this.atriums.push({ f, x0, z0, w, h });
-      // keep a gallery: if the hall cut through rooms up here, the repair pass reconnects around it
-      this.atrium = this.atrium || [];
-      return;
-    }
-  },
-
-  // Drop hole: a 1x1 or 1x2 opening in an upper floor over open floor below.
-  placeHole(f, rng) {
-    const G = GRID_SIZE, g = this.floors[f];
-    for (let tries = 0; tries < 400; tries++) {
-      const x = 3 + Math.floor(rng() * (G - 6)), z = 3 + Math.floor(rng() * (G - 6));
-      if (!isWalkable(g[z * G + x]) || !this.openable(f, x, z)) continue;
-      const long = rng() < 0.5, ax = rng() < 0.5;
-      const x2 = x + (long && ax ? 1 : 0), z2 = z + (long && !ax ? 1 : 0);
-      if (!isWalkable(g[z2 * G + x2]) || !this.openable(f, x2, z2)) continue;
-      // keep holes off the immediate mouth of ramps and away from other openings
-      let near = false;
-      for (let dz = -2; dz <= 2 && !near; dz++) for (let dx = -2; dx <= 2 && !near; dx++) {
-        const nx = x + dx, nz = z + dz;
-        if (nx >= 0 && nz >= 0 && nx < G && nz < G && (g[nz * G + nx] === CELL_VOID || this.rampProtect.has(f * G * G + nz * G + nx))) near = true;
-      }
-      if (near) continue;
-      g[z * G + x] = CELL_VOID; g[z2 * G + x2] = CELL_VOID;
-      return;
-    }
-  },
-
-  // Lift: a 2x2 shaft open through every floor. Inside it the rocket is carried up (nose level or up) or down (nose down).
-  placeLift(rng) {
-    const G = GRID_SIZE, GG = G * G, NF = this.nFloors;
-    const rooms = (this.floorRooms[0] || []).filter((r) => !r.isSpawn && r.w >= 5 && r.h >= 5);
-    for (let tries = 0; tries < 60 && rooms.length; tries++) {
-      const rm = rooms[Math.floor(rng() * rooms.length)];
-      const x0 = rm.x + 1 + Math.floor(rng() * (rm.w - 3)), z0 = rm.z + 1 + Math.floor(rng() * (rm.h - 3));
-      const cells = [[x0, z0], [x0 + 1, z0], [x0, z0 + 1], [x0 + 1, z0 + 1]];
-      let ok = cells.every(([x, z]) => isWalkable(this.floors[0][z * G + x]) && !this.rampProtect.has(z * G + x) && !this.secretHidden.has(z * G + x) && z <= 50);
-      for (let f = 1; f < NF && ok; f++) {
-        for (const [x, z] of cells) {
-          const v = this.floors[f][z * G + x];
-          if (v === CELL_VOID || v === CELL_RAMP || this.rampProtect.has(f * GG + z * G + x)) ok = false;
-        }
-        // needs a wall-free ring cell to step out at this floor
-        for (let dz = -1; dz <= 2 && ok; dz++) for (let dx = -1; dx <= 2; dx++) {
-          const v = this.floors[f][(z0 + dz) * G + x0 + dx];
-          if (v === CELL_VOID && !(dx >= 0 && dx <= 1 && dz >= 0 && dz <= 1)) ok = false;
-        }
-      }
-      if (!ok) continue;
-      for (let f = 1; f < NF; f++) {
-        for (const [x, z] of cells) { this.floors[f][z * G + x] = CELL_VOID; this.rampProtect.add(f * GG + z * G + x); }
-        // open one landing cell next to the shaft on every upper floor and make sure it joins that floor
-        const sides = [[x0 - 1, z0], [x0 + 2, z0 + 1], [x0, z0 - 1], [x0 + 1, z0 + 2]];
-        let land = sides.find(([x, z]) => isWalkable(this.floors[f][z * G + x]));
-        if (!land) { land = sides[Math.floor(rng() * 4)]; this.floors[f][land[1] * G + land[0]] = CELL_FLOOR; }
-        this.extraNeed.push([land[0], land[1], f]);
-      }
-      for (const [x, z] of cells) { this.liftCells.add(z * G + x); this.rampProtect.add(z * G + x); }
-      this.lifts.push({ x0, z0, cx: gridToWorldX(x0) + CELL_SIZE * 0.5, cz: gridToWorldZ(z0) + CELL_SIZE * 0.5 });
-      return;
-    }
-  },
-
-  // Rim of an opening: the edge between void cell c (floor F) and its neighbour on one side, where the slab ends.
-  rimSeg(F, c, side) { return RIM_BASE + (F * GRID_SIZE * GRID_SIZE + c) * 4 + side; },
 
   validRim(seg) {
     const G = GRID_SIZE, GG = G * G, i = (seg - RIM_BASE) >> 2, side = (seg - RIM_BASE) & 3;
@@ -1190,24 +915,6 @@ export const levelMethods = {
     }
   },
 
-  liveRooms(f) {
-    const G = GRID_SIZE, g = this.floors[f];
-    const rs = (this.floorRooms[f] || []).filter((r) => isWalkable(g[r.cz * G + r.cx]));
-    return rs.length ? rs : [{ x: 30, z: 30, w: 4, h: 4, cx: 32, cz: 32 }];
-  },
-
-  pickFloorCell(f, rng, i) {
-    const G = GRID_SIZE, g = this.floors[f], rs = this.liveRooms(f);
-    const sorted = rs.slice().sort((a, b) => Math.hypot(b.cx - 32, b.cz - 56) - Math.hypot(a.cx - 32, a.cz - 56));
-    const rm = sorted[Math.floor(i / this.nFloors) % sorted.length];
-    if (isWalkable(g[rm.cz * G + rm.cx])) return [rm.cx, rm.cz];
-    for (let k = 0; k < 40; k++) {
-      const x = rm.x + Math.floor(rng() * rm.w), z = rm.z + Math.floor(rng() * rm.h);
-      if (isWalkable(g[z * G + x])) return [x, z];
-    }
-    return [rm.cx, rm.cz];
-  },
-
   cellCountsOpen(i) {
     const GG = GRID_SIZE * GRID_SIZE, f = (i / GG) | 0, c = i % GG;
     if (f >= this.nFloors) return false;
@@ -1268,7 +975,7 @@ export const levelMethods = {
 
   placeBreakables(numericSeed, tier) {
     const rngW = mulberry32((numericSeed ^ 0x9E3779B1) >>> 0);   // own stream: leaves the rest of the level untouched
-    const G = GRID_SIZE;
+    const G = GRID_SIZE, W0 = this.gridOff + 3, W1 = this.gridOff + this.gridN - 4;   // cells the sector's window allows
     const at = (x, z) => this.grid[z * G + x];
     const open = (x, z) => x >= 0 && z >= 0 && x < G && z < G && !isWallLike(at(x, z));
     const sp = this.rooms[0];
@@ -1276,7 +983,7 @@ export const levelMethods = {
 
     // path distance from the launch pad
     const dist = new Int16Array(G * G).fill(-1);
-    const q = [32 + 56 * G];
+    const q = [this.spawnCell.x + this.spawnCell.z * G];
     dist[q[0]] = 0;
     for (let h = 0; h < q.length; h++) {
       const i = q[h], x = i % G, z = (i / G) | 0;
@@ -1292,15 +999,15 @@ export const levelMethods = {
     // 1) Shortcuts: a hidden tunnel (up to 12 cells) through solid rock behind a cracked wall, joining two spots
     //    that are far apart by path. One blast on the cracked wall opens the whole tunnel.
     const cands = [];
-    for (let z = 3; z < G - 3; z++) {
-      for (let x = 3; x < G - 3; x++) {
+    for (let z = W0; z <= W1; z++) {
+      for (let x = W0; x <= W1; x++) {
         if (!open(x, z) || nearSpawn(x, z)) continue;
         for (const [dx, dz] of PROBE_DIRS) {
           const px = -dz, pz = dx;
           const cells = [];
           for (let k = 1; k <= 12; k++) {
             const cx = x + dx * k, cz = z + dz * k;
-            if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) break;
+            if (cx < W0 || cz < W0 || cx > W1 || cz > W1) break;
             if (open(cx, cz)) {
               const a1 = dist[z * G + x], b1 = dist[cz * G + cx];
               const saving = Math.abs(a1 - b1) - k;
@@ -1332,12 +1039,12 @@ export const levelMethods = {
     // 2) Secret chambers: a 1x2 sealed pocket behind a cracked wall, holding a power-up
     const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     const secrets = [];
-    for (let z = 4; z < G - 4; z++) {
-      for (let x = 4; x < G - 4; x++) {
+    for (let z = W0 + 1; z < W1; z++) {
+      for (let x = W0 + 1; x < W1; x++) {
         if (at(x, z) !== CELL_FLOOR || nearSpawn(x, z)) continue;
         for (const [dx, dz] of dirs) {
           const cells = [1, 2, 3, 4].map((k) => [x + dx * k, z + dz * k]);
-          if (cells.some(([cx, cz]) => cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4)) continue;
+          if (cells.some(([cx, cz]) => cx < W0 || cz < W0 || cx > W1 || cz > W1)) continue;
           if (cells.some(([cx, cz]) => at(cx, cz) !== CELL_WALL)) continue;
           const px = -dz, pz = dx;
           let sealed = true;
@@ -1390,22 +1097,22 @@ export const levelMethods = {
   // top). A power-up floats in the middle of each one. The rocket must be at the right height to fit.
   placeShafts(numericSeed, tier) {
     const rngS = mulberry32((numericSeed ^ 0x51ED270B) >>> 0);
-    const G = GRID_SIZE;
+    const G = GRID_SIZE, W0 = this.gridOff + 3, W1 = this.gridOff + this.gridN - 4;   // cells the sector's window allows
     const at = (x, z) => this.grid[z * G + x];
     const open = (x, z) => x >= 0 && z >= 0 && x < G && z < G && !isWallLike(at(x, z));
     const sp = this.rooms[0];
     const nearSpawn = (x, z) => x >= sp.x - 2 && x < sp.x + sp.w + 2 && z >= sp.z - 2 && z < sp.z + sp.h + 2;
 
     const cands = [];
-    for (let z = 3; z < G - 3; z++) {
-      for (let x = 3; x < G - 3; x++) {
+    for (let z = W0; z <= W1; z++) {
+      for (let x = W0; x <= W1; x++) {
         if (!open(x, z) || nearSpawn(x, z)) continue;
         for (const [dx, dz] of PROBE_DIRS) {
           const px = -dz, pz = dx;
           const cells = [];
           for (let k = 1; k <= 6; k++) {
             const cx = x + dx * k, cz = z + dz * k;
-            if (cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4) break;
+            if (cx < W0 || cz < W0 || cx > W1 || cz > W1) break;
             if (open(cx, cz)) {
               if (cells.length >= 1) cands.push({ cells: cells.slice(), r: rngS() + cells.length * 0.04 });
               break;
@@ -1422,14 +1129,14 @@ export const levelMethods = {
     // Dead-end shafts (3 cells deep, sealed at the far end) fill the quota where no through-wall run exists:
     // fly in, grab the power-up, then flip and burn back out, or detonate at the end.
     const dead = [];
-    for (let z = 4; z < G - 4; z++) {
-      for (let x = 4; x < G - 4; x++) {
+    for (let z = W0 + 1; z < W1; z++) {
+      for (let x = W0 + 1; x < W1; x++) {
         if (!open(x, z) || nearSpawn(x, z)) continue;
         for (const [dx, dz] of PROBE_DIRS) {
           const px = -dz, pz = dx;
           const cells = [1, 2, 3].map((k) => [x + dx * k, z + dz * k]);
           const endc = [x + dx * 4, z + dz * 4];
-          if ([...cells, endc].some(([cx, cz]) => cx < 3 || cz < 3 || cx > G - 4 || cz > G - 4 || at(cx, cz) !== CELL_WALL)) continue;
+          if ([...cells, endc].some(([cx, cz]) => cx < W0 || cz < W0 || cx > W1 || cz > W1 || at(cx, cz) !== CELL_WALL)) continue;
           if (cells.some(([cx, cz]) => at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL)) continue;
           dead.push({ cells, r: rngS() });
         }
@@ -1478,6 +1185,66 @@ export const levelMethods = {
       this.spawnPickup(px, pz, bag[Math.floor(rngS() * bag.length)], { active: false, shaft: true }, (lo + hi) * 0.5, 1.8);
       n++;
     }
+  },
+
+  // Fuel recharge docks (v3.0): hidden at the end of a 4-cell side alcove cut into the rock beside an open cell, on the main floor plane.
+  // none on the smallest map, one on the middle sizes, two on the largest (dockCountFor). Each is a glowing pad with an inductive ring and a
+  // beacon; the rocket hovering slowly over the pad is refuelled (progress.js updateDocks). Own random stream: the rest of the level is unchanged.
+  placeDocks(numericSeed) {
+    const want = dockCountFor(this.gridN);
+    if (!want) return;
+    const rngD = mulberry32((numericSeed ^ 0xD0C4F00D) >>> 0);
+    const G = GRID_SIZE, W0 = this.gridOff + 3, W1 = this.gridOff + this.gridN - 4;
+    const at = (x, z) => this.grid[z * G + x];
+    const sp = this.spawnCell, cands = [];
+    for (let z = W0 + 1; z < W1; z++) {
+      for (let x = W0 + 1; x < W1; x++) {
+        if (!isWalkable(at(x, z)) || Math.hypot(x - sp.x, z - sp.z) < this.gridN * 0.22) continue;
+        for (const [dx, dz] of PROBE_DIRS) {
+          const px = -dz, pz = dx;
+          let ok = true;
+          for (let k = 1; k <= 5 && ok; k++) {
+            const cx = x + dx * k, cz = z + dz * k;
+            if (cx < W0 || cz < W0 || cx > W1 || cz > W1 || at(cx, cz) !== CELL_WALL) ok = false;
+            else if (k <= 4 && (at(cx + px, cz + pz) !== CELL_WALL || at(cx - px, cz - pz) !== CELL_WALL)) ok = false;
+          }
+          if (ok) cands.push({ x, z, dx, dz, r: rngD() });
+        }
+      }
+    }
+    cands.sort((a, b) => a.r - b.r);
+    const taken = this.breakables.map((b) => [b.gx, b.gz]);
+    for (const c of cands) {
+      if (this.docks.length >= want) break;
+      const px = c.x + c.dx * 3, pz = c.z + c.dz * 3;
+      if (taken.some(([tx, tz]) => Math.hypot(tx - px, tz - pz) < 8)) continue;
+      if (this.docks.some((d) => Math.hypot(d.gx - px, d.gz - pz) < this.gridN * 0.4)) continue;     // spread them over the map
+      let ok = true;
+      for (let k = 1; k <= 4; k++) if (at(c.x + c.dx * k, c.z + c.dz * k) !== CELL_WALL) ok = false;
+      if (!ok) continue;
+      for (let k = 1; k <= 4; k++) this.grid[(c.z + c.dz * k) * G + (c.x + c.dx * k)] = CELL_FLOOR;
+      this.spawnDock(px, pz);
+    }
+  },
+
+  spawnDock(gx, gz) {
+    const wx = gridToWorldX(gx), wz = gridToWorldZ(gz), col = 0x35f0ff;
+    const grp = new THREE.Group();
+    grp.position.set(wx, 0, wz);
+    const add = (m) => { grp.add(m); return m; };
+    const glow = (o) => new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    add(new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.6, 0.1, 32), glow(0.5))).position.y = 0.06;                 // the floor pad
+    const ring = add(new THREE.Mesh(new THREE.TorusGeometry(2.0, 0.07, 8, 48), glow(0.9)));                          // inductive charging ring
+    ring.rotation.x = Math.PI * 0.5; ring.position.y = 0.16;
+    const inner = add(new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.05, 8, 40), glow(0.7)));
+    inner.rotation.x = Math.PI * 0.5; inner.position.y = 0.14;
+    const beacon = add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, WALL_H - 0.3, 8, 1, true), glow(0.4)));    // beacon column
+    beacon.position.y = WALL_H * 0.5;
+    grp.userData.noThermal = true;
+    this.levelGroup.add(grp);
+    const dock = { gx, gz, charging: false, ring, inner, beacon, glowMats: [ring.material, inner.material, beacon.material] };
+    this.docks.push(dock);
+    this.pickups.push({ active: true, type: 'DOCK', owner: { active: false, dock: true }, baseY: 0, radius: DOCK_RADIUS, pos: new THREE.Vector3(wx, 1.3, wz), mesh: grp, core: beacon, ring, phase: 0, dock });
   },
 
   spawnPickup(x, z, type, owner, y = 1.7, radius = 2.3) {

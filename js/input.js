@@ -209,9 +209,8 @@ export const inputMethods = {
   updateTouchControlsVisibility() {
     const tc = document.getElementById('touch-controls');
     if (!tc) return;
-    const show = (this.isTouchDevice || window.innerWidth <= 920) &&
-                 (this.state === 'PLAYING' || this.state === 'RESPAWNING' || this.state === 'READY') &&
-                 !this.paused && !this.portraitBlocked;
+    const show = (this.state === 'PLAYING' || this.state === 'RESPAWNING' || this.state === 'READY') &&
+                 !this.paused && !this.portraitBlocked && !this.prefs.hideButtons;   // the touch HUD shows on every device; the player can hide the buttons
     tc.style.display = show ? 'block' : 'none';
   },
 
@@ -331,6 +330,7 @@ export const inputMethods = {
     });
     document.getElementById('pause-lowspec').addEventListener('change', (e) => this.setPref('lowSpec', e.target.checked));
     document.getElementById('pause-lefty').addEventListener('change', (e) => this.setPref('lefty', e.target.checked));
+    document.getElementById('pause-hidebtns').addEventListener('change', (e) => this.setPref('hideButtons', e.target.checked));
     document.getElementById('pause-btnsize').addEventListener('change', (e) => this.setPref('btnScale', parseFloat(e.target.value)));
     document.getElementById('pause-btnopacity').addEventListener('input', (e) => this.setPref('btnOpacity', parseFloat(e.target.value)));
 
@@ -653,6 +653,7 @@ export const inputMethods = {
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyH' && !e.repeat) this.pressHover();
+      if (e.code === 'KeyB' && !e.repeat) { this.setPref('hideButtons', !this.prefs.hideButtons); this.pushFeed(this.prefs.hideButtons ? 'ON-SCREEN BUTTONS HIDDEN (B)' : 'ON-SCREEN BUTTONS SHOWN (B)', 'cyan'); }
       if (e.code === 'KeyC' && !e.repeat) this.toggleCamView();
       if (e.code === 'KeyV' && !e.repeat) this.pressAuto();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {

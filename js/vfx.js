@@ -1,6 +1,7 @@
 /* Pooled particle / light VFX system. */
 import * as THREE from 'three';
-import { _c1, _dummy, _f1, _f2, _f3, _v1 } from './math.js';
+import { SPEED_MODES } from './constants.js';
+import { _c1, _dummy, _f1, _f2, _f3, _v1, hash01 } from './math.js';
 
 export class VFXSystem {
   constructor(scene) {
@@ -472,5 +473,107 @@ export class RcsPlumes {
     this.group.removeFromParent();
     for (let i = 0; i < this.jets.length; i++) this.jets[i].mat.dispose();
     this.geo.dispose();
+  }
+}
+
+/* Main thruster: a three-layer flame on the rear nozzle (outer plasma cone, mid cone, white core) plus the exhaust smoke / heat trail and the
+   floor and wall wash dust. Everything is preallocated: the cones are made once, smoke and dust are spawned into the VFX system's particle pool
+   through scratch objects owned here, and the flicker comes from the visual clock and hash noise (never Math.random: the simulation's
+   random stream is not touched). Render path only: update() and emit() read the rocket and write only these meshes and the particle pool. */
+export class ThrusterFX {
+  constructor(parent, vfx) {
+    this.vfx = vfx; this.exitZ = 1.2; this.boost = 0; this.smokeAcc = 0; this.dustAcc = 0; this.sparkAcc = 0; this.n = 0;
+    this.p = new THREE.Vector3(); this.v = new THREE.Vector3(); this.e = new THREE.Euler(0, 0, 0, 'YXZ');
+    this.c = new THREE.Color(); this.c2 = new THREE.Color();
+    this.group = new THREE.Group(); this.group.visible = false; parent.add(this.group);
+    const layer = (r, h, seg, col, op) => {
+      const geo = new THREE.ConeGeometry(r, h, seg, 1, true);
+      geo.translate(0, h * 0.5, 0);                       // base on the nozzle, tip trailing
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = Math.PI * 0.5;                    // +y (the tip) -> +z (aft)
+      this.group.add(mesh);
+      return { mesh, mat, geo };
+    };
+    this.outer = layer(0.2, 1.3, 14, 0xff7a1a, 0.4);
+    this.mid = layer(0.13, 0.95, 12, 0xffc060, 0.6);
+    this.core = layer(0.065, 0.62, 10, 0xffffff, 0.95);
+  }
+
+  setExit(z) { this.exitZ = z; this.group.position.z = z; }
+
+  // on: engine burning. thr: thrust level (about 0.35 idle .. 1.2 full). mode: speed mode 1..3 (3 = afterburner / boost). time: visual clock (ms).
+  update(dt, on, thr, mode, time) {
+    this.group.visible = on;
+    if (!on) { this.boost = 0; return; }
+    this.boost += ((mode === 3 ? 1 : 0) - this.boost) * Math.min(1, dt * 6);
+    const b = this.boost, flick = 1 + 0.1 * Math.sin(time * 0.085) + 0.06 * Math.sin(time * 0.21 + 1.3) + 0.04 * Math.sin(time * 0.47 + 0.4);
+    const len = (0.22 + 0.62 * thr) * (1 + 0.55 * b) * flick, wid = 0.6 + 0.3 * thr + 0.3 * b;
+    this.outer.mesh.scale.set(wid, len, wid);
+    this.mid.mesh.scale.set(wid * 0.9, len * 0.78, wid * 0.9);
+    this.core.mesh.scale.set(wid * 0.8, len * 0.5 * (1 + 0.1 * Math.sin(time * 0.31)), wid * 0.8);
+    // colour: deep orange at idle, bright amber at cruise, cyan-white plasma in the afterburner
+    this.c.setHex(0xff6a12).lerp(this.c2.setHex(SPEED_MODES[2].exhaustColor), Math.min(1, thr * 1.2)).lerp(this.c2.setHex(0x3fd4ff), b);
+    this.outer.mat.color.copy(this.c);
+    this.mid.mat.color.setHex(0xffb347).lerp(this.c2.setHex(0x8fe6ff), b);
+    this.core.mat.color.setHex(0xfff2d0).lerp(this.c2.setHex(0xffffff), b);
+    const o = 0.5 + 0.3 * flick;                          // seen from behind the flame must not hide the rocket: kept translucent
+    this.outer.mat.opacity = (0.22 + 0.2 * thr) * o; this.mid.mat.opacity = (0.35 + 0.2 * thr) * o; this.core.mat.opacity = 0.6 + 0.3 * b;
+  }
+
+  /* Smoke trail, floor / wall wash and damage sparks. rp: interpolated pose {pos, pitch, yaw, roll}; m: the missile state; thr as above. */
+  emit(dt, rp, m, thr, burning, smoke, time) {
+    const vfx = this.vfx, pos = this.p, vel = this.v, e = this.e;
+    e.set(rp.pitch, rp.yaw, rp.roll, 'YXZ');
+    const hurt = m.hull < 50 ? (50 - Math.max(0, m.hull)) / 50 : 0;               // 0 healthy .. 1 nearly destroyed
+    if (burning && smoke) {
+      this.smokeAcc += dt * (5 + 14 * thr + 10 * this.boost) * (1 + 1.2 * hurt);
+      while (this.smokeAcc >= 1) {
+        this.smokeAcc -= 1; this.n++;
+        pos.set((hash01(this.n * 1.7) - 0.5) * 0.05, (hash01(this.n * 2.3) - 0.5) * 0.05, this.exitZ + 0.1).applyEuler(e).add(rp.pos);
+        vel.set((hash01(this.n * 3.1) - 0.5) * 0.6, (hash01(this.n * 4.7) - 0.5) * 0.6, 0.8 + 1.6 * thr).applyEuler(e).addScaledVector(m.vel, 0.88);   // mostly carried along: it fades before it reaches the chase camera
+        // the camera chases from behind: the trail stays small and dark so it never fogs the view (a hot glow at birth, then soot)
+        vfx.spawnParticle(pos, vel, 0.05 + 0.03 * thr, 0.18 + 0.2 * thr + 0.35 * hurt, 0.35 + 0.3 * thr + 0.5 * hurt,
+          this.boost > 0.5 ? 0x3f8fb0 : 0x8a5a2a, hurt > 0.2 ? 0x141414 : 0x2e2e2e, 0x080808, 0.25 + 0.4 * hurt);
+      }
+      if (hurt > 0.2) {                                    // a damaged hull sheds sparks from the nozzle
+        this.sparkAcc += dt * (3 + 9 * hurt);
+        while (this.sparkAcc >= 1) {
+          this.sparkAcc -= 1; this.n++;
+          pos.set(0, 0, this.exitZ).applyEuler(e).add(rp.pos);
+          vel.set((hash01(this.n * 5.3) - 0.5) * 5, (hash01(this.n * 6.1) - 0.2) * 4, 3 + 5 * hash01(this.n * 7.7)).applyEuler(e).addScaledVector(m.vel, 0.5);
+          vfx.spawnSpark(pos, vel, 0.3 + 0.3 * hash01(this.n * 8.9), hash01(this.n * 9.7) < 0.5 ? 0xffee77 : 0xff7722, 0.6, 14);
+        }
+      }
+    }
+    // wash: dust kicked up from the floor under a low rocket, and from a close wall beside it (probe distances come from the flight step)
+    const P = m.probe;
+    if (P && m.drop <= 0) {
+      const spd = m.vel.length(), push = 0.4 + 0.6 * Math.min(1, thr);
+      const dF = P.d, kF = dF < 1.8 ? (1.8 - dF) / 1.8 : 0;                          // floor: 0 at 1.8 m .. 1 on the ground
+      const side = P.l < P.r ? P.l : P.r, kW = side < 1.3 && spd > 1.5 ? (1.3 - side) / 1.3 : 0;
+      this.dustAcc += dt * (kF * 9 * push + kW * 6);
+      while (this.dustAcc >= 1) {
+        this.dustAcc -= 1; this.n++;
+        const a = hash01(this.n * 1.31) * Math.PI * 2;
+        if (kF >= kW) {                                    // floor wash: a ring of dust rolling outward
+          pos.set(rp.pos.x + Math.cos(a) * 0.3, rp.pos.y - dF - 0.35, rp.pos.z + Math.sin(a) * 0.3);
+          vel.set(Math.cos(a) * (1.4 + 2.2 * push), 0.35, Math.sin(a) * (1.4 + 2.2 * push));
+          vfx.spawnParticle(pos, vel, 0.05, 0.3, 0.45 + 0.25 * hash01(this.n * 2.9), 0x5c625a, 0x2c302c, 0x0a0b0a, 0.12);
+        } else {                                           // wall wash: dust and a spark skimming along the wall
+          e.set(0, rp.yaw, 0, 'YXZ');
+          const sgn = P.l < P.r ? -1 : 1;
+          pos.set(sgn * (side + 0.45), 0, 0).applyEuler(e).add(rp.pos);
+          vel.set(-sgn * 0.5, (hash01(this.n * 3.7) - 0.4) * 0.8, 1.5).applyEuler(e).addScaledVector(m.vel, 0.4);
+          vfx.spawnParticle(pos, vel, 0.04, 0.22, 0.35, 0x5c625a, 0x2c302c, 0x0a0b0a, 0.1);
+          if (hash01(this.n * 4.9) < 0.18) vfx.spawnSpark(pos, vel, 0.25, 0xffcc77, 0.5, 16);
+        }
+      }
+    }
+  }
+
+  dispose() {
+    this.group.removeFromParent();
+    for (const L of [this.outer, this.mid, this.core]) { L.mat.dispose(); L.geo.dispose(); }
   }
 }

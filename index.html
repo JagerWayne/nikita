@@ -81,7 +81,7 @@
     <div id="cam-mode-badge">LIDAR</div>
     <div class="desktop-only-hint">[CLICK] MOUSE STEER | [L] LOCK | [C] CAMERA | [TAB] RADAR</div>
     <div class="desktop-only-hint">[-/= / WHEEL] SPEED | [SHIFT/SPACE] BOOST | [CTRL] CRAWL</div>
-    <div class="desktop-only-hint">[R] DETONATE | [~] OVERRIDE</div>
+    <div class="desktop-only-hint">[R] DETONATE | [~] OVERRIDE | [B] HIDE BUTTONS</div>
   </div>
 
   <div id="hud-bottom-left" class="hud-box">
@@ -163,6 +163,7 @@
       <label><input type="checkbox" id="pause-haptics" checked /> Haptics</label>
       <label><input type="checkbox" id="pause-lowspec" /> Low-spec mode</label>
       <label><input type="checkbox" id="pause-lefty" /> Left-handed layout</label>
+      <label><input type="checkbox" id="pause-hidebtns" /> Hide on-screen buttons (PC: key B)</label>
       <label><input type="checkbox" id="pause-override-toggle" /> Dev override menu</label>
       <label>Button size
         <select id="pause-btnsize"><option value="0.85">S</option><option value="1" selected>M</option><option value="1.15">L</option></select>
@@ -238,9 +239,11 @@
   <div class="modal-card title-card">
     <div id="title-view">
       <div class="title-head">
-        <img class="title-icon" src="icons/icon-192.png" alt="" width="96" height="96" />
+        <canvas id="title-canvas" class="title-3d" aria-label="Your Nikita rocket"></canvas>
+        <img class="title-icon" id="title-icon" src="icons/icon-192.png" alt="" width="96" height="96" style="display:none" />
         <div class="title-text">
           <div class="title-name">NIKITA // SHADOW OPS</div>
+          <div class="title-by">By Wayne Scicluna</div>
           <div class="title-sub">TACTICAL GUIDED-MISSILE SIM</div>
           <div class="title-ver">VERSION <span id="app-version">v1.0</span></div>
         </div>

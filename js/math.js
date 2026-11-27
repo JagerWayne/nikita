@@ -68,3 +68,6 @@ export function gridToWorldX(gx) { return (gx - GRID_SIZE * 0.5 + 0.5) * CELL_SI
 export function gridToWorldZ(gz) { return (gz - GRID_SIZE * 0.5 + 0.5) * CELL_SIZE; }
 export function worldToGridX(wx) { return Math.floor(wx / CELL_SIZE + GRID_SIZE * 0.5); }
 export function worldToGridZ(wz) { return Math.floor(wz / CELL_SIZE + GRID_SIZE * 0.5); }
+
+/* Deterministic hash noise in [0, 1) from a number: visual randomness that must not touch Math.random (the simulation's stream). */
+export const hash01 = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };

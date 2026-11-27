@@ -615,7 +615,7 @@ export const enemiesMethods = {
   syncBarrelInstances() {
     for (let i = 0; i < this.maxBarrels; i++) {
       const b = this.barrels[i];
-      if (b) { const bf = (b.fade || 0) * this.floorVisAt(b.pos.y); _c1.setRGB(bf, bf, bf); this.barrelMesh.setColorAt(i, _c1); }
+      if (b) { _c1.setRGB(b.fade || 0, b.fade || 0, b.fade || 0); this.barrelMesh.setColorAt(i, _c1); }
       if (!b || !b.active || !(b.fade > 0.001)) {
         _dummy.position.set(0, -500, 0);
         _dummy.scale.set(0.0001, 0.0001, 0.0001);

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   CELL_CRACKED, CELL_RAMP, CELL_SHAFT_HIGH, CELL_SHAFT_LOW, CELL_SIZE, CELL_VOID, CELL_WALL, FEAT_BASE,
   FLOOR_SEG, GRID_SIZE, LIDAR_CAP, LIFT_BASE, MAX_FLOORS, RIM_BASE, SHAFT_REVEAL_R, SHAFT_SEG_BASE, VOX,
-  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, FLOOR_DIM_VIS, XV, isShaft, isWalkable, isWallLike, LIDAR_MODE_COLORS
+  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, isShaft, isWalkable, isWallLike, LIDAR_MODE_COLORS
 } from './constants.js';
 import { PROBE_DIRS, _e1, _fwd, _v8, gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
 
@@ -95,11 +95,10 @@ export const lidarMethods = {
   // Hide the lit structure (collisions use the grid), turn everything else into thermal objects.
   applyLidarLook() {
     this.fadeSet = new Set();
-    const G = this;
     const hook = this._fadeHook || (this._fadeHook = function (renderer, scene, camera, geometry, material) {
       const r = this.userData.fadeRoot;
       if (material.uniforms && material.uniforms.uFade) {
-        material.uniforms.uFade.value = (r && r.userData.fade !== undefined ? r.userData.fade : 1) * G.floorVisAt(this.matrixWorld.elements[13]);
+        material.uniforms.uFade.value = r && r.userData.fade !== undefined ? r.userData.fade : 1;
         material.uniformsNeedUpdate = true;
       }
     });
@@ -156,8 +155,6 @@ export const lidarMethods = {
     this.seenOpen = 0;
     this.totalOpen = 1;
     this.lidarKey = null;
-    this.floorVis = new Float32Array(MAX_FLOORS).fill(1);   // per-floor visibility (shader uniform uFV): active floor 1.0, the others FLOOR_DIM_VIS
-    this._fvKey = null; this._fvN = 0;
     const pos = new Float32Array(LIDAR_CAP * 3);
     const info = new Float32Array(LIDAR_CAP * 2);
     this.lidarPos = pos;
@@ -176,7 +173,6 @@ export const lidarMethods = {
     this.lidarUniforms = {
       uTime: { value: 0 }, uOrigin: { value: new THREE.Vector3() }, uGlow: { value: 2 }, uMem: { value: 0.25 },
       uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uDot: { value: 1 }, uCrack: { value: 0 }, uPulse: { value: 0 },
-      uFV: { value: new THREE.Vector3(1, 1, 1) }, uWallH: { value: WALL_H },
       uMode: { value: new THREE.Color(...LIDAR_MODE_COLORS.EXPLORE) }   // map dot colour: follows the autopilot's mission (updateLidar)
     };
     const mat = new THREE.ShaderMaterial({
@@ -184,7 +180,7 @@ export const lidarMethods = {
       vertexShader: `
         attribute vec2 aInfo;
         uniform float uTime, uGlow, uMem, uRange, uSweep, uScale, uCrack, uPulse, uDot;
-        uniform vec3 uOrigin, uMode, uFV; uniform float uWallH;
+        uniform vec3 uOrigin, uMode;
         varying vec3 vCol;
         void main() {
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -204,8 +200,6 @@ export const lidarMethods = {
           else if (aInfo.x > 3.5) { col = mix(uMode, vec3(1.0), 0.68); b = max(b * 1.3, 0.62 + 0.4 * near); }
           else if (aInfo.x > 2.5) col = uMode;                       // shafts: same colour as the rest of the map
           vCol = col * b + mix(uMode, vec3(1.0), 0.5) * fresh * 0.45;
-          float fl = floor(position.y / uWallH);                     // multi-floor: dots of the floors the rocket is not on are dimmed to uFV
-          vCol *= fl < 0.5 ? uFV.x : (fl < 1.5 ? uFV.y : uFV.z);
           float edge = aInfo.x > 3.5 ? 1.25 : 1.0;
           gl_PointSize = clamp(uScale * uDot * edge * (26.0 + 18.0 * fresh) * (1.0 + 0.7 * wave) / max(0.5, -mv.z), 1.6 * edge * uDot, 8.5 * uDot);
         }`,
@@ -241,15 +235,14 @@ export const lidarMethods = {
     lg.instanceCount = 0;
     this.segGeo = lg;
     this.segUniforms = { uTime: this.lidarUniforms.uTime, uOrigin: this.lidarUniforms.uOrigin, uRange: this.lidarUniforms.uRange, uGlow: this.lidarUniforms.uGlow, uPulse: this.lidarUniforms.uPulse,
-                         uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 }, uMode: this.lidarUniforms.uMode,
-                         uFV: this.lidarUniforms.uFV, uWallH: this.lidarUniforms.uWallH };   // outlines share the dots' mission colour
+                         uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 }, uMode: this.lidarUniforms.uMode };   // outlines share the dots' mission colour
     const lmat = new THREE.ShaderMaterial({
       uniforms: this.segUniforms,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: `
         attribute vec3 aA; attribute vec3 aB; attribute float aBirth; attribute float aKind;
         varying float vK;
-        uniform float uTime, uGlow, uRange, uWidth, uPulse, uWallH; uniform vec2 uRes; uniform vec3 uOrigin, uFV;
+        uniform float uTime, uGlow, uRange, uWidth, uPulse; uniform vec2 uRes; uniform vec3 uOrigin;
         varying float vB; varying float vEdge;
         void main() {
           vec4 va = modelViewMatrix * vec4(aA, 1.0);
@@ -272,8 +265,6 @@ export const lidarMethods = {
           float breath = 0.5 + 0.5 * sin(uTime * 2.3);
           float wave = exp(-abs(mid - uPulse) * 0.9) * (1.0 - smoothstep(uRange, uRange * 1.3, uPulse));
           vB = (0.3 + 0.7 * near) * (0.55 + 0.45 * breath) + fresh * 0.9 + wave * 1.1;
-          float fl = floor(0.5 * (aA.y + aB.y) / uWallH);              // edges of dimmed floors fade with them
-          vB *= fl < 0.5 ? uFV.x : (fl < 1.5 ? uFV.y : uFV.z);
           vEdge = position.y;
           vK = aKind;
         }`,
@@ -505,29 +496,32 @@ export const lidarMethods = {
     return out;
   },
 
-  // The map: the explore map drawn as the radar's base layer. Floors stacked: current floor 100%, others 5%.
+  // The map: the explore map drawn as the radar's base layer. The radar shows the sector's own window (gridN cells across) of the 128 grid.
   drawXmapBase() {
-    const ctx = this.radarCtx, size = this.radarCanvas.width, G = GRID_SIZE, GG = G * G, sc = size / G, X = this.xgrid;
+    const ctx = this.radarCtx, size = this.radarCanvas.width, G = GRID_SIZE, GG = G * G, sc = size / (this.gridN || G), sh = -(this.gridOff || 0) * sc, X = this.xgrid;
     const curF = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
     const COL = ['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00'];
     if (!this._xLayer) { this._xLayer = document.createElement('canvas'); this._xLayer.width = size; this._xLayer.height = size; }
     const now = performance.now();
-    if (X && (this.xgridDirty || this._xLayerF !== curF) && now - (this._xLayerT || 0) > 250) {     // redraw the tiles only when the map changed
-      this._xLayerT = now; this.xgridDirty = false; this._xLayerF = curF;
+    if (X && (this.xgridDirty || this._xLayerF !== curF || this._xLayerN !== this.gridN) && now - (this._xLayerT || 0) > 250) {     // redraw the tiles only when the map changed
+      this._xLayerT = now; this.xgridDirty = false; this._xLayerF = curF; this._xLayerN = this.gridN;
       const lc = this._xLayer.getContext('2d');
+      lc.setTransform(1, 0, 0, 1, 0, 0);
       lc.clearRect(0, 0, size, size);
       lc.fillStyle = '#020604'; lc.fillRect(0, 0, size, size);
+      lc.setTransform(1, 0, 0, 1, sh, sh);
       const order = [];
       for (let f = 0; f < this.nFloors; f++) if (f !== curF) order.push(f);
       order.push(curF);
       for (const f of order) {
-        lc.globalAlpha = f === curF ? 1 : FLOOR_DIM_VIS;
+        lc.globalAlpha = f === curF ? 1 : 0.05;
         for (let i = 0; i < GG; i++) { const v = X[f * GG + i]; if (!v) continue; lc.fillStyle = COL[v]; lc.fillRect((i % G) * sc, ((i / G) | 0) * sc, sc, sc); }
       }
-      lc.globalAlpha = 1;
+      lc.globalAlpha = 1; lc.setTransform(1, 0, 0, 1, 0, 0);
     }
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(this._xLayer, 0, 0);
+    ctx.save(); ctx.translate(sh, sh);
     // the route (9) on the current floor
     if (this.xroute && this.xroute.length) {
       ctx.fillStyle = COL[XV.ROUTE];
@@ -543,7 +537,7 @@ export const lidarMethods = {
       const cmd = this.pilot.cmd;
       if (cmd && cmd.carrot) { ctx.fillStyle = '#00e5ff'; ctx.beginPath(); ctx.arc(toX(cmd.carrot.x), toZ(cmd.carrot.z), sc * 0.6, 0, Math.PI * 2); ctx.fill(); }
     }
-    ctx.font = 'bold 13px monospace'; ctx.fillStyle = 'rgba(255,221,85,0.85)'; ctx.fillText('F' + (curF + 1) + '/' + this.nFloors, 6, 15);
+    ctx.restore();
   },
 
   castRay(ox, oy, oz, dx, dy, dz, range) {
@@ -894,26 +888,6 @@ export const lidarMethods = {
     return this.camera.position;
   },
 
-  // Multi-floor visibility (visual only: reads the rocket's height, writes the uniform and this.floorVis). The floor the rocket is on is drawn
-  // at 1.0, every other floor at FLOOR_DIM_VIS; it eases over about a third of a second and snaps on a new sector. The same per-floor value
-  // multiplies the thermal objects (onBeforeRender hook) and the barrel instances. No shared material is edited: thermal materials are
-  // shared by heat, so the factor goes into the per-object uFade uniform at draw time.
-  updateFloorVis(dt) {
-    const FV = this.floorVis, nF = this.nFloors, cur = this.floorOfY(this.missile.pos.y);
-    const snap = this._fvKey !== this.lidarKey || this._fvN !== nF;
-    this._fvKey = this.lidarKey; this._fvN = nF;
-    const k = snap ? 1 : 1 - Math.exp(-dt * 9);
-    for (let f = 0; f < FV.length; f++) FV[f] += ((nF <= 1 || f === cur ? 1 : FLOOR_DIM_VIS) - FV[f]) * k;
-    this.lidarUniforms.uFV.value.set(FV[0], FV[1], FV[2]);
-  },
-
-  // visibility of whatever hangs at height y (thermal objects, barrels)
-  floorVisAt(y) {
-    const FV = this.floorVis; if (!FV) return 1;
-    const f = Math.floor((y + 0.3) / WALL_H);
-    return FV[f < 0 ? 0 : (f > 2 ? 2 : f)];
-  },
-
   // Per-frame visuals, at the display's refresh rate with the real frame time: shader uniforms, GPU uploads, fades, the HUD badge
   // and the frame-rate guard. Nothing here changes what the simulation can see: exploration is stepLidar() below.
   updateLidar(dt) {
@@ -939,7 +913,6 @@ export const lidarMethods = {
     const mc = LIDAR_MODE_COLORS[mode] || LIDAR_MODE_COLORS.EXPLORE, k = 1 - Math.exp(-dt * 4);
     const cm = U.uMode.value; cm.r += (mc[0] - cm.r) * k; cm.g += (mc[1] - cm.g) * k; cm.b += (mc[2] - cm.b) * k;
 
-    this.updateFloorVis(dt);
     this.flushDots();
     this.flushSegs();
     if (this.fadeSet) this.updateFades(dt);

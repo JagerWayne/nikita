@@ -46,6 +46,7 @@ export class Autopilot {
     this._nudgeT = 0; this._nudgeYaw = 0; this._nudgeClimb = 0;   // clearance nudge after a stall
     this.lastGasp = false; this._lgT = 0; this._lgKind = ''; this._lgX = 0; this._lgY = 0; this._lgZ = 0; this._lgObj = null; this._lgBest = Infinity;   // last-gasp scoring run
     this.dash = false; this.dash2 = false; this.ramp = false; this.rampPitch = 0;  // shaft dash and ramp climb: flies without hover (flight.js reads it)
+    this.dockHold = null;                  // holding over a fuel dock while it charges the rocket
     this.pulseFire = false;                // set when the last-gasp pulse should go off; flight.js detonates at the start of the next step
     // ---- everything below is allocated once and reused: the per-step path (sense, steer, fire) creates no objects ----
     this._fanRad = this.FAN.map((deg) => deg * Math.PI / 180);
@@ -174,7 +175,7 @@ export class Autopilot {
     this.active = true; this.done = false; this.plan = null; this.scan = null; this.replanT = 0; this.failN = 0; this.engagedAt = this.g.gameClock;
     this.tried = this.tried && this._triedKey === this.g.lidarKey ? this.tried : new Set(); this._triedKey = this.g.lidarKey;
     this.stuck.t = 0; this.stuck.x = 0; this.stuck.y = 0; this.stuck.z = 0; this.stuck.yaw = 0; this.cmd = null; this.why = 'ENGAGED';
-    this.dash = false; this.dash2 = false; this._nudgeT = 0; this.lastGasp = false; this._lgObj = null; this._lgT = 0; this.pulseFire = false;
+    this.dockHold = null; this.dash = false; this.dash2 = false; this._nudgeT = 0; this.lastGasp = false; this._lgObj = null; this._lgT = 0; this.pulseFire = false;
     if (this._blKey !== this.g.lidarKey) { this.blocked.clear(); this._blKey = this.g.lidarKey; }
     this.fc = null; this._clearTracks(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
     this.mission = 'EXPLORE'; this.noFrontier = false; this.pickObj = null; this.pickEnergy = false; this._decT = 0; this.gate = null; this.engT = null; this._prevOn = false; this.exposed = false;
@@ -561,6 +562,20 @@ export class Autopilot {
     let out = this.mk(0, 0, 0);
     this.ramp = false;
     this.dash = false;                      // set below when the guidance wants to fly on without hover (tunnels)
+    // --- at a fuel dock: settle over the pad and hold until the tank is full (the dock charges a slow, hovering rocket)
+    if (this.dockHold) {
+      const H = this.dockHold, pk = H.pk; H.t += dt;
+      this._holdStuck(t);
+      if (!pk.active || t.fuel >= 99.5 || H.t > TUNE.dockHoldMax) {
+        this.dockHold = null; this.mission = 'EXPLORE'; this.pickObj = null; this.pickEnergy = false; this.plan = null; this.replanT = 0; this._decT = 0;
+        if (t.fuel < 99.5) this.pickTried.add(pk);              // charging never worked from here: do not come back to it at once
+        g.pushFeed(t.fuel >= 99.5 ? 'AUTOPILOT: TANK FULL — RESUMING' : 'AUTOPILOT: DOCK NOT CHARGING — MOVING ON', 'cyan');
+      } else {
+        const dx = pk.pos.x - t.x, dz = pk.pos.z - t.z, d = Math.hypot(dx, dz), brg = wrapAngle(Math.atan2(-dx, -dz) - t.yaw);
+        this.why = 'RECHARGING AT A FUEL DOCK';
+        return this.fire(dt, this.mk(clamp1(3 * brg - TUNE.yawDamp * t.yawRate), clamp1(1.4 * (pk.pos.y - t.y) - TUNE.climbDamp * t.vSpeed), d > 0.5 && Math.abs(brg) < 0.6 ? Math.min(1.5, d * 1.2) : 0));
+      }
+    }
     // --- at a firing spot (turret, sentry or barrel): face it, match its height, let fire control kill it (12 s at most)
     if ((this.mission === 'ENGAGE' || this.mission === 'CLEAR_BARREL') && this.engT && this.engT.atSpot) {
       const E = this.engT, tu = E.tu, alive = this._alive(E.kind, tu);
@@ -669,6 +684,7 @@ export class Autopilot {
     if (P.k >= wps.length) {
       this.plan = null;
       if (P.laser) { this.boxWait = { t: 0 }; this.why = 'SHOOTING A LASER SWITCH BOX'; return this.fire(dt, this.mk(0, 0, 0)); }
+      if (P.pickup && P.pickup.type === 'DOCK') { this.dockHold = { pk: P.pickup, t: 0 }; this.why = 'RECHARGING AT A FUEL DOCK'; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.pickup) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.replanT = 0; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.attack && this.engT) { this.engT.atSpot = true; this.why = 'ENGAGING ' + this.engT.kind; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.breach && this.breachT) { this.breachT.atSpot = true; this.why = 'BREACH: PLACING THE CHARGE'; return this.fire(dt, this.mk(0, 0, 0)); }
@@ -841,7 +857,7 @@ export class Autopilot {
     goals.clear(); if (goal >= 0) goals.set(goal, p);
     const tiles = goal >= 0 ? this.pathTo(t.node, this._goalPick) : null;
     if (!tiles) { this.pickTried.add(p); this.mission = 'EXPLORE'; this.plan = null; this.why = 'PICKUP OUT OF REACH'; return; }
-    if (!tiles.length) { this.pickTried.add(p); this.mission = 'EXPLORE'; this.plan = null; return; }
+    if (!tiles.length) { if (p.type === 'DOCK') { this.dockHold = { pk: p, t: 0 }; this.plan = null; return; } this.pickTried.add(p); this.mission = 'EXPLORE'; this.plan = null; return; }
     this.plan = { goal: tiles[tiles.length - 1], tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, pickup: p };
     this.g.xroute = tiles.slice(); this.why = 'ROUTE TO A PICKUP';
   }
@@ -1242,11 +1258,22 @@ export class Autopilot {
   _wantPickup(p) {
     const g = this.g, t = this.t;
     return p.active && p._seen && !this.pickTried.has(p) && (p.type === 'ROCKETS' || p.type === 'OVERCHARGE' ||
-      (p.type === 'AMMO' && g.gunAmmo < g.gunCap() * 0.6) || (p.type === 'REPAIR' && (t.hull < 80 || t.fuel < 45 || this.lowEnergy(t))));
+      (p.type === 'AMMO' && g.gunAmmo < g.gunCap() * 0.6) || (p.type === 'REPAIR' && t.hull < 80) || (p.type === 'DOCK' && p._seen && (t.fuel < 45 || this.lowEnergy(t))));
   }
 
   // Range left at cruise speed is under the safe exploration reserve (never true with infinite fuel: the range is Infinity)
-  lowEnergy(t) { return t.rangeCruiseM < TUNE.energyReserveM; }
+  // Low on fuel: under the fixed reserve, or under what it takes to reach the nearest recharge dock that has been seen (straight line x 1.4 for the
+  // route, x 1.8 for a safety margin). Docks are far apart on the big maps, so the fixed reserve alone would be too late.
+  lowEnergy(t) {
+    if (t.rangeCruiseM < TUNE.energyReserveM) return true;
+    const P = this.g.pickups;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (p.type !== 'DOCK' || !p.active || !p._seen || (this.pickTried && this.pickTried.has(p))) continue;
+      if (t.rangeCruiseM < Math.hypot(p.pos.x - t.x, p.pos.z - t.z) * 1.4 * TUNE.dockMargin + TUNE.energyReserveM * 0.5) return true;
+    }
+    return false;
+  }
 
   // Base speed for this step: cruise, or faster on a wide-open straight (lined up, clear far ahead, room to stop, nothing to watch
   // out for). It only raises the starting point: the braking envelope to the coming waypoints and the clearance cap still apply.
@@ -1317,7 +1344,7 @@ export class Autopilot {
 
   _missionMsg(m, kind, obj, energy) {
     if (m === 'HUNT') return 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)';
-    if (m === 'PICKUP') return energy ? 'AUTOPILOT: FUEL LOW — FETCHING A REPAIR KIT' : `AUTOPILOT: PICKING UP ${obj.type}`;
+    if (m === 'PICKUP') return energy ? 'AUTOPILOT: FUEL LOW — HEADING FOR A RECHARGE DOCK' : `AUTOPILOT: PICKING UP ${obj.type}`;
     if (m === 'LASER_SWITCH') return 'AUTOPILOT: SHUTTING DOWN A LASER GRID';
     if (m === 'ENGAGE') return kind === 'SENTRY' ? 'AUTOPILOT: CLEARING A SENTRY' : 'AUTOPILOT: ENGAGING A CIWS TURRET';
     if (m === 'CLEAR_BARREL') return 'AUTOPILOT: DETONATING A FUEL BARREL FROM A SAFE RANGE';
@@ -1363,7 +1390,7 @@ export class Autopilot {
     const goals = this._pickGoals; goals.clear();
     for (let i = 0; i < g.pickups.length; i++) {
       const p = g.pickups[i];
-      if (energyOnly ? !(p.type === 'REPAIR' && p.active && p._seen && !this.pickTried.has(p)) : !this._wantPickup(p)) continue;
+      if (energyOnly ? !(p.type === 'DOCK' && p.active && p._seen && !this.pickTried.has(p)) : !this._wantPickup(p)) continue;
       const c = this.tileOf(p.pos); if (c >= 0 && !goals.has(c)) goals.set(c, p);
     }
     if (!goals.size) return false;

@@ -11,9 +11,10 @@ js/main.js          entry module: checks Three.js can load, then dynamically imp
 js/game.js          NikitaGame: constructor, loop(), stepSimulation(), sector flow; mixes in the groups below
 js/input.js level.js flight.js combat.js enemies.js lidar.js progress.js ui.js hud.js
                     NikitaGame prototype mixins: each exports `<name>Methods`, a plain object of methods
-js/constants.js math.js hazards.js textures.js audio.js vfx.js autopilot.js hangar.js rocketmodel.js    leaf modules (no NikitaGame knowledge)
+js/constants.js math.js hazards.js textures.js audio.js vfx.js autopilot.js hangar.js rocketmodel.js titleview.js    leaf modules (no NikitaGame knowledge)
 js/rocketmodel.js   the procedural rocket (6 assemblies shaped by game.upg); used by the bay AND the flown rocket, so they always match
 js/hangar.js        the 3D upgrade bay: a view handed the game object (own WebGL canvas, kept); open() builds, close() disposes
+js/titleview.js     the turning rocket on the title screen; game.js draws it instead of the game scene while the title shows (wantsFrame), disposed when it leaves
 js/pwa.js           CLASSIC script (not a module): service worker, install, update check, boot watchdog
 js/boot/            classic scripts: version.js, files.js (cache manifest), sizes.js (generated), diagnostics.js, share-config.js
 js/share.js         classic script: Share Game dialog
@@ -23,6 +24,11 @@ tools/              make-sizes.mjs, check-deps.mjs
 ```
 
 The game must be served over HTTP (ES modules do not load from `file://`).
+
+## Sectors (v3.0)
+
+- Single floor only. `GRID_SIZE` is 128 (the array size); each sector uses a centred window of `gridN` cells (`sectorSizeFor(level)`: 64, 80, 96, 112, 128) starting at `gridOff`. Everything outside the window is solid rock. Generator coordinates are global (window offset included); the radar draws the window only.
+- Fuel comes only from hidden recharge docks (`dockCountFor`: 0 / 1 / 2) at the end of side alcoves, stored as `type: 'DOCK'` pickups that are never collected (`updateDock` in progress.js). REPAIR kits restore hull only.
 
 ## Mixin rule: zero circular dependencies
 

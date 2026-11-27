@@ -106,7 +106,26 @@ export class AudioEngine {
     E.toneG = c.createGain(); E.toneG.gain.value = 0;
     E.toneA.connect(E.toneG); E.toneB.connect(E.toneG); E.toneG.connect(this.master);
     E.toneA.start(); E.toneB.start();
+    // dock charging hum: two soft sines a beat apart, silent until a dock is charging the rocket (setDockHum)
+    const H = {};
+    H.a = c.createOscillator(); H.a.type = 'sine'; H.a.frequency.value = 220;
+    H.b = c.createOscillator(); H.b.type = 'sine'; H.b.frequency.value = 223;
+    H.g = c.createGain(); H.g.gain.value = 0; H.on = 0;
+    H.a.connect(H.g); H.b.connect(H.g); H.g.connect(this.master); H.a.start(); H.b.start();
+    this.dock = H;
     this.eng = E;
+  }
+
+  // charging hum: level 0 or 1; the pitch rises with the tank (fill 0..1). Only touches the audio graph when something changes.
+  setDockHum(level, fill) {
+    const H = this.dock;
+    if (!this.initialized || !H) return;
+    const t = this.ctx.currentTime;
+    if (level > 0) {
+      const f = 200 + 260 * Math.max(0, Math.min(1, fill));
+      H.a.frequency.setTargetAtTime(f, t, 0.1); H.b.frequency.setTargetAtTime(f * 1.012, t, 0.1);
+    }
+    if (H.on !== level) { H.on = level; H.g.gain.setTargetAtTime(level > 0 ? 0.05 : 0, t, level > 0 ? 0.15 : 0.25); }
   }
 
   setMuted(m) {

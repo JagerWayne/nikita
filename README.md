@@ -10,7 +10,7 @@ GitHub Pages: https://jagerwayne.github.io/nikita/
 
 Use landscape. Gyro tilt flight needs HTTPS, which the Pages link provides.
 
-## Project layout (v2.31.3)
+## Project layout (v3.0.0)
 
 ```
 index.html            markup (HUD, menus, modals), the import map and the script/link tags. No inline CSS or JS.
@@ -31,6 +31,7 @@ js/constants.js       tuning numbers (incl. AUTOPILOT_TUNING), cell types, speed
 js/hazards.js         turret range and laser beam timing, shared by the game and the autopilot
 js/math.js            scratch THREE objects, seeded PRNG, grid conversions
 js/textures.js  js/audio.js  js/vfx.js  js/autopilot.js   procedural textures, Web Audio synth, pooled VFX, the autopilot
+js/rocketmodel.js  js/hangar.js  js/titleview.js     the procedural rocket, the 3D upgrade bay, the turning rocket on the title screen
 js/pwa.js             classic script: service worker, INSTALL APP, update check, boot watchdog
 js/boot/              version.js, files.js (cache manifest), sizes.js (generated), diagnostics.js, share-config.js
 js/share.js           Share Game dialog (link + QR)
@@ -38,6 +39,16 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 ```
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
+
+## v3.0.0: bigger single-floor sectors, hidden fuel docks, new engine effects, 3D title
+
+- **Sectors are one floor and grow with the campaign**: 64 x 64 for sectors 1-20, then 80, 96 and 112, and 128 x 128 from sector 81. Ramps, lifts and upper floors are gone; tunnels, dead-end shafts and secret chambers stay on the main floor.
+- **Fuel recharge docks replace fuel pickups**: hidden at the end of side alcoves, none on 64 x 64 maps, one on the middle sizes, two on 128 x 128. A glowing pad, a turning inductive ring and a beacon mark each one once scanned (deep scan finds them through walls). Hover slowly over the pad to refuel: a charging hum and energy arcs show it working. Repair kits now restore the hull only.
+- **The autopilot uses the docks**: when the fuel left is not much more than the trip to a dock it has seen, it flies there, holds over the pad until the tank is full, then carries on.
+- **Engine effects**: a three-layer flame (plasma cone, mid cone, white core) that stretches, flickers and turns from orange to cyan in the afterburner; a short smoke and heat trail, darker and sparking when the hull is damaged; dust kicked up from the floor and walls when flying close. All pooled, nothing allocated per frame.
+- **Title screen**: your own rocket, with every installed upgrade, turns slowly above the menu and updates as soon as you come back from the upgrade bay. Credit: By Wayne Scicluna.
+- **PC uses the mobile HUD**, on-screen buttons included. Press **B** (or the pause-menu option) to hide the buttons.
+- Explored maps saved by older versions are not carried over (the map format changed).
 
 ## v2.33.2: faster autopilot, floors dim, punchier sound
 
