@@ -492,3 +492,10 @@
   background: rgba(255, 51, 68, 0.42);
   color: #fff;
 }
+
+/* Autopilot flying: the lever and the stick show its commands, in cyan (hud.js updateAutoControlsUI) */
+#throttle-lever.auto #thr-fill { background: linear-gradient(to top, rgba(0, 229, 255, 0.25), rgba(0, 229, 255, 0.7)); }
+#throttle-lever.auto #thr-thumb { background: var(--hud-cyan); box-shadow: 0 0 12px rgba(0, 229, 255, 0.8); }
+#throttle-lever.auto #thr-readout { color: var(--hud-cyan); }
+#joy-gimbal.auto { border-color: rgba(0, 229, 255, 0.75); box-shadow: 0 0 14px rgba(0, 229, 255, 0.35); }
+#joy-gimbal.auto #joy-knob { background: rgba(0, 229, 255, 0.55); border-color: var(--hud-cyan); box-shadow: 0 0 12px rgba(0, 229, 255, 0.7); }

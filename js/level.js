@@ -2,10 +2,11 @@
 import * as THREE from 'three';
 import {
   CELL_CRACKED, CELL_FLOOR, CELL_RAMP, CELL_RUNWAY, CELL_SHAFT_LOW, CELL_SIZE, CELL_VOID, CELL_WALL,
-  DECOYS_PER_SECTOR, GRID_SIZE, LEVELS_PER_TIER, LIDAR_KEY_PREFIX, LIFT_BASE, MAX_LEVELS, MAX_TETHER_PTS,
+  DECOYS_PER_SECTOR, GRID_SIZE, ROCKET_MODEL_SCALE, LEVELS_PER_TIER, LIDAR_KEY_PREFIX, LIFT_BASE, MAX_LEVELS, MAX_TETHER_PTS,
   MODIFIER_INFO, POINTS_BONUS, RAMP_LEN, RIM_BASE, SENTRY_VISION, WALL_H, isShaft, isWalkable, isWallLike
 } from './constants.js';
 import { PULSE_BEAM_YS, twinPhase } from './hazards.js';
+import { RocketModel } from './rocketmodel.js';
 import {
   PROBE_DIRS, _dummy, _v5, gridToWorldX, gridToWorldZ, hashSeedString, mulberry32, worldToGridX, worldToGridZ
 } from './math.js';
@@ -65,87 +66,14 @@ export const levelMethods = {
 
   initMissileMesh() {
     this.missileGroup = new THREE.Group();
-
-    const hullMat   = new THREE.MeshStandardMaterial({ color: 0xb8c7cf, metalness: 0.82, roughness: 0.24 });
-    const darkMat   = new THREE.MeshStandardMaterial({ color: 0x222c32, metalness: 0.72, roughness: 0.38 });
-    const redMat    = new THREE.MeshStandardMaterial({ color: 0xd92b2b, emissive: 0x2a0404, metalness: 0.45, roughness: 0.32 });
-    const lensMat   = new THREE.MeshStandardMaterial({ color: 0x051814, emissive: 0x00ffaa, emissiveIntensity: 0.9, metalness: 0.9, roughness: 0.1 });
-    const bandMat   = new THREE.MeshStandardMaterial({ map: this.textures.hazardTex, roughness: 0.4, metalness: 0.35 });
-    const portMat   = new THREE.MeshBasicMaterial({ color: 0xff2244 });
-    const stbdMat   = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.21, 1.32, 14), hullMat);
-    body.rotation.x = Math.PI * 0.5;
-    this.missileGroup.add(body);
-
-    const hazardRing = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.205, 0.16, 14), bandMat);
-    hazardRing.rotation.x = Math.PI * 0.5;
-    hazardRing.position.z = -0.18;
-    this.missileGroup.add(hazardRing);
-
-    const rearCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.20, 0.22, 14), darkMat);
-    rearCollar.rotation.x = Math.PI * 0.5;
-    rearCollar.position.z = 0.48;
-    this.missileGroup.add(rearCollar);
-
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.44, 14), redMat);
-    nose.rotation.x = -Math.PI * 0.5;
-    nose.position.z = -0.88;
-    this.missileGroup.add(nose);
-
-    const seekerDome = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), lensMat);
-    seekerDome.position.z = -1.07;
-    this.missileGroup.add(seekerDome);
-
-    const spine = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 1.08), darkMat);
-    spine.position.set(0, 0.20, 0.05);
-    this.missileGroup.add(spine);
-
-    this.beaconMat = new THREE.MeshBasicMaterial({ color: 0x00ffaa });
-    const beacon = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.055, 0.09), this.beaconMat);
-    beacon.position.set(0, 0.25, 0.24);
-    this.missileGroup.add(beacon);
-
-    const podGeo = new THREE.BoxGeometry(0.07, 0.09, 0.54);
-    const leftPod = new THREE.Mesh(podGeo, darkMat);
-    leftPod.position.set(-0.21, -0.02, 0.02);
-    const rightPod = new THREE.Mesh(podGeo, darkMat);
-    rightPod.position.set(0.21, -0.02, 0.02);
-    this.missileGroup.add(leftPod, rightPod);
-
-    const finGeo = new THREE.BoxGeometry(0.46, 0.035, 0.38);
-    const finOffsets = [
-      { x: -0.32, y: 0, rz: 0.0, mat: darkMat },
-      { x:  0.32, y: 0, rz: 0.0, mat: darkMat },
-      { x:  0, y:  0.32, rz: Math.PI * 0.5, mat: darkMat },
-      { x:  0, y: -0.32, rz: Math.PI * 0.5, mat: darkMat }
-    ];
-    for (const f of finOffsets) {
-      const fin = new THREE.Mesh(finGeo, f.mat);
-      fin.position.set(f.x, f.y, 0.50);
-      fin.rotation.z = f.rz;
-      this.missileGroup.add(fin);
-    }
-
-    const tipGeo = new THREE.SphereGeometry(0.032, 6, 6);
-    const portTip = new THREE.Mesh(tipGeo, portMat);
-    portTip.position.set(-0.55, 0, 0.56);
-    const stbdTip = new THREE.Mesh(tipGeo, stbdMat);
-    stbdTip.position.set(0.55, 0, 0.56);
-    this.missileGroup.add(portTip, stbdTip);
-
-    const canardGeo = new THREE.BoxGeometry(0.24, 0.024, 0.14);
-    this.canardH = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.024, 0.14), redMat);
-    this.canardH.position.set(0, 0, -0.46);
-    this.canardV = new THREE.Mesh(canardGeo, redMat);
-    this.canardV.rotation.z = Math.PI * 0.5;
-    this.canardV.position.set(0, 0, -0.46);
-    this.missileGroup.add(this.canardH, this.canardV);
-
-    const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.19, 0.24, 14, 1, true), darkMat);
-    nozzle.rotation.x = Math.PI * 0.5;
-    nozzle.position.z = 0.74;
-    this.missileGroup.add(nozzle);
+    // the airframe: the same procedural model as the upgrade bay (js/rocketmodel.js), scaled to flight size and turned so the
+    // nose (+X in model space) points forward (-Z). It is rebuilt from the upgrade levels by syncRocketModel().
+    this.rocketModel = new RocketModel(this.upg);
+    const mdl = this.rocketModel.group;
+    mdl.scale.setScalar(ROCKET_MODEL_SCALE);
+    mdl.rotation.y = Math.PI / 2;
+    this.missileGroup.add(mdl);
+    this._chasePos = new THREE.Vector3(); this._chaseLook = new THREE.Vector3(); this._chaseOk = false;
 
     this.thrusterMat = new THREE.MeshBasicMaterial({
       color: 0xff7722, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.88, depthWrite: false
@@ -162,8 +90,20 @@ export const levelMethods = {
     this.thrusterCore.rotation.x = Math.PI * 0.5;
     this.thrusterCore.position.z = 1.02;
     this.missileGroup.add(this.thrusterCore);
+    this.placeExhaust();
 
     this.scene.add(this.missileGroup);
+  },
+
+  // Rebuild the flown rocket for the current upgrades (each launch and after the upgrade bay); keep the flame on the nozzle
+  syncRocketModel() {
+    if (this.rocketModel && this.rocketModel.sync(this.upg).length) this.placeExhaust();
+  },
+
+  placeExhaust() {
+    this._exitZ = -this.rocketModel.tailX(this.upg) * ROCKET_MODEL_SCALE;   // model -X (tail) is +Z here
+    this.thrusterCone.position.z = this._exitZ + 0.4;
+    this.thrusterCore.position.z = this._exitZ + 0.16;
   },
 
   initWireTether() {

@@ -189,6 +189,7 @@ export const progressMethods = {
     this._autoMem = null;
     this.credits = 0; this.sectorBest = {}; this.contLvl = 0; this.contSeed = '';
     for (const k of Object.keys(this.upg)) this.upg[k] = 0;
+    this.syncRocketModel();
     this.lidarKey = null;
     try { this.lidarMemory.clear(); } catch (_) {}
     return new Promise((res) => {

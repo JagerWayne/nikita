@@ -289,6 +289,7 @@ export const inputMethods = {
       this.toggleGameFullscreen();
     });
 
+    document.getElementById('btn-hud-cam').addEventListener('click', (e) => { this.toggleCamView(); e.currentTarget.blur(); });
     document.getElementById('btn-hud-radar').addEventListener('click', () => {
       this.audio.unlock();
       this.vibrate(12);
@@ -652,6 +653,7 @@ export const inputMethods = {
 
       if (e.code === 'KeyQ' && this.state === 'PLAYING') this.throwDecoy();
       if (e.code === 'KeyH' && !e.repeat) this.pressHover();
+      if (e.code === 'KeyC' && !e.repeat) this.toggleCamView();
       if (e.code === 'KeyV' && !e.repeat) this.pressAuto();
       if ((e.code === 'KeyL' || e.code === 'KeyF') && this.state === 'PLAYING') {
         this.toggleTargetLock();

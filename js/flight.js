@@ -3,7 +3,7 @@ import {
   BURN_TIME, CELL_RAMP, CELL_SHAFT_LOW, CELL_SIZE, CRUISE_THROTTLE, FLIP_TIME, FUZE_RANGE, GRID_SIZE,
   HOVER_CLIMB, HOVER_SPEED_MAX, LAND_ARM_TIME, LAND_LEAN, LAND_PITCH, LAND_SINK, LAND_SPEED, LAND_TAKEOFF,
   LAUNCH_GRAVITY, LIFT_SPEED, MISSILE_RADIUS, POINTS_BONUS, PROBE_RANGE, SPEED_MIN, SUBSTEPS, TAKEOFF_HEIGHT,
-  TAKEOFF_RISE, TAKEOFF_SPOOL, WALL_H, isShaft, isWalkable
+  TAKEOFF_RISE, TAKEOFF_SPOOL, WALL_H, isShaft, isWalkable, CHASE_CAM
 } from './constants.js';
 import {
   PROBE_DIRS, _e1, _fwd, _profile, _profileCam, _v1, _v2, _v3, _v4, _v5, _v6, _v7, _v8, blendProfile,
@@ -1098,9 +1098,11 @@ export const flightMethods = {
       this.camera.fov += (profile.fov + (m.brakeP || 0) * 16 - this.camera.fov) * Math.min(1, dt * 7.5);   // braking pulls the field of view in
       this.camera.updateProjectionMatrix();
 
+      const rp = this.renderPose;   // interpolated between the last two fixed steps (see updateRenderPose)
+      if (this.camChase) { this.updateChaseCam(dt, rp); }
+      else {
       // nose camera, always upright (world-up), never banks or inverts
       this.missileGroup.visible = false;
-      const rp = this.renderPose;   // interpolated between the last two fixed steps (see updateRenderPose)
       this.camera.position.copy(rp.pos);
       // the view is the rocket's nose: it shows the rocket's own wobble and banks gently with steering (max ~10°)
       _e1.set(rp.pitch, rp.yaw, 0, 'YXZ');
@@ -1109,6 +1111,7 @@ export const flightMethods = {
       this.camera.lookAt(rp.pos.x + _v1.x, rp.pos.y + _v1.y, rp.pos.z + _v1.z);
       this.camRoll = Math.max(-0.18, Math.min(0.18, rp.roll * 0.35));
       this.camera.rotateZ(this.camRoll);
+      }
     }
 
     if (this.cameraTrauma > 0.001) {
@@ -1140,6 +1143,48 @@ export const flightMethods = {
     r.pitch = p.pitch + dPitch * alpha;
     r.yaw = p.yaw + dYaw * alpha;
     r.roll = p.roll + dRoll * alpha;
+  },
+
+  // Third-person chase camera (render path only: it reads the grid, never writes simulation state). Behind and above the
+  // interpolated rocket, smoothed, pulled in before walls and kept between this floor's slab and ceiling. The rocket model and
+  // its flame are drawn from the same interpolated pose.
+  updateChaseCam(dt, rp) {
+    const m = this.missile, C = CHASE_CAM, cam = this.camera;
+    _e1.set(rp.pitch, rp.yaw, 0, 'YXZ'); _v7.copy(_fwd).applyEuler(_e1);                 // nose direction
+    let free = C.dist;
+    for (let d = 0.25; d <= C.dist; d += 0.25) {
+      if (this.isGridSolid(rp.pos.x - _v7.x * d, rp.pos.z - _v7.z * d, rp.pos.y - _v7.y * d + C.up * d / C.dist)) { free = Math.max(C.min, d - C.wallGap); break; }
+    }
+    const f0 = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(rp.pos.y))) * WALL_H;
+    _v8.set(rp.pos.x - _v7.x * free, rp.pos.y - _v7.y * free + C.up * free / C.dist, rp.pos.z - _v7.z * free);
+    _v8.y = Math.max(f0 + 0.35, Math.min(f0 + WALL_H - 0.35, _v8.y));
+    const P = this._chasePos;
+    if (!this._chaseOk || P.distanceToSquared(_v8) > 64) { P.copy(_v8); this._chaseOk = true; }   // first frame or a jump: snap
+    else P.lerp(_v8, 1 - Math.exp(-dt * C.lag));
+    cam.position.copy(P);
+    this._chaseLook.set(rp.pos.x + _v7.x * C.look, rp.pos.y + _v7.y * C.look, rp.pos.z + _v7.z * C.look);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(this._chaseLook);
+    this.camRoll = 0;
+    // the rocket itself, at the same interpolated pose, with a flame that follows thrust
+    const G = this.missileGroup;
+    G.visible = true; G.position.copy(rp.pos); G.rotation.set(rp.pitch, rp.yaw, rp.roll, 'YXZ');
+    const on = m.fuel > 0 && m.drop <= 0 && !m.landed;
+    const thr = on ? 0.35 + 0.85 * Math.min(1, (m.currentSpeed || 0) / this.maxSpeed()) + (m.burnT > 0 ? 0.4 : 0) : 0;
+    this.thrusterCone.visible = this.thrusterCore.visible = thr > 0;
+    if (thr > 0) {
+      // seen from behind the flame must not hide the rocket: thinner, shorter and dimmer than its full size
+      this.thrusterCone.scale.set(0.55, 0.7 * thr, 0.55); this.thrusterCone.position.z = this._exitZ + 0.3 * thr;
+      this.thrusterCore.scale.set(0.5, 0.7 * thr, 0.5); this.thrusterCore.position.z = this._exitZ + 0.12 * thr;
+      this.thrusterMat.opacity = 0.5; this.thrusterCoreMat.opacity = 0.65;
+    }
+  },
+
+  // C key / CAM button: nose camera <-> chase camera (saved with the other preferences)
+  toggleCamView() {
+    this.setPref('camChase', !this.camChase);
+    this._chaseOk = false;
+    this.pushFeed(this.camChase ? 'CAMERA: CHASE (3RD PERSON)' : 'CAMERA: NOSE', 'cyan');
   },
 
   throttleSpeed(t) { return SPEED_MIN + Math.max(0, Math.min(1, t)) * (this.maxSpeed() - SPEED_MIN); },

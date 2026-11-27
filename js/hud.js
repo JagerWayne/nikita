@@ -499,6 +499,33 @@ export const hudMethods = {
     if (readout) readout.textContent = this.missile.hover ? `${(this.missile.throttle * HOVER_SPEED_MAX).toFixed(1)} m/s` : `${this.throttleSpeed(this.missile.throttle).toFixed(0)} m/s`;
   },
 
+  // Autopilot flying: the speed lever and the stick show what it commands (render path, visual only: reads pilot._prevCmd
+  // and missile.autoSpeed, writes nothing the simulation reads). Both turn cyan; manual control takes over as before.
+  updateAutoControlsUI(dt) {
+    const m = this.missile, P = this.pilot;
+    const on = !!(P && P.active && m.active && m.auto && this.state === 'PLAYING');
+    const E = this._acEl || (this._acEl = { lever: document.getElementById('throttle-lever'), fill: document.getElementById('thr-fill'), thumb: document.getElementById('thr-thumb'),
+      readout: document.getElementById('thr-readout'), gimbal: document.getElementById('joy-gimbal'), knob: document.getElementById('joy-knob'), kx: 0, ky: 0, px: 1e9, py: 1e9, pct: -1, v10: -1 });
+    if (on !== this._acOn) {
+      this._acOn = on;
+      if (E.lever) E.lever.classList.toggle('auto', on);
+      if (E.gimbal) E.gimbal.classList.toggle('auto', on);
+      if (!on) {
+        E.kx = E.ky = 0; E.px = E.py = 1e9; E.pct = E.v10 = -1;
+        if (E.knob && this.touchInput.joyId === null) E.knob.style.transform = 'translate3d(0px, 0px, 0px)';   // the player's thumb keeps the knob
+        this.updateSpeedBadgeUI();                                                                              // back to the real lever position
+      }
+    }
+    if (!on || !E.knob) return;
+    const c = P._prevCmd, R = 48, k = 1 - Math.exp(-dt * 10);
+    E.kx += (-c.yaw * R - E.kx) * k; E.ky += (-c.climb * R - E.ky) * k;               // stick right = yaw right, stick up = climb
+    const d = Math.hypot(E.kx, E.ky), s = d > R ? R / d : 1, x = E.kx * s, y = E.ky * s;
+    if (Math.abs(x - E.px) > 0.3 || Math.abs(y - E.py) > 0.3) { E.px = x; E.py = y; E.knob.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0px)`; }
+    const v = m.autoSpeed || 0, pct = Math.round(Math.max(0, Math.min(1, v / this.maxSpeed())) * 100), v10 = Math.round(v * 10);
+    if (pct !== E.pct) { E.pct = pct; if (E.fill) E.fill.style.height = `${pct}%`; if (E.thumb) E.thumb.style.bottom = `calc(${pct}% - 8px)`; }
+    if (v10 !== E.v10 && E.readout) { E.v10 = v10; E.readout.textContent = `${(v10 / 10).toFixed(1)} m/s AUTO`; }
+  },
+
   // Landing indicator: shown when the rocket is slow enough to land and close to a flat floor.
   updateLandIndicator(m) {
     const el = this._landEl || (this._landEl = document.getElementById('hud-land'));

@@ -159,6 +159,7 @@ export class NikitaGame {
     this.contLvl = 0;      // sector to resume with CONTINUE (0 = no save)
     this.contSeed = '';
     this.loadProgress();
+    this.syncRocketModel();   // the flown rocket shows the saved upgrades (rebuilt again when the bay closes or a new game starts)
     this.score = 0;
     this.sectorStartScore = 0;
     this.nextPackage = POINTS_PER_PACKAGE;
@@ -303,7 +304,8 @@ export class NikitaGame {
     this.fpsValue = 60;
     this.frameMs = 16.6;
 
-    this.prefs = { lowSpec: false, lefty: false, btnScale: 1, btnOpacity: 0.92 };
+    this.prefs = { lowSpec: false, lefty: false, btnScale: 1, btnOpacity: 0.92, camChase: false };
+    this.camChase = false;
     this._bestCand = { type: '', ref: null, aimY: 0 };
     this._bestScore = Infinity;
     this._isSolidFn = (x, z, y) => (y === undefined ? this.isGridSolid(x, z) : this.pointBlocked(x, y, z, 0.1));
@@ -561,6 +563,7 @@ export class NikitaGame {
     // Where the frame falls between the last two fixed steps (0..1). Only the rendered pose uses it; missile.pos is untouched.
     this.updateRenderPose(this.accumulator / FIXED_DT);
     this.updateCamera(rawDt);
+    this.updateAutoControlsUI(rawDt);
     this.updateLidar(rawDt);
     this.renderer.render(this.scene, this.camera);
     this.renderHUDCanvas();

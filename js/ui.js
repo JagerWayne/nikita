@@ -114,6 +114,7 @@ export const uiMethods = {
   closeUpgrades() {
     document.getElementById('upgrade-modal').style.display = 'none';
     if (this.hangar) this.hangar.close();                              // frees every bay geometry and material
+    this.syncRocketModel();                                            // the flown rocket shows what was just installed
   },
 
   // Abandon the current sector and go back to the title screen (where upgrades can be bought).
@@ -212,6 +213,7 @@ export const uiMethods = {
         const p = JSON.parse(raw);
         if (typeof p.lowSpec === 'boolean') this.prefs.lowSpec = p.lowSpec;
         if (typeof p.lefty === 'boolean') this.prefs.lefty = p.lefty;
+        if (typeof p.camChase === 'boolean') this.prefs.camChase = p.camChase;
         if (typeof p.btnScale === 'number') this.prefs.btnScale = Math.max(0.7, Math.min(1.3, p.btnScale));
         if (typeof p.btnOpacity === 'number') this.prefs.btnOpacity = Math.max(0.3, Math.min(1, p.btnOpacity));
       }
@@ -225,6 +227,9 @@ export const uiMethods = {
     root.style.setProperty('--btn-opacity', String(this.prefs.btnOpacity));
     document.body.classList.toggle('lefty', this.prefs.lefty);
     document.body.classList.toggle('lowspec', this.prefs.lowSpec);
+    this.camChase = !!this.prefs.camChase;
+    const camBtn = document.getElementById('btn-hud-cam');
+    if (camBtn) { camBtn.textContent = this.camChase ? 'CAM: CHASE' : 'CAM: NOSE'; camBtn.classList.toggle('active', this.camChase); }
     const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
     setChk('pause-lowspec', this.prefs.lowSpec);
     setChk('pause-lefty', this.prefs.lefty);

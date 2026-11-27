@@ -217,3 +217,15 @@ export const LIDAR_MODE_COLORS = Object.freeze({
   PICKUP: [1.0, 0.52, 0.05],    // orange
   HUNT: [1.0, 0.1, 0.06]        // red
 });
+
+/* The flown rocket: the upgrade bay's model (js/rocketmodel.js, about 4.8 units long) at flight size (about 2.1 units). */
+export const ROCKET_MODEL_SCALE = 0.44;
+/* Third-person chase camera (visual only). */
+export const CHASE_CAM = Object.freeze({
+  dist: 3.1,      // behind the rocket
+  up: 1.3,        // above it at full distance (about 23 degrees: the top of the airframe stays in view)
+  min: 0.9,       // closest it pulls in before a wall
+  look: 6,        // looks at this point ahead of the nose
+  lag: 7,         // position smoothing (1/s)
+  wallGap: 0.45   // stays this far short of a wall
+});

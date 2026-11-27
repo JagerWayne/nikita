@@ -39,6 +39,12 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.33.0: your upgraded rocket in flight, chase camera
+
+- **The rocket you fly is the rocket in the upgrade bay.** Both are built from the same model, so every installed upgrade (longer nozzle, injectors, armour, tanks, barrels, mast, nose optics...) is on the rocket in the sector too. It updates at each launch and when you leave the bay.
+- **Chase camera (3rd person).** Press C or tap CAM (top right) to switch between the nose camera and a camera behind and above the rocket. It follows smoothly, pulls in before walls so it never looks through one, and shows the flame growing with thrust. The choice is remembered.
+- **Autopilot shows its hands.** While the autopilot flies, the speed lever and the stick move with its commands (lever = commanded speed, shown as "m/s AUTO"; stick = steering and climb), in cyan. They return to normal when you take over or turn it off.
+
 ## v2.32.0: 3D Tactical Upgrade Bay
 
 The upgrade screen is now a 3D bay: the rocket stands on a studio floor (tactical grid, slowly turning azimuth ring) beside an inspector panel.
