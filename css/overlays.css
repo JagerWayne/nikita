@@ -112,16 +112,7 @@ input[type="checkbox"] {
 
 .btn-row.center { justify-content: center; }
 .score-list .score-tip { margin-top: 6px; color: var(--hud-amber); line-height: 1.45; }
-.upg-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid rgba(0, 255, 136, 0.3); border-radius: 4px; background: rgba(0, 20, 12, 0.5); }
-.upg-name { font-size: 13px; letter-spacing: 0.14em; color: var(--hud-green); }
-.upg-name span { color: var(--hud-amber); margin-left: 8px; font-size: 11px; }
-.upg-desc { font-size: 11px; opacity: 0.85; margin: 2px 0 5px; letter-spacing: 0.04em; }
-.upg-bar { height: 5px; background: rgba(0, 255, 136, 0.15); border-radius: 3px; overflow: hidden; }
-.upg-bar i { display: block; height: 100%; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); }
-.upg-row .tac-btn { min-width: 104px; min-height: 40px; padding: 6px 10px; font-size: 12px; }
 .tac-btn.dim, .tac-btn:disabled { opacity: 0.4; cursor: default; }
-.upg-tab { min-width: 108px; opacity: 0.55; }
-.upg-tab.on { opacity: 1; background: rgba(0, 255, 136, 0.3); }
 .title-card { max-width: 460px; text-align: center; }
 .title-card .modal-title { height: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .title-card .briefing-desc { margin: 6px 0 16px; }

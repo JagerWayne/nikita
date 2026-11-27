@@ -1,0 +1,175 @@
+/* hangar.css: the Tactical Upgrade Bay (js/hangar.js). 3D stage on the left (65%), inspector drawer on the right (35%);
+   stage on top (56%) and drawer below on tall / narrow screens. Linked last, after mobile.css. */
+
+#upgrade-modal.hangar-bay {
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+  background: #030806;
+  backdrop-filter: none;
+  touch-action: none;
+}
+
+#hangar {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- 3D inspection stage ---- */
+#hangar-stage {
+  position: relative;
+  flex: 0 0 65%;
+  min-width: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 60%, #0a1d16 0%, #030806 70%);
+}
+#hangar-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+#hangar-canvas:active { cursor: grabbing; }
+
+#hangar-pins {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.hangar-pin { pointer-events: auto; cursor: pointer; }
+.hangar-pin line { stroke: rgba(0, 255, 136, 0.55); stroke-width: 1; }
+.hangar-pin .pin-ret { fill: rgba(0, 255, 136, 0.08); stroke: var(--hud-green); stroke-width: 1.4; stroke-dasharray: 3 2.2; }
+.hangar-pin .pin-dot { fill: var(--hud-green); }
+.hangar-pin .pin-hit { fill: transparent; stroke: none; }
+.hangar-pin .pin-label {
+  fill: var(--hud-green);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  paint-order: stroke;
+  stroke: rgba(2, 8, 6, 0.85);
+  stroke-width: 3px;
+}
+.hangar-pin:hover .pin-ret { stroke-dasharray: none; fill: rgba(0, 255, 136, 0.18); }
+.hangar-pin.on line { stroke: var(--hud-amber); stroke-width: 1.4; }
+.hangar-pin.on .pin-ret { stroke: var(--hud-amber); stroke-dasharray: none; fill: rgba(255, 170, 0, 0.16); animation: hangarPinPulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.hangar-pin.on .pin-dot { fill: var(--hud-amber); }
+.hangar-pin.on .pin-label { fill: var(--hud-amber); }
+@keyframes hangarPinPulse { 50% { transform: scale(1.35); } }
+
+#hangar-hint {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: rgba(0, 255, 136, 0.55);
+  pointer-events: none;
+}
+
+/* ---- inspector drawer (frosted, like the HUD panels) ---- */
+#hangar-panel {
+  position: relative;
+  flex: 1 1 35%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 14px;
+  background: rgba(4, 16, 11, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-left: 1px solid rgba(0, 255, 136, 0.28);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.45);
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+.hangar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 255, 136, 0.25);
+}
+.hangar-title { font-size: 14px; letter-spacing: 0.2em; color: var(--hud-green); }
+#upg-credits { color: var(--hud-amber); }
+
+#hangar-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.hangar-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 44px;
+  padding: 6px 8px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-align: left;
+  opacity: 0.6;
+}
+.hangar-tab b { color: var(--hud-amber); font-weight: 700; }
+.hangar-tab small { font-size: 9px; opacity: 0.7; letter-spacing: 0.12em; }
+.hangar-tab.on { opacity: 1; background: rgba(0, 255, 136, 0.22); border-color: var(--hud-green); }
+
+.hangar-asm-name { font-size: 13px; letter-spacing: 0.16em; color: var(--hud-green); }
+.hangar-asm-name span { margin-left: 8px; font-size: 10px; color: var(--hud-amber); }
+.hangar-asm-blurb { font-size: 11px; opacity: 0.8; margin-top: 3px; line-height: 1.4; }
+
+#hangar-modules { display: flex; flex-direction: column; gap: 8px; }
+.hangar-card {
+  padding: 9px 10px;
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  border-radius: 6px;
+  background: rgba(0, 255, 136, 0.04);
+}
+.hangar-card.maxed { border-color: rgba(0, 229, 255, 0.45); background: rgba(0, 229, 255, 0.05); }
+.hangar-card-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.hangar-card-name { font-size: 12px; letter-spacing: 0.12em; color: var(--hud-green); }
+.hangar-card-lv { font-size: 11px; color: var(--hud-amber); white-space: nowrap; }
+.hangar-card-stat { font-size: 11px; margin-top: 4px; line-height: 1.35; }
+.hangar-card-next { font-size: 10px; margin-top: 2px; opacity: 0.6; line-height: 1.35; }
+.hangar-bar { height: 5px; margin: 7px 0 8px; background: rgba(0, 255, 136, 0.14); border-radius: 3px; overflow: hidden; }
+.hangar-bar i { display: block; height: 100%; background: linear-gradient(to right, var(--hud-green), var(--hud-cyan)); transition: width 0.5s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.hangar-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.hangar-cost { font-size: 12px; color: var(--hud-amber); letter-spacing: 0.08em; }
+.hangar-card .tac-btn { min-width: 108px; min-height: 40px; padding: 6px 10px; font-size: 12px; }
+.hangar-foot { margin-top: auto; padding-top: 6px; }
+
+/* no second WebGL context available: the panel takes the whole screen */
+#upgrade-modal.no-3d #hangar-stage { display: none; }
+#upgrade-modal.no-3d #hangar-panel { flex: 1 1 100%; border-left: none; }
+
+/* landscape phones: tighter drawer */
+@media (max-height: 520px) and (min-aspect-ratio: 1/1) {
+  #hangar-panel { gap: 7px; padding-top: max(8px, env(safe-area-inset-top)); }
+  #hangar-tabs { grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .hangar-tab { min-height: 34px; padding: 4px 6px; }
+  .hangar-tab small { display: none; }
+  .hangar-asm-blurb, .hangar-card-next { display: none; }
+  .hangar-card { padding: 6px 8px; }
+  .hangar-bar { margin: 5px 0 6px; }
+  .hangar-card .tac-btn { min-height: 34px; }
+  #hangar-hint { display: none; }
+}
+
+/* tall / narrow screens: stage on top (56%), drawer below */
+@media (max-aspect-ratio: 1/1), (max-width: 600px) {
+  #hangar { flex-direction: column; }
+  #hangar-stage { flex: 0 0 56%; }
+  #hangar-panel {
+    flex: 1 1 44%;
+    border-left: none;
+    border-top: 1px solid rgba(0, 255, 136, 0.28);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+    padding-left: max(14px, env(safe-area-inset-left));
+  }
+}

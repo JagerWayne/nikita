@@ -21,6 +21,7 @@
 <link rel="stylesheet" href="./css/hud.css" />
 <link rel="stylesheet" href="./css/overlays.css" />
 <link rel="stylesheet" href="./css/mobile.css" id="tier3-ui" />
+<link rel="stylesheet" href="./css/hangar.css" />
 <script type="importmap">
 {
   "imports": {
@@ -324,21 +325,26 @@
 </div>
 
 <!-- Upgrade Modal -->
-<div id="upgrade-modal" class="modal-backdrop" style="display:none; z-index:40;">
-  <div class="modal-card" style="max-width:640px;">
-    <div class="modal-title">
-      <span>UPGRADES</span>
-      <span class="modal-subtitle">CREDITS: <strong id="upg-credits" style="color:#ffaa00">0</strong></span>
+<!-- Tactical Upgrade Bay (js/hangar.js, css/hangar.css): 3D inspection stage + inspector panel -->
+<div id="upgrade-modal" class="modal-backdrop hangar-bay" style="display:none; z-index:40;" role="dialog" aria-label="Tactical upgrade bay">
+  <div id="hangar">
+    <div id="hangar-stage">
+      <canvas id="hangar-canvas" aria-label="3D rocket: drag to orbit, scroll or pinch to zoom, tap a part"></canvas>
+      <svg id="hangar-pins" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="hangar-hint">DRAG TO ORBIT · SCROLL / PINCH TO ZOOM · TAP A PART</div>
     </div>
-    <div class="btn-row center" style="margin-bottom:10px;">
-      <button class="tac-btn upg-tab on" id="upg-tab-rocket">ROCKET</button>
-      <button class="tac-btn upg-tab" id="upg-tab-lidar">LIDAR</button>
-      <button class="tac-btn upg-tab" id="upg-tab-thermal">THERMAL</button>
-    </div>
-    <div id="upg-list"></div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button class="tac-btn" id="btn-upg-back">BACK</button>
-    </div>
+    <aside id="hangar-panel">
+      <div class="hangar-head">
+        <span class="hangar-title">TACTICAL UPGRADE BAY</span>
+        <span class="modal-subtitle">CREDITS: <strong id="upg-credits">0</strong></span>
+      </div>
+      <div id="hangar-tabs" role="tablist"></div>
+      <div id="hangar-assembly"></div>
+      <div id="hangar-modules"></div>
+      <div class="btn-row hangar-foot">
+        <button class="tac-btn" id="btn-upg-back">BACK</button>
+      </div>
+    </aside>
   </div>
 </div>
 

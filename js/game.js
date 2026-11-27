@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { AudioEngine } from './audio.js';
 import { Autopilot } from './autopilot.js';
+import { Hangar } from './hangar.js';
 import {
   CARRY_CAP, CRUISE_THROTTLE, DECOYS_PER_SECTOR, FIXED_DT, GRID_SIZE, GUN_CAP_MIN, HEAR_MIN, MAX_LEVELS,
   MAX_ROCKETS, MAX_SALVO, MAX_STEPS_PER_FRAME, POINTS_BONUS, POINTS_PER_PACKAGE, REWARD_BONUS
@@ -151,7 +152,6 @@ export class NikitaGame {
     this.shortcutsOpened = 0;
     this.launchAim = { yaw: 0, pitch: 0 };
     this.upg = { speed: 0, fuel: 0, boost: 0, hull: 0, force: 0, lrange: 0, lres: 0, lfocus: 0, ltherm: 0, lmem: 0, ldeep: 0, tpen: 0, ttrack: 0, tmark: 0, gun: 0 };
-    this.upgTab = 'rocket';
     this.initLidar();
     this.initGun();
     this.credits = 0;
@@ -168,6 +168,7 @@ export class NikitaGame {
     this.gunHeld = false;
     this.autoPlay = false;     // the autopilot keeps playing across rockets while this is on
     this.pilot = new Autopilot(this);   // the rewritten autopilot
+    this.hangar = new Hangar(this);     // the 3D upgrade bay (js/hangar.js)
     this.fuzeMode = 'prox';      // proximity fuze armed by default; the DET button toggles hold-to-detonate
     this.gunCool = 0;
     this.gunNoiseT = 0;
@@ -553,6 +554,9 @@ export class NikitaGame {
       this.accumulator -= FIXED_DT;
     }
     if (this.accumulator >= FIXED_DT) this.accumulator = 0;   // step cap hit: drop the backlog instead of chasing it next frame
+
+    // The upgrade bay is open: it draws its own scene; the game's scene, HUD and radar are not drawn meanwhile
+    if (this.hangar.isOpen) { this.hangar.frame(rawDt); return; }
 
     // Where the frame falls between the last two fixed steps (0..1). Only the rendered pose uses it; missile.pos is untouched.
     this.updateRenderPose(this.accumulator / FIXED_DT);

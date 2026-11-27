@@ -1,54 +1,13 @@
 /* Menus, prefs, intro call, upgrade screen and HUD text helpers for NikitaGame. */
-import {
-  CRUISE_THROTTLE, GUN_CAP_MAX, GUN_CAP_MIN, GUN_STEPS, MAX_LEVELS, MAX_ROCKETS, MAX_TIERS, SAVE_KEY,
-  SPEED_STEP
-} from './constants.js';
+import { CRUISE_THROTTLE, MAX_LEVELS, MAX_ROCKETS, MAX_TIERS, SAVE_KEY } from './constants.js';
 
 export const uiMethods = {
 
+  // The upgrade screen is the 3D bay (js/hangar.js): it draws the modules, costs and levels; buyUpgrade() calls this after a purchase
   renderUpgrades() {
-    const pct = (v) => `${Math.round(v * 100)}%`;
-    const P = this.lidarParams(true);
-    const lidarDefs = [
-      { key: 'lrange', name: 'LIDAR RANGE', desc: () => `${P.range.toFixed(1)} UNITS` },
-      { key: 'lres', name: 'RESOLUTION', desc: () => `${P.rays} RAYS · ${P.rows} ROWS · DOTS x${P.dot.toFixed(2)}` },
-      { key: 'lfocus', name: 'FOCUS BEAM', desc: () => `${Math.round(P.focus * 100)}% OF RAYS IN A ±${Math.round(P.coneDeg)}° FORWARD CONE` },
-      { key: 'lmem', name: 'MEMORY', desc: () => `GLOW ${P.glow.toFixed(1)}s  ·  OLD DOTS ${Math.round(P.mem * 100)}%  ·  ${P.keep} SECTORS KEPT` },
-      { key: 'ldeep', name: 'DEEP SCAN', desc: () => ['OFF  ·  NEXT: CRACKED WALLS VISIBLE FROM AFAR', 'CRACKED WALLS VISIBLE FROM AFAR  ·  NEXT: SECRET CHAMBERS OUTLINED', 'SECRET CHAMBERS OUTLINED  ·  NEXT: SHAFT INTERIORS + POWER-UPS', 'CRACKED WALLS, SECRET CHAMBERS AND SHAFTS REVEALED'][this.upg.ldeep] }
-    ];
-    const thermalDefs = [
-      { key: 'ltherm', name: 'THERMAL RANGE', desc: () => `ENEMIES + LASERS DETECTED TO ${P.thermal.toFixed(1)} UNITS` },
-      { key: 'tpen', name: 'PENETRATION', desc: () => ['LINE OF SIGHT ONLY  ·  NEXT: SEE THROUGH 1 WALL', 'SEES THROUGH 1 WALL  ·  NEXT: 2 WALLS', 'SEES THROUGH 2 WALLS  ·  NEXT: 3 WALLS', 'SEES THROUGH 3 WALLS'][this.upg.tpen] },
-      { key: 'ttrack', name: 'TRACKING', desc: () => `SEEKER CONE ${P.seekerDeg}°  ·  LOCK RANGE ${P.lockRange} UNITS` },
-      { key: 'tmark', name: 'HEAT MARK', desc: () => P.mark > 0 ? `CONTACTS STAY MARKED ${P.mark.toFixed(1)}s AFTER LEAVING SIGHT` : 'OFF  ·  NEXT: CONTACTS STAY MARKED 0.5s AFTER LEAVING SIGHT' }
-    ];
-    const rocketDefs = [
-      { key: 'speed', name: 'MAX SPEED', desc: () => `${this.maxSpeed().toFixed(1)} m/s  ·  x${this.fullSpeedMult().toFixed(2)} POINTS AT FULL SPEED` + (this.upg.speed < 20 ? `   (next ${(this.maxSpeed() + SPEED_STEP).toFixed(1)} m/s, x${((this.maxSpeed() + SPEED_STEP) / 10).toFixed(2)})` : '') },
-      { key: 'fuel', name: 'FUEL', desc: () => `FUEL BURN -${pct(1 - this.fuelBurnMult())}` },
-      { key: 'boost', name: 'BOOST', desc: () => `DRAIN -${pct(1 - this.boostDrainMult())}  ·  RECHARGE +${pct(this.boostRechargeMult() - 1)}` },
-      { key: 'hull', name: 'HULL', desc: () => `DAMAGE TAKEN -${pct(1 - this.hullDmgMult())}` },
-      { key: 'force', name: 'EXPLOSION FORCE', desc: () => `BLAST RADIUS ${this.blastRadiusBase().toFixed(1)} UNITS (+${pct(this.blastRadiusBase() / 8.2 - 1)})` },
-      { key: 'gun', name: 'GUN MAGAZINE', desc: () => `${this.gunCap()} ROUNDS` + ((this.upg.gun || 0) < GUN_STEPS ? `   (next ${GUN_CAP_MIN + Math.round(((GUN_CAP_MAX - GUN_CAP_MIN) / GUN_STEPS) * ((this.upg.gun || 0) + 1))})` : '') }
-    ];
-    const defs = this.upgTab === 'lidar' ? lidarDefs : (this.upgTab === 'thermal' ? thermalDefs : rocketDefs);
-    for (const t of ['rocket', 'lidar', 'thermal']) document.getElementById(`upg-tab-${t}`).classList.toggle('on', this.upgTab === t);
-    const box = document.getElementById('upg-list');
-    box.innerHTML = '';
-    for (const d of defs) {
-      const lvl = this.upg[d.key], max = this.upgradeMax(d.key), maxed = lvl >= max;
-      const cost = this.upgradeCost(d.key);
-      const row = document.createElement('div');
-      row.className = 'upg-row';
-      row.innerHTML = `<div class="upg-info"><div class="upg-name">${d.name} <span>${lvl} / ${max}</span></div><div class="upg-desc">${d.desc()}</div><div class="upg-bar"><i style="width:${(lvl / max) * 100}%"></i></div></div>`;
-      const btn = document.createElement('button');
-      btn.className = 'tac-btn ' + (maxed ? '' : (this.credits >= cost ? 'amber' : 'dim'));
-      btn.textContent = maxed ? 'MAXED' : `BUY  ${cost}`;
-      btn.disabled = maxed || this.credits < cost;
-      btn.addEventListener('click', () => this.buyUpgrade(d.key));
-      row.appendChild(btn);
-      box.appendChild(row);
-    }
-    document.getElementById('upg-credits').textContent = String(this.credits);
+    if (this.hangar && this.hangar.isOpen) this.hangar.refresh();
+    const c = document.getElementById('upg-credits');
+    if (c) c.textContent = String(this.credits);
     this.updateCreditLabels();
   },
 
@@ -147,12 +106,14 @@ export const uiMethods = {
   },
 
   openUpgrades() {
+    document.getElementById('upgrade-modal').style.display = 'flex';   // shown first: the bay sizes its stage from the layout
+    if (this.hangar) this.hangar.open();
     this.renderUpgrades();
-    document.getElementById('upgrade-modal').style.display = 'flex';
   },
 
   closeUpgrades() {
     document.getElementById('upgrade-modal').style.display = 'none';
+    if (this.hangar) this.hangar.close();                              // frees every bay geometry and material
   },
 
   // Abandon the current sector and go back to the title screen (where upgrades can be bought).
@@ -162,7 +123,8 @@ export const uiMethods = {
     this.state = 'BRIEFING';
     this.missile.active = false;
     this.missileGroup.visible = false;
-    for (const id of ['pause-modal', 'clear-modal', 'fail-modal', 'upgrade-modal', 'killcam-banner', 'fire-btn', 'hud-layer']) {
+    this.closeUpgrades();
+    for (const id of ['pause-modal', 'clear-modal', 'fail-modal', 'killcam-banner', 'fire-btn', 'hud-layer']) {
       const e = document.getElementById(id);
       if (e) e.style.display = 'none';
     }

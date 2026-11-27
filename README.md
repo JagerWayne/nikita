@@ -39,6 +39,15 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.32.0: 3D Tactical Upgrade Bay
+
+The upgrade screen is now a 3D bay: the rocket stands on a studio floor (tactical grid, slowly turning azimuth ring) beside an inspector panel.
+
+- **Look around:** drag to orbit (it coasts and settles), scroll or pinch to zoom. Six callout pins with leader lines mark the rocket's assemblies.
+- **Pick a part:** tap a part of the rocket, its pin, or its tab. The camera flies to that assembly and the panel lists its modules: name, level, what it does now and at the next level, cost and INSTALL. Tap the empty floor to see the whole rocket again.
+- **Every upgrade changes the rocket.** For example, max speed lengthens the exhaust bell and adds stator rings, the boost adds injectors and a glowing collar, fuel adds saddle tanks with a level strip, the gun grows twin barrels, warhead force adds hazard rings, and the lidar mast, lenses, coils and nose optics grow with their upgrades. Installing plays the chime and a short wireframe scan over the new part.
+- Same 15 upgrades, prices, limits and saved progress as before. Opens from the title options, sector clear and mission failed screens. BACK or Escape closes it. On tall or narrow screens the panel sits below the rocket.
+
 ## v2.31.5: map colours, wall breaching, faster straights
 
 - **Map colour shows what the autopilot is doing.** Lidar dots and wall outlines are green while it explores, orange while it fetches a pickup, red while it hunts the primary targets. Manual flight (autopilot off) is green. The colour fades over about half a second.

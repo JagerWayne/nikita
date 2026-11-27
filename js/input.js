@@ -728,9 +728,6 @@ export const inputMethods = {
     document.getElementById('btn-clear-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-fail-upgrades').addEventListener('click', () => this.openUpgrades());
     document.getElementById('btn-upg-back').addEventListener('click', () => this.closeUpgrades());
-    document.getElementById('upg-tab-rocket').addEventListener('click', () => { this.upgTab = 'rocket'; this.renderUpgrades(); });
-    document.getElementById('upg-tab-lidar').addEventListener('click', () => { this.upgTab = 'lidar'; this.renderUpgrades(); });
-    document.getElementById('upg-tab-thermal').addEventListener('click', () => { this.upgTab = 'thermal'; this.renderUpgrades(); });
     // Exit to menu asks twice so a stray tap cannot throw away a sector
     const menuBtn = document.getElementById('btn-pause-menu');
     let menuArmed = 0;

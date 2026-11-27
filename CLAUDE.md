@@ -6,12 +6,13 @@ Dependency-free HTML5 game: plain HTML, CSS and ES modules on a vendored Three.j
 
 ```
 index.html          markup (HUD, menus, modals), the import map and <link>/<script> tags only. No inline CSS or JS.
-css/                main.css -> hud.css -> overlays.css -> mobile.css (link order = cascade order; later files override)
+css/                main.css -> hud.css -> overlays.css -> mobile.css -> hangar.css (link order = cascade order; later files override)
 js/main.js          entry module: checks Three.js can load, then dynamically imports js/game.js
 js/game.js          NikitaGame: constructor, loop(), stepSimulation(), sector flow; mixes in the groups below
 js/input.js level.js flight.js combat.js enemies.js lidar.js progress.js ui.js hud.js
                     NikitaGame prototype mixins: each exports `<name>Methods`, a plain object of methods
-js/constants.js math.js hazards.js textures.js audio.js vfx.js autopilot.js    leaf modules (no NikitaGame knowledge)
+js/constants.js math.js hazards.js textures.js audio.js vfx.js autopilot.js hangar.js    leaf modules (no NikitaGame knowledge)
+js/hangar.js        the 3D upgrade bay: a view handed the game object (own WebGL canvas, kept); open() builds, close() disposes
 js/pwa.js           CLASSIC script (not a module): service worker, install, update check, boot watchdog
 js/boot/            classic scripts: version.js, files.js (cache manifest), sizes.js (generated), diagnostics.js, share-config.js
 js/share.js         classic script: Share Game dialog
@@ -25,7 +26,7 @@ The game must be served over HTTP (ES modules do not load from `file://`).
 ## Mixin rule: zero circular dependencies
 
 - `NikitaGame` is declared only in `js/game.js`. The mixin files (`input`, `level`, `flight`, `combat`, `enemies`, `lidar`, `progress`, `ui`, `hud`) **never import `js/game.js`**, and never import each other.
-- Mixins import only leaf modules (`constants`, `math`, `hazards`, `textures`, `audio`, `vfx`, `autopilot`) and `three`. Leaf modules never import mixins or `game.js`.
+- Mixins import only leaf modules (`constants`, `math`, `hazards`, `textures`, `audio`, `vfx`, `autopilot`, `hangar`) and `three`. Leaf modules never import mixins or `game.js`.
 - Mixin methods use `this` for all state and for calling methods of other groups. A new method goes in the group that owns the behaviour; `game.js` throws at load if two groups define the same name.
 - Shared per-frame scratch objects (`_v1`, `_e1`, ...) live in `js/math.js`. They are reused by everything: never keep a reference across calls or into a callback.
 - Classic scripts (`pwa.js`, `boot/*`) and modules share only globals. `nkConfirm` and `NIKITA_VERSION` come from `pwa.js`; modules declare them with a `/* global ... */` comment.
@@ -38,6 +39,12 @@ The game must be served over HTTP (ES modules do not load from `file://`).
 - **Lidar is split.** `stepLidar(dt)` runs inside `stepSimulation()`: rays, the explore map (`xgrid`), scan %, thermal contacts and map hazards, from the missile's pose (`lidarSimOrigin()`) on `gameClock`. `updateLidar(rawDt)` runs per frame and is visual only (uniforms, GPU uploads, fades, badge). The render path (camera, HUD, radar) must never write simulation state such as `xgrid` or `thermalVis`.
 - **Render interpolation is visual only.** `snapshotRenderPose()` runs at the start of each step and `updateRenderPose(alpha)` runs once per frame in `loop()`; both write only `this.prevPose` / `this.renderPose`. **Never write `missile.pos` (or other physics state) from the render path**, and never scale physics by `alpha`. The camera reads `renderPose`; the simulation reads `missile`.
 - A change to simulation code is checked by stepping seeded sectors before and after and comparing positions: the numbers must match exactly.
+
+## Upgrade bay rules
+
+- Upgrades are bought only through `buyUpgrade(key)`; costs and limits only from `upgradeCost` / `upgradeMax`. Save key stays `nikita-save-v1`.
+- `openUpgrades` / `closeUpgrades` (`ui.js`) show the modal and call `hangar.open()` / `hangar.close()`. While it is open, `loop()` draws only the bay (the simulation keeps stepping).
+- `close()` must dispose every geometry and material the bay made (`renderer.info.memory.geometries` returns to 0). New upgrade keys need a module entry and geometry in `js/hangar.js`.
 
 ## Autopilot rules
 
