@@ -244,6 +244,12 @@ export const flightMethods = {
 
   // Runs every frame: keeps the autopilot going between rockets (launches the next one, re-engages after the launch drop)
   autoPlayTick(dt) {
+    // the autopilot asked for its breaching charge last step: the warhead goes off here, before this step's flight update
+    if (this.pilot && this.pilot.breachFire) {
+      this.pilot.breachFire = false;
+      const m = this.missile;
+      if (this.state === 'PLAYING' && m.active && m.auto && m.drop <= 0) this.detonateMissile(m.pos, 'AUTOPILOT: BREACHING CHARGE');
+    }
     if (this.pilot) {
       this.pilot.sense(dt);                                    // flight telemetry, every frame
       if (this.cfg.apDebug) {

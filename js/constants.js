@@ -177,6 +177,19 @@ export const AUTOPILOT_TUNING = Object.freeze({
   costDiag: 1.414, costWall: 0.35, costHazard: 2.5, costSoft: 3, costGate: 12, costDanger: 6, costLink: 2.5,
   frontierBearing: 2.5, frontierDanger: 25, frontierSlack: 32,
   pickupMaxCost: 18,                          // a pickup is only fetched if its route costs at most this
+  // --- energy reserve: below this cruise range, a seen repair kit becomes the priority
+  energyReserveM: 120,                        // metres of range left at cruise speed
+  energyPickupMaxCost: 40, energyRangeShare: 0.7,   // a low-fuel detour may cost up to 40 tiles and never more than 70% of the range left
+  // --- faster on wide-open straights (the braking envelope and the clearance cap still apply on top)
+  straightThrottle: 0.7,                      // top speed there, as a lever position (cruise is CRUISE_THROTTLE, 0.378)
+  straightOpenMin: 12, straightOpenFull: 24,  // clear distance ahead (and to the next waypoint) where the extra speed starts / is full
+  straightMaxErr: 0.12,                       // heading error (rad, ~7 deg) above which it stays at cruise
+  straightStopMargin: 4,                      // stopping distance plus this must fit inside the clear distance
+  // --- breaching cracked walls (blast only: the warhead goes off, which costs the rocket)
+  breachMinRockets: 10,                       // only with at least this many rockets left (the hunt needs some)
+  breachReachMargin: 1.0,                     // go off this far inside the blast's reach of the wall
+  breachSpotMax: 8, breachMax: 40,            // give up after this long at the wall / on the whole breach
+  pulsePlaneBand: 1.6,                        // inside this distance of a 3-line grid's beam plane the gap height is always held
   pickupStuckMax: 2,                          // stuck this many times on the way to one pickup: give it up
   shaftLineUp: 4,                             // within this distance of a tunnel mouth, hold its height (and crawl until there)
   // --- fire control
@@ -196,4 +209,11 @@ export const AUTOPILOT_TUNING = Object.freeze({
   evadeBobAmp: 0.9, evadeBobAmpFiring: 0.35, evadeBobRate: 4.4,    // altitude bob (stick units, rad/s)
   evadeWeaveAmp: 0.55, evadeWeaveRate: 5.6,                        // heading weave
   evadeMinSpeed: 4.5                                               // never sit still under fire
+});
+
+/* Lidar map dot colour (r, g, b) by autopilot mission; anything not listed (manual flight, turret fights) uses EXPLORE. */
+export const LIDAR_MODE_COLORS = Object.freeze({
+  EXPLORE: [0.12, 1.0, 0.45],   // green
+  PICKUP: [1.0, 0.52, 0.05],    // orange
+  HUNT: [1.0, 0.1, 0.06]        // red
 });

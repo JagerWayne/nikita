@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   CELL_CRACKED, CELL_RAMP, CELL_SHAFT_HIGH, CELL_SHAFT_LOW, CELL_SIZE, CELL_VOID, CELL_WALL, FEAT_BASE,
   FLOOR_SEG, GRID_SIZE, LIDAR_CAP, LIFT_BASE, MAX_FLOORS, RIM_BASE, SHAFT_REVEAL_R, SHAFT_SEG_BASE, VOX,
-  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, isShaft, isWalkable, isWallLike
+  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, isShaft, isWalkable, isWallLike, LIDAR_MODE_COLORS
 } from './constants.js';
 import { PROBE_DIRS, _e1, _fwd, _v8, gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
 
@@ -172,14 +172,15 @@ export const lidarMethods = {
     geo.setDrawRange(0, 0);
     this.lidarUniforms = {
       uTime: { value: 0 }, uOrigin: { value: new THREE.Vector3() }, uGlow: { value: 2 }, uMem: { value: 0.25 },
-      uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uDot: { value: 1 }, uCrack: { value: 0 }, uPulse: { value: 0 }
+      uRange: { value: 32 }, uSweep: { value: 0 }, uScale: { value: 1 }, uDot: { value: 1 }, uCrack: { value: 0 }, uPulse: { value: 0 },
+      uMode: { value: new THREE.Color(...LIDAR_MODE_COLORS.EXPLORE) }   // map dot colour: follows the autopilot's mission (updateLidar)
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.lidarUniforms,
       vertexShader: `
         attribute vec2 aInfo;
         uniform float uTime, uGlow, uMem, uRange, uSweep, uScale, uCrack, uPulse, uDot;
-        uniform vec3 uOrigin;
+        uniform vec3 uOrigin, uMode;
         varying vec3 vCol;
         void main() {
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -194,11 +195,11 @@ export const lidarMethods = {
           float sweep = (1.0 - smoothstep(0.0, 0.22, sw)) * near * 0.6;
           float wave = exp(-abs(dist - uPulse) * 1.1) * (1.0 - smoothstep(uRange, uRange * 1.3, uPulse));
           float b = max(uMem + 0.55 * near, fresh) + sweep + wave * 0.9;
-          vec3 col = vec3(0.12, 1.0, 0.45);
+          vec3 col = uMode;                                          // green exploring, orange fetching a pickup, red hunting
           if (aInfo.x > 1.5 && aInfo.x < 2.5) { col = vec3(1.0, 0.58, 0.1); b = max(b, uCrack); }
-          else if (aInfo.x > 3.5) { col = vec3(0.72, 1.0, 0.84); b = max(b * 1.3, 0.62 + 0.4 * near); }
-          else if (aInfo.x > 2.5) col = vec3(0.12, 1.0, 0.45);      // shafts: same green as the rest of the map
-          vCol = col * b + vec3(0.55, 1.0, 0.75) * fresh * 0.45;
+          else if (aInfo.x > 3.5) { col = mix(uMode, vec3(1.0), 0.68); b = max(b * 1.3, 0.62 + 0.4 * near); }
+          else if (aInfo.x > 2.5) col = uMode;                       // shafts: same colour as the rest of the map
+          vCol = col * b + mix(uMode, vec3(1.0), 0.5) * fresh * 0.45;
           float edge = aInfo.x > 3.5 ? 1.25 : 1.0;
           gl_PointSize = clamp(uScale * uDot * edge * (26.0 + 18.0 * fresh) * (1.0 + 0.7 * wave) / max(0.5, -mv.z), 1.6 * edge * uDot, 8.5 * uDot);
         }`,
@@ -234,7 +235,7 @@ export const lidarMethods = {
     lg.instanceCount = 0;
     this.segGeo = lg;
     this.segUniforms = { uTime: this.lidarUniforms.uTime, uOrigin: this.lidarUniforms.uOrigin, uRange: this.lidarUniforms.uRange, uGlow: this.lidarUniforms.uGlow, uPulse: this.lidarUniforms.uPulse,
-                         uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 } };
+                         uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 3 }, uMode: this.lidarUniforms.uMode };   // outlines share the dots' mission colour
     const lmat = new THREE.ShaderMaterial({
       uniforms: this.segUniforms,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -269,9 +270,10 @@ export const lidarMethods = {
         }`,
       fragmentShader: `
         varying float vB; varying float vEdge; varying float vK;
+        uniform vec3 uMode;
         void main() {
           float core = 1.0 - abs(vEdge);
-          vec3 col = vec3(0.12, 1.0, 0.42);                          // shaft edges use the same green as wall edges
+          vec3 col = uMode;                                          // wall and shaft edges: the mission colour (green / orange / red)
           gl_FragColor = vec4(col * vB * (0.35 + 0.65 * core), 1.0);
         }`
     });
@@ -903,6 +905,10 @@ export const lidarMethods = {
     U.uSweep.value = this.lidarSweep;
     U.uPulse.value = ((this.lidarTime % 1.6) / 1.6) * P.range * 1.3;      // scanner wavefront expanding from the rocket
     this.thermalRes.value = this.segUniforms.uRes.value.y || 1;
+    // dot colour follows what the autopilot is doing (fades over about half a second); manual flight stays green
+    const pl = this.pilot, mode = pl && pl.active && this.missile.auto ? pl.mission : 'EXPLORE';
+    const mc = LIDAR_MODE_COLORS[mode] || LIDAR_MODE_COLORS.EXPLORE, k = 1 - Math.exp(-dt * 4);
+    const cm = U.uMode.value; cm.r += (mc[0] - cm.r) * k; cm.g += (mc[1] - cm.g) * k; cm.b += (mc[2] - cm.b) * k;
 
     this.flushDots();
     this.flushSegs();

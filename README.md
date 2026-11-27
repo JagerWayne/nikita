@@ -39,6 +39,16 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.31.5: map colours, wall breaching, faster straights
+
+- **Map colour shows what the autopilot is doing.** Lidar dots and wall outlines are green while it explores, orange while it fetches a pickup, red while it hunts the primary targets. Manual flight (autopilot off) is green. The colour fades over about half a second.
+- **Cracked walls get blasted open when the way is blocked.** When nothing reachable is left to explore but the map is not complete, or the hunt has no route to a target, the autopilot flies to a cracked wall it has seen, faces it and sets the warhead off (blast only, so it costs that rocket; only with at least 10 rockets left). The next rocket explores behind it. In 10 test sectors it set 16 charges and opened all 16 walls.
+- **Faster on open straights.** When it is lined up and the way ahead is clear for 12 m or more (with room to stop), it speeds up past cruise, up to lever 0.7 (about 16 m/s), instead of always cruising at about 12 m/s.
+- **Low fuel: repair kits first.** With under 120 m of range left at cruise, a seen repair kit is fetched before turret fights, even a bit further away.
+- **Fix: tunnel mouths beside 3-beam laser grids.** The pilot held the grid's 2.55 m gap height anywhere near the grid, even when its route never crossed it, so it could never reach a low tunnel mouth next to one. It now holds that height only when the grid is really in the way.
+
+Trade-off: breaching spends rockets and time before the hunt. Over the 10 test sectors the autopilot used 130 rockets instead of 123. Two sectors cleared faster and four slower, and one (sector 18) no longer cleared within the 10-minute test. The repair-kit rule changed little, because a seen kit was rarely around when fuel ran low.
+
 ## v2.31.4: autopilot no longer stalls at tunnels and pickups
 
 The autopilot kept stopping and replanning ("STUCK - NEW GOAL"): 269 times across 9 test sectors. Two bugs caused 97% of it:
