@@ -5,6 +5,9 @@ import {
   HEAR_WALL_DAMP, HOSTILE_ACCURACY, RAMP_LEN, SENTRY_VISION, WALL_H, isWalkable
 } from './constants.js';
 import {
+  PULSE_ARM_END, PULSE_OFF_END, pulseCycleTime, sweeperHX, sweeperVY, turretRange, twinSweepY
+} from './hazards.js';
+import {
   _aimR, _aimU, _c1, _dummy, _profileSent, _up, _v1, _v2, _v7, _v8, blendProfile, gridToWorldX, gridToWorldZ
 } from './math.js';
 
@@ -240,11 +243,10 @@ export const enemiesMethods = {
       if (l.disabled) continue;
 
       if (l.mode === 'PULSE_GATE') {
-        const cycleLen = 3.6;
-        const tCycle = (now * (0.75 + l.speed * 0.18) + l.phase) % cycleLen;
+        const tCycle = pulseCycleTime(l, now);
         const prevState = l.state;
-        if (tCycle < 1.35) l.state = 'OFF';
-        else if (tCycle < 2.10) l.state = 'ARMING';
+        if (tCycle < PULSE_OFF_END) l.state = 'OFF';
+        else if (tCycle < PULSE_ARM_END) l.state = 'ARMING';
         else l.state = 'ACTIVE';
 
         if (l.state === 'ARMING' && prevState !== 'ARMING' && this.missile.active) {
@@ -289,8 +291,7 @@ export const enemiesMethods = {
         }
       } else if (l.mode === 'SWEEPER_H') {
         l.state = 'ACTIVE';
-        const halfSpan = Math.max(0.5, (l.xMax - l.xMin) * 0.5 - 0.35);
-        const bx = l.midX + Math.sin(now * l.speed + l.phase) * halfSpan;
+        const bx = sweeperHX(l, now);
         const pulse = 0.88 + 0.22 * Math.sin(now * 22 + l.phase);
         const bm = l.beams[0];
         bm.x1 = bx; bm.x2 = bx;
@@ -304,8 +305,7 @@ export const enemiesMethods = {
         const pulse = 0.88 + 0.22 * Math.sin(now * 22 + l.phase);
         for (let bIdx = 0; bIdx < l.beams.length; bIdx++) {
           const bm = l.beams[bIdx];
-          const baseCenter = bIdx === 0 ? 2.25 : 4.95;
-          const by = Math.max(0.65, Math.min(WALL_H - 0.65, baseCenter + Math.sin(now * l.speed + l.phase + bm.offsetPhase) * 1.35));
+          const by = twinSweepY(l, bIdx, now);
           bm.y1 = by; bm.y2 = by;
           bm.coreMesh.position.y = by;
           bm.glowMesh.position.y = by;
@@ -315,7 +315,7 @@ export const enemiesMethods = {
         }
       } else {
         l.state = 'ACTIVE';
-        const by = Math.max(0.75, Math.min(WALL_H - 0.75, 3.6 + Math.sin(now * l.speed + l.phase) * 2.35));
+        const by = sweeperVY(l, now);
         const pulse = 0.88 + 0.22 * Math.sin(now * 22 + l.phase);
         const bm = l.beams[0];
         bm.y1 = by; bm.y2 = by;
@@ -349,7 +349,7 @@ export const enemiesMethods = {
       }
     }
 
-    const ciwsRange = 26 + Math.min(14, (this.difficultyTier - 1) * 0.7);
+    const ciwsRange = turretRange(this.difficultyTier);
     const ciwsCooldown = Math.max(0.18, 0.46 - (this.difficultyTier - 1) * 0.015);
     const ciwsBoltSpeed = 78 + (this.difficultyTier - 1) * 2.0;
     for (const tu of this.turrets) {

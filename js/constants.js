@@ -144,3 +144,54 @@ export const SPEED_MODES = {
   2: { name: '[2] CRUISE',    speed: 16.0, fov: 75, turnMult: 1.00, fuelRate: 1.00, detectMult: 1.00, exhaustColor: 0xff6611, exhaustScale: 0.36, exhaustCadence: 0.028, plumeXZ: 0.95, plumeY: 1.05, inertia: 9.2, rollMult: 0.42, badgeClass: 'tier-2' },
   3: { name: '[3] OVERDRIVE', speed: 30.0, fov: 92, turnMult: 0.64, fuelRate: 1.72, detectMult: 1.15, exhaustColor: 0x33eeff, exhaustScale: 0.56, exhaustCadence: 0.014, plumeXZ: 1.38, plumeY: 1.95, inertia: 5.5, rollMult: 0.58, badgeClass: 'tier-3' }
 };
+
+/* Autopilot tuning (js/autopilot.js). Times are seconds of game time, distances metres, gains are stick units per radian / metre.
+   Change a number here and nowhere else. */
+export const AUTOPILOT_TUNING = Object.freeze({
+  // --- cadence
+  decideEvery: 1,            // mission decision (explore / pickup / engage / hunt)
+  replanEvery: 1.5,          // is the current route still valid
+  hazardEvery: 2,            // hazard layers (turbines, bulkheads, laser grids, turret cover)
+  fanEvery: 0.1,             // forward clearance fan
+  // --- timers and give-ups
+  stuckAfter: 3, stuckMinMove: 0.8,           // less than 0.8 m of progress in 3 s = stuck
+  scanMax: 10, boxWaitMax: 8, spotMax: 12,    // 360 scan, shooting a switch box, fighting a turret from its spot
+  engageMax: 25,                              // longest a turret engagement is kept as the mission
+  gateMax: 25, gateBlockFor: 30,              // a laser gate that will not open: give up, avoid that grid for a while
+  turretIgnoreFor: 60,                        // a turret that could not be killed is ignored for this long
+  // --- guidance (heading and altitude PD, look-ahead pursuit)
+  yawGain: 2.4, yawDamp: 0.35,                // yaw stick = gain * heading error - damp * yaw rate
+  climbGain: 1.4, climbDamp: 0.25,            // climb stick = gain * altitude error - damp * vertical speed
+  lookBase: 2, lookPerSpeed: 0.6, lookMin: 2.5, lookMax: 9,   // look-ahead distance = clamp(base + perSpeed * speed)
+  wpReach: 1.2, wpPassRange: 3, vertTol: 0.9, // waypoint reached / passed, height tolerance at a floor change
+  roomMargin: 0.9,                            // keep this far from floor and ceiling
+  // --- speed and walls
+  brakeFrac: 0.5, brakeCap: 9,                // planning deceleration = min(cap, frac * measured braking)
+  fanMargin: 1.8, crawlSpeed: 1.2,            // stop this far short of the free distance ahead; slowest crawl with a clear centre line
+  turnSpeedFloor: 0.15,                       // speed factor never drops below this while turning
+  wallMargin: 1.3, wallGain: 0.9,             // side wall closer than this pushes the yaw away
+  wallSlowBase: 1.5, wallSlowGain: 5, wallSlowGap: 0.4,   // speed cap beside a wall = base + gain * (gap - slowGap)
+  // --- command smoothing (per second)
+  yawSlew: 5, climbSlew: 4, accelSlew: 9,
+  // --- route search costs (tiles)
+  costDiag: 1.414, costWall: 0.35, costHazard: 2.5, costSoft: 3, costGate: 12, costDanger: 6, costLink: 2.5,
+  frontierBearing: 2.5, frontierDanger: 25, frontierSlack: 32,
+  pickupMaxCost: 18,                          // a pickup is only fetched if its route costs at most this
+  // --- fire control
+  aimYawGain: 3.0, aimClimbGain: 1.6, aimSpeedCap: 1.5,   // steer onto the lead point and slow right down
+  hitFrac: 0.8,                               // fire when the predicted sideways miss is under this fraction of the hit radius
+  lockFramesMin: 6, trackAlpha: 6,            // frames in view to confirm a track; velocity smoothing rate
+  giveUpAfter: 6, ignoreFor: 20,              // no kill in 6 s: ignore that contact for 20 s
+  reserveRounds: 4,                           // rounds kept for threats
+  burstExtra: 2, burstPause: 0.15,            // rounds beyond the kill count per burst, pause between bursts
+  fire: {                                     // per contact kind
+    CIWS: { pri: 8, range: 30, hitR: 1.0, vert: 0.8 },
+    SENTRY: { pri: 5, range: 28, hitR: 0.7, vert: 0.95 },
+    'LASER BOX': { pri: 4, range: 36, hitR: 0.75, vert: 0.6 }
+  },
+  // --- threats and evasion
+  sentryThreatRange: 16,
+  evadeBobAmp: 0.9, evadeBobAmpFiring: 0.35, evadeBobRate: 4.4,    // altitude bob (stick units, rad/s)
+  evadeWeaveAmp: 0.55, evadeWeaveRate: 5.6,                        // heading weave
+  evadeMinSpeed: 4.5                                               // never sit still under fire
+});

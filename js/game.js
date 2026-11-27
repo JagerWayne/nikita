@@ -389,6 +389,7 @@ export class NikitaGame {
     }
 
     this.updateSentries(effectiveDt);
+    this.stepLidar(dt);   // exploration (lidar rays, thermal contacts, map hazards) on the fixed step, not the render frame
 
     this.vfx.update(
       effectiveDt,

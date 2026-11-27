@@ -12,7 +12,7 @@ self.APP_FILES = [
   'js/pwa.js',
   'js/main.js',
   'js/game.js',
-  'js/constants.js', 'js/math.js', 'js/textures.js', 'js/audio.js', 'js/vfx.js', 'js/autopilot.js',
+  'js/constants.js', 'js/math.js', 'js/hazards.js', 'js/textures.js', 'js/audio.js', 'js/vfx.js', 'js/autopilot.js',
   'js/input.js', 'js/level.js', 'js/flight.js', 'js/combat.js', 'js/enemies.js', 'js/lidar.js', 'js/progress.js', 'js/ui.js', 'js/hud.js',
   'vendor/qrcode-generator-2.0.4/qrcode.js',
   'vendor/three-0.187.0/three.module.js',

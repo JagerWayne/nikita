@@ -5,7 +5,7 @@ import {
   FLOOR_SEG, GRID_SIZE, LIDAR_CAP, LIFT_BASE, MAX_FLOORS, RIM_BASE, SHAFT_REVEAL_R, SHAFT_SEG_BASE, VOX,
   VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, isShaft, isWalkable, isWallLike
 } from './constants.js';
-import { PROBE_DIRS, _v8, gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
+import { PROBE_DIRS, _e1, _fwd, _v8, gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
 
 export const lidarMethods = {
 
@@ -13,26 +13,27 @@ export const lidarMethods = {
      LIDAR VIEW: scanner, point cloud, per-sector memory, thermal entities
      ------------------------------------------------------------------------ */
   // Upgrade levels -> scan settings (the one place to tune the lidar)
+  // Returns one of two reused objects (raw / adjusted for modifier, low-spec, throttle and ECM), refilled on every call, so this
+  // can be called every step without allocating. Read what you need at once; do not keep the object.
   lidarParams(raw = false) {
     const u = this.upg;
-    const p = {
-      range: 32 + 4.8 * u.lrange,
-      rays: Math.round(600 + 120 * u.lres),
-      rows: 8 + Math.round(u.lres * 1.6),   // scan rows (laser lines) around the rocket
-      dot: 1 + 0.06 * u.lres,               // dot size multiplier: a higher resolution also paints bigger, bolder dots (x1.0 to x1.6)
-      focus: 0.3 + 0.04 * u.lfocus,
-      coneDeg: 25 + 2 * u.lfocus,
-      thermal: 18 + 4.2 * u.ltherm,
-      pen: u.tpen,                          // walls thermal sees through (0-3)
-      throughWall: u.tpen > 0,
-      mark: 0.5 * u.tmark,                  // seconds a contact stays marked after it leaves sight
-      seekerDeg: 15 + u.ttrack,
-      lockRange: 68 + 4 * u.ttrack,
-      glow: 2 + 0.4 * u.lmem,
-      mem: 0.25 + 0.03 * u.lmem,
-      keep: 3 + Math.round(0.7 * u.lmem),
-      deep: u.ldeep
-    };
+    const p = raw ? (this._lpRaw || (this._lpRaw = {})) : (this._lpAdj || (this._lpAdj = {}));
+    p.range = 32 + 4.8 * u.lrange;
+    p.rays = Math.round(600 + 120 * u.lres);
+    p.rows = 8 + Math.round(u.lres * 1.6);   // scan rows (laser lines) around the rocket
+    p.dot = 1 + 0.06 * u.lres;               // dot size multiplier: a higher resolution also paints bigger, bolder dots (x1.0 to x1.6)
+    p.focus = 0.3 + 0.04 * u.lfocus;
+    p.coneDeg = 25 + 2 * u.lfocus;
+    p.thermal = 18 + 4.2 * u.ltherm;
+    p.pen = u.tpen;                          // walls thermal sees through (0-3)
+    p.throughWall = u.tpen > 0;
+    p.mark = 0.5 * u.tmark;                  // seconds a contact stays marked after it leaves sight
+    p.seekerDeg = 15 + u.ttrack;
+    p.lockRange = 68 + 4 * u.ttrack;
+    p.glow = 2 + 0.4 * u.lmem;
+    p.mem = 0.25 + 0.03 * u.lmem;
+    p.keep = 3 + Math.round(0.7 * u.lmem);
+    p.deep = u.ldeep;
     if (raw) return p;
     if (this.modifier === 'BLACKOUT') p.range *= 0.6;
     if (this.prefs && this.prefs.lowSpec) p.rays = Math.round(p.rays * 0.5);
@@ -500,7 +501,6 @@ export const lidarMethods = {
     const COL = ['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00'];
     if (!this._xLayer) { this._xLayer = document.createElement('canvas'); this._xLayer.width = size; this._xLayer.height = size; }
     const now = performance.now();
-    if (now - (this._xHazT || 0) > 2000) { this._xHazT = now; this.xHazRefresh(); }
     if (X && (this.xgridDirty || this._xLayerF !== curF) && now - (this._xLayerT || 0) > 250) {     // redraw the tiles only when the map changed
       this._xLayerT = now; this.xgridDirty = false; this._xLayerF = curF;
       const lc = this._xLayer.getContext('2d');
@@ -883,7 +883,8 @@ export const lidarMethods = {
     return this.camera.position;
   },
 
-  // One frame of scanning: a spinning sweep in fixed elevation rows plus a focus cone along the view.
+  // Per-frame visuals, at the display's refresh rate with the real frame time: shader uniforms, GPU uploads, fades, the HUD badge
+  // and the frame-rate guard. Nothing here changes what the simulation can see: exploration is stepLidar() below.
   updateLidar(dt) {
     this.lidarTime += dt;
     this.thermalTime.value = this.lidarTime;
@@ -903,15 +904,40 @@ export const lidarMethods = {
     U.uPulse.value = ((this.lidarTime % 1.6) / 1.6) * P.range * 1.3;      // scanner wavefront expanding from the rocket
     this.thermalRes.value = this.segUniforms.uRes.value.y || 1;
 
-    const scanning = this.state === 'PLAYING' || this.state === 'READY' || this.state === 'BRIEFING';
+    this.flushDots();
+    this.flushSegs();
+    if (this.fadeSet) this.updateFades(dt);
+    this.renderer.getDrawingBufferSize(this.segUniforms.uRes.value);
+    this.segUniforms.uWidth.value = 2.2 * Math.min(window.devicePixelRatio || 1, 2);
+
+    // performance guard: drop the ray count if frames get slow, recover when fast again
+    if (this.frameMs > 24) { this.lidarSlowT += dt; this.lidarFastT = 0; } else if (this.frameMs < 15) { this.lidarFastT += dt; this.lidarSlowT = 0; }
+    if (this.lidarSlowT > 1.5) { this.lidarThrottle = Math.max(0.35, this.lidarThrottle * 0.8); this.lidarSlowT = 0; }
+    if (this.lidarFastT > 3 && this.lidarThrottle < 1) { this.lidarThrottle = Math.min(1, this.lidarThrottle * 1.15); this.lidarFastT = 0; }
+
+    const badge = document.getElementById('cam-mode-badge');
+    if (badge) this.cText(badge, `LIDAR ${Math.round(P.range)}m · THERMAL ${Math.round(P.thermal)}m\nSCAN ${this.scanPercent()}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
+  },
+
+  // Fixed-step exploration (called from stepSimulation at 60 Hz): the lidar rays that plot the explore map and the scan percentage,
+  // the thermal contacts, and the hazard layer of the map. It runs on the simulation clock from the missile's own pose, never from
+  // the camera or the frame time, so the autopilot (which reads all of this) flies a sector the same on a 60 Hz and a 144 Hz screen.
+  stepLidar(dt) {
+    const st = this.state, m = this.missile;
+    const o = this.lidarSimOrigin();
+    const P = this.lidarParams();
+    const scanning = st === 'PLAYING' || st === 'READY' || st === 'BRIEFING';
     if (scanning) {
       this.markSeen(o.x, o.z, o.y);
-      this.camera.getWorldDirection(_v8);
+      // the focus cone points where the nose points
+      if (st === 'PLAYING') { _e1.set(m.pitch + (m.wobP || 0) + (m.brakeP || 0), m.yaw + (m.wobY || 0), 0, 'YXZ'); _v8.copy(_fwd).applyEuler(_e1); }
+      else if (st === 'READY') { _e1.set(m.pitch, m.yaw, 0, 'YXZ'); _v8.copy(_fwd).applyEuler(_e1); }
+      else _v8.set(0, -1.4, -26).normalize();                              // the briefing camera looks across the spawn area
       const fyaw = Math.atan2(_v8.x, _v8.z), fpitch = Math.asin(Math.max(-1, Math.min(1, _v8.y)));
       const cone = P.coneDeg * Math.PI / 180;
       const rows = P.rows;
       const ox = o.x, oy = Math.max(0.05, Math.min(this.nFloors * WALL_H - 0.05, o.y)), oz = o.z;
-      const now = this.lidarTime;
+      const now = this.lidarTime;                                           // dot birth time for the shader (visual clock)
       for (let i = 0; i < P.rays; i++) {
         let yaw, pit;
         if (Math.random() < P.focus) {
@@ -931,23 +957,24 @@ export const lidarMethods = {
       if (P.deep >= 2) this.deepScanReveal(o, P);
       if (this.lifts.length) this.revealLifts(o, P);
     }
-    this.flushDots();
-    this.flushSegs();
-    if (this.fadeSet) this.updateFades(dt);
-    this.renderer.getDrawingBufferSize(this.segUniforms.uRes.value);
-    this.segUniforms.uWidth.value = 2.2 * Math.min(window.devicePixelRatio || 1, 2);
-
-    // performance guard: drop the ray count if frames get slow, recover when fast again
-    if (this.frameMs > 24) { this.lidarSlowT += dt; this.lidarFastT = 0; } else if (this.frameMs < 15) { this.lidarFastT += dt; this.lidarSlowT = 0; }
-    if (this.lidarSlowT > 1.5) { this.lidarThrottle = Math.max(0.35, this.lidarThrottle * 0.8); this.lidarSlowT = 0; }
-    if (this.lidarFastT > 3 && this.lidarThrottle < 1) { this.lidarThrottle = Math.min(1, this.lidarThrottle * 1.15); this.lidarFastT = 0; }
-
     this.lidarThermalT = (this.lidarThermalT || 0) - dt;
     if (this.lidarThermalT <= 0) { this.lidarThermalT = 0.05; this.updateThermal(o, P); }
     if (this.radarSoftDirty && (this._radarRebuildT = (this._radarRebuildT || 0) - dt) <= 0) { this._radarRebuildT = 0.25; this.radarSoftDirty = false; this.radarDirty = true; }
-    const badge = document.getElementById('cam-mode-badge');
-    if (badge) this.cText(badge, `LIDAR ${Math.round(P.range)}m · THERMAL ${Math.round(P.thermal)}m\nSCAN ${this.scanPercent()}%${this.lidarThrottle < 0.95 ? ' · AUTO-THROTTLED' : ''}`);
+    // hazard layer of the explore map (turbines, bulkheads, live laser grids, barrels, grates): every 2 s of game time
+    this._hazRefreshT = (this._hazRefreshT || 0) - dt;
+    if (this._hazRefreshT <= 0) { this._hazRefreshT = 2; this.xHazRefresh(); }
   },
+
+  // Where the simulation scans from: the rocket in flight, the kill-cam target, the spawn point while waiting to launch, the centre of
+  // the briefing camera's orbit. (lidarOrigin() below is the on-screen one and follows the real camera.)
+  lidarSimOrigin() {
+    const m = this.missile, st = this.state;
+    if (m.active && (st === 'PLAYING' || st === 'RESPAWNING')) return m.pos;
+    if (st === 'KILLCAM') return this.killCamTarget;
+    if (st === 'BRIEFING') return (this._briefO || (this._briefO = new THREE.Vector3())).set(this.spawnPos.x, 3.6, this.spawnPos.z + 4);
+    return this.spawnPos;
+  }
+,
 
   // Deep scan 2-3: outline secret chambers (and shafts at 3) that lie within scan range, plus reveal their power-ups.
   deepScanReveal(o, P) {
@@ -1020,8 +1047,8 @@ export const lidarMethods = {
     };
     // heat mark: a contact stays visible for a moment after it leaves sight
     const mark = (obj, v) => {
-      if (v) { obj._seenT = this.lidarTime; return true; }
-      return P.mark > 0 && this.lidarTime - (obj._seenT === undefined ? -99 : obj._seenT) < P.mark;
+      if (v) { obj._seenT = this.gameClock; return true; }
+      return P.mark > 0 && this.gameClock - (obj._seenT === undefined ? -99 : obj._seenT) < P.mark;
     };
     for (const t of this.targets) this.setThermalVis(t.mesh, t.active && mark(t, see(t.pos.x, t.pos.y, t.pos.z, 2)));
     for (const tu of this.turrets) { const v = tu.active && mark(tu, see(tu.pos.x, tu.pos.y - 0.6, tu.pos.z)); this.setThermalVis(tu.mesh, v); this.setThermalVis(tu.stem, v); }

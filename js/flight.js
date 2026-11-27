@@ -183,23 +183,29 @@ export const flightMethods = {
   },
 
   // Cells to keep away from: turbines, bulkheads, live laser grids, barrels and grates
+  // (one buffer, refilled on every call: the caller keeps it as this._xHaz)
   autoBlocked() {
-    const G = GRID_SIZE, GG = G * G, B = new Uint8Array(GG * this.nFloors);
-    const disc = (x, z, r, f) => {
-      const g0 = worldToGridX(x - r - 2), g1 = worldToGridX(x + r + 2), z0 = worldToGridZ(z - r - 2), z1 = worldToGridZ(z + r + 2);
-      for (let gz = Math.max(0, z0); gz <= Math.min(G - 1, z1); gz++) for (let gx = Math.max(0, g0); gx <= Math.min(G - 1, g1); gx++) {
-        if (Math.hypot(gridToWorldX(gx) - x, gridToWorldZ(gz) - z) < r + CELL_SIZE * 0.5) B[f * GG + gz * G + gx] = 1;
-      }
-    };
-    for (const t of this.turbines) disc(t.pos.x, t.pos.z, 3.2, 0);
-    for (const b of this.bulkheads) disc(b.x, b.z, 3.0, 0);
-    for (const g of this.grates) if (g.active) disc(g.pos.x, g.pos.z, 2.2, 0);
-    for (const b of this.barrels) if (b.active) disc(b.pos.x, b.pos.z, 1.8, Math.min(this.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
+    const GG = GRID_SIZE * GRID_SIZE, n = GG * this.nFloors;
+    let B = this._abBuf;
+    if (!B || B.length !== n) B = this._abBuf = new Uint8Array(n); else B.fill(0);
+    for (const t of this.turbines) this._discMark(B, t.pos.x, t.pos.z, 3.2, 0);
+    for (const b of this.bulkheads) this._discMark(B, b.x, b.z, 3.0, 0);
+    for (const g of this.grates) if (g.active) this._discMark(B, g.pos.x, g.pos.z, 2.2, 0);
+    for (const b of this.barrels) if (b.active) this._discMark(B, b.pos.x, b.pos.z, 1.8, Math.min(this.nFloors - 1, Math.max(0, Math.floor(b.pos.y / WALL_H))));
     for (const l of this.lasers) {
       if (l.disabled) continue;
-      for (let x = l.xMin - 1; x <= l.xMax + 1; x += CELL_SIZE * 0.5) disc(x, l.z, 1.2, 0);
+      for (let x = l.xMin - 1; x <= l.xMax + 1; x += CELL_SIZE * 0.5) this._discMark(B, x, l.z, 1.2, 0);
     }
     return B;
+  },
+
+  // mark every tile within r (+ half a cell) of (x, z) on floor f in layer B
+  _discMark(B, x, z, r, f) {
+    const G = GRID_SIZE, GG = G * G;
+    const g0 = worldToGridX(x - r - 2), g1 = worldToGridX(x + r + 2), z0 = worldToGridZ(z - r - 2), z1 = worldToGridZ(z + r + 2);
+    for (let gz = Math.max(0, z0); gz <= Math.min(G - 1, z1); gz++) for (let gx = Math.max(0, g0); gx <= Math.min(G - 1, g1); gx++) {
+      if (Math.hypot(gridToWorldX(gx) - x, gridToWorldZ(gz) - z) < r + CELL_SIZE * 0.5) B[f * GG + gz * G + gx] = 1;
+    }
   },
 
   // AUTO button: full autopilot. It scans, grabs useful pickups, guns down sentries / turrets / laser boxes / barrels / grates,

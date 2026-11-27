@@ -10,7 +10,7 @@ GitHub Pages: https://jagerwayne.github.io/nikita/
 
 Use landscape. Gyro tilt flight needs HTTPS, which the Pages link provides.
 
-## Project layout (v2.31.2)
+## Project layout (v2.31.3)
 
 ```
 index.html            markup (HUD, menus, modals), the import map and the script/link tags. No inline CSS or JS.
@@ -27,7 +27,8 @@ js/lidar.js           lidar scan, explored-map memory, IndexedDB persistence
 js/progress.js        score, rewards, pickups, upgrades, save data
 js/ui.js              menus, prefs, intro call, upgrade screen, HUD text helpers
 js/hud.js             canvas HUD and soliton radar
-js/constants.js       tuning numbers, cell types, speed modes (no dependencies)
+js/constants.js       tuning numbers (incl. AUTOPILOT_TUNING), cell types, speed modes (no dependencies)
+js/hazards.js         turret range and laser beam timing, shared by the game and the autopilot
 js/math.js            scratch THREE objects, seeded PRNG, grid conversions
 js/textures.js  js/audio.js  js/vfx.js  js/autopilot.js   procedural textures, Web Audio synth, pooled VFX, the autopilot
 js/pwa.js             classic script: service worker, INSTALL APP, update check, boot watchdog
@@ -37,6 +38,14 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 ```
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
+
+## v2.31.3: autopilot fixes, refresh-rate independence
+
+- **Same flight on every screen.** The lidar exploration (rays, explore map, scan %, thermal contacts, map hazards) now runs in the fixed 60 Hz step from the rocket's own pose, not once per rendered frame from the camera. With autopilot on, a seeded sector now plays out step for step the same on 60, 120 and 144 Hz screens. Before, they diverged early (about 15 s into the test run). On 120 Hz+ screens the lidar also does half the work it used to.
+- **Gun fires at targets out of height reach.** The fire gate compared the rocket's height with the target's real height even when the room could not let it climb or sink that far, so it never fired. It now compares against the height the rocket can actually reach.
+- **No false "stuck" while waiting.** The stuck timer is reset while the pilot holds position on purpose (laser gate wait, 360 scan, switch box, turret spot). The old order (stuck check before the gate logic) could abandon a long gate wait; that did not show up in 20+ test sectors, so this is a safeguard.
+- **Less garbage.** The autopilot's per-step path reuses its structures (telemetry, contacts, commands, tracks, search buffers): about 0.5 to 1.5 KB allocated per step instead of 4.6 to 5.4 KB (measured after warm-up).
+- **One source of truth.** Autopilot tuning numbers are in `AUTOPILOT_TUNING` (`js/constants.js`). Turret range and laser beam timing are in `js/hazards.js`, used by both the game and the autopilot.
 
 ## v2.31.2: smooth camera on 90/120/144 Hz screens
 

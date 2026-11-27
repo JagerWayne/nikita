@@ -5,6 +5,7 @@ import {
   DECOYS_PER_SECTOR, GRID_SIZE, LEVELS_PER_TIER, LIDAR_KEY_PREFIX, LIFT_BASE, MAX_LEVELS, MAX_TETHER_PTS,
   MODIFIER_INFO, POINTS_BONUS, RAMP_LEN, RIM_BASE, SENTRY_VISION, WALL_H, isShaft, isWalkable, isWallLike
 } from './constants.js';
+import { PULSE_BEAM_YS, twinPhase } from './hazards.js';
 import {
   PROBE_DIRS, _dummy, _v5, gridToWorldX, gridToWorldZ, hashSeedString, mulberry32, worldToGridX, worldToGridZ
 } from './math.js';
@@ -854,14 +855,14 @@ export const levelMethods = {
         beams.push({
           x1: xMin, y1: startY, z1: z,
           x2: xMax, y2: startY, z2: z,
-          offsetPhase: k * Math.PI,
+          offsetPhase: twinPhase(k),
           ...b
         });
         emitters.push(makeEmitter(xMin + 0.18, startY, 0));
         emitters.push(makeEmitter(xMax - 0.18, startY, Math.PI));
       }
     } else if (mode === 'PULSE_GATE') {
-      const heights = [1.55, 3.55, 5.55];
+      const heights = PULSE_BEAM_YS;
       for (let k = 0; k < heights.length; k++) {
         const hy = heights[k];
         const b = makeBeamPair(spanX, false);
