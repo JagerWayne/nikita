@@ -1,0 +1,169 @@
+/* ===== TIER 3 · practical mobile thumb-zone layout (overrides above) ===== */
+:root {
+  --btn-scale: 1; --btn-opacity: 0.92;
+  --safe-t: max(10px, env(safe-area-inset-top));
+  --safe-r: max(14px, env(safe-area-inset-right));
+  --safe-b: max(12px, env(safe-area-inset-bottom));
+  --safe-l: max(14px, env(safe-area-inset-left));
+}
+
+/* Top-left: compact 2x2 stat strip */
+#hud-top-left { top: var(--safe-t); left: var(--safe-l); min-width: 0; gap: 4px; }
+#hud-top-left > .hud-box:first-child {
+  display: grid; grid-template-columns: auto auto; gap: 1px 14px;
+  padding: 4px 9px; background: rgba(2, 12, 8, 0.55);
+}
+#hud-top-left .stat-row { gap: 6px; font-size: 10.5px; line-height: 1.3; justify-content: flex-start; }
+#hud-top-left .stat-row.minor { display: none; }
+
+/* Top-center: slim gauge cluster under the compass tape */
+#hud-bottom-left {
+  left: 50%; top: calc(var(--safe-t) + 46px); bottom: auto;
+  width: 200px; padding: 4px 8px; gap: 3px; background: rgba(2, 12, 8, 0.5);
+}
+#speed-panel { gap: 6px; }
+#speed-readout { font-size: 12px; }
+#speed-tier-badge { font-size: 10px; padding: 1px 6px; }
+.gauge-row { flex-direction: row; align-items: center; gap: 6px; }
+.gauge-header { width: 84px; flex: none; font-size: 8.5px; gap: 4px; }
+.gauge-track { flex: 1; width: auto; height: 4px; }
+
+/* Alerts sit below the gauges */
+#hud-top-center { top: calc(var(--safe-t) + 138px); }
+
+/* Top-right: one menu button (plus CENTER when gyro is on) */
+#hud-top-right { top: var(--safe-t); right: var(--safe-r); }
+#btn-hud-gyro, #btn-hud-fullscrn, #btn-hud-radar, #btn-hud-mute { display: none !important; }
+#btn-hud-pause { min-width: 76px; min-height: 44px; font-size: 12px; }
+#btn-hud-recenter { min-height: 44px; }
+
+/* Radar: small, top-left under the stats, tap to enlarge */
+#radar-container {
+  top: calc(var(--safe-t) + 50px); left: var(--safe-l); transform: none;
+  padding: 3px; opacity: 0.8; pointer-events: auto; touch-action: manipulation;
+}
+#radar-header { display: none; }
+#radar-canvas { width: 104px; height: 104px; }
+#radar-container.big #radar-canvas { width: 176px; height: 176px; }
+
+/* Event feed: bottom-center, max 3 lines */
+#hud-bottom-right {
+  top: auto; right: auto; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--safe-b) + 52px); width: 190px; align-items: center;
+}
+
+@media (max-width: 700px) { #hud-bottom-right { width: 156px; } }
+
+#cam-mode-badge { white-space: pre-line; text-align: right; line-height: 1.35; }
+#hud-power {
+  position: absolute; right: var(--safe-r); top: calc(var(--safe-t) + 112px); text-align: right;
+  font: bold 11px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-cyan);
+  text-shadow: 0 0 6px rgba(0, 229, 255, 0.7); pointer-events: none; z-index: 5;
+}
+#fire-btn {
+  position: fixed; left: 50%; bottom: calc(var(--safe-b) + 6px); transform: translateX(-50%);
+  min-width: 170px; min-height: 64px; padding: 6px 22px; z-index: 12;
+  font: bold 24px var(--font-mono); letter-spacing: 0.18em; color: #fff;
+  background: radial-gradient(circle at 50% 35%, #ff6a3c, #b3181f 70%);
+  border: 2px solid #ffb199; border-radius: 12px; cursor: pointer; touch-action: manipulation;
+  box-shadow: 0 0 22px rgba(255, 70, 50, 0.65); text-shadow: 0 0 8px rgba(0,0,0,0.6);
+  animation: firePulse 1.1s ease-in-out infinite;
+}
+#fire-btn small { display: block; font-size: 9px; letter-spacing: 0.12em; opacity: 0.85; margin-top: 2px; }
+#fire-btn:active { filter: brightness(1.3); transform: translateX(-50%) scale(0.96); }
+@keyframes firePulse { 50% { box-shadow: 0 0 34px rgba(255, 90, 60, 0.95); } }
+
+/* Analog throttle lever: side of the screen, bottom = minimum speed, top = maximum */
+#throttle-lever {
+  position: absolute; right: var(--safe-r); bottom: var(--safe-b);
+  width: 78px; height: min(54vh, 220px);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  pointer-events: auto; touch-action: none; z-index: 4; opacity: var(--btn-opacity);
+  user-select: none; -webkit-user-select: none;
+}
+body.lefty #throttle-lever { right: auto; left: var(--safe-l); }
+#throttle-lever.disabled { opacity: 0.3; pointer-events: none; filter: grayscale(0.8); }
+.thr-label { font: bold 9px var(--font-mono); letter-spacing: 0.08em; color: var(--hud-green); pointer-events: none; }
+.thr-max { color: var(--hud-cyan); }
+.thr-min { color: var(--hud-amber); }
+#thr-track {
+  position: relative; flex: 1; width: 50px; border-radius: 16px;
+  background: rgba(2, 14, 10, 0.84); border: 1px solid rgba(0, 255, 136, 0.55);
+  touch-action: none; overflow: hidden;
+}
+#thr-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 38%;
+  background: linear-gradient(to top, var(--hud-amber), var(--hud-green) 55%, var(--hud-cyan));
+  opacity: 0.55; pointer-events: none;
+}
+#thr-thumb {
+  position: absolute; left: 2px; right: 2px; height: 18px; bottom: calc(38% - 9px);
+  background: #e8fff4; border-radius: 8px; box-shadow: 0 0 8px var(--hud-green); pointer-events: none;
+}
+#thr-readout { font: bold 10px var(--font-mono); color: #fff; pointer-events: none; white-space: nowrap; }
+
+/* Right-thumb action arc (container ignores touches so gaps still aim) */
+#touch-actions {
+  --ab: 60px; --gap: 8px;
+  position: absolute; right: calc(var(--safe-r) + 92px); bottom: var(--safe-b);
+  width: calc(var(--ab) * 2 + var(--gap)); height: calc(var(--ab) * 3 + var(--gap) * 2);
+  display: block; grid-template-columns: none; grid-template-rows: none;
+  pointer-events: none; opacity: var(--btn-opacity);
+  transform: scale(var(--btn-scale)); transform-origin: bottom right;
+}
+/* two columns by three rows, nearest the thumb at the bottom right; nothing reaches into the screen centre */
+#touch-actions .touch-act-btn {
+  position: absolute; pointer-events: auto; width: var(--ab); height: var(--ab); font-size: 10px;
+  right: calc(var(--col) * (var(--ab) + var(--gap))); bottom: calc(var(--row) * (var(--ab) + var(--gap)));
+}
+#tbtn-lock     { --col: 0; --row: 0; }
+#tbtn-gun      { --col: 1; --row: 0; border-color: rgba(255, 221, 85, 0.9); color: #ffdd55; }
+#tbtn-detonate { --col: 0; --row: 1; font-size: 9px; white-space: pre-line; border-color: rgba(255, 170, 0, 0.9); color: #ffaa00; }
+#tbtn-detonate.det { border-color: rgba(255, 51, 68, 0.9); color: #ff6677; }
+#tbtn-decoy    { --col: 1; --row: 1; border-color: rgba(51, 221, 255, 0.8); color: #33ddff; font-size: 9px; }
+#tbtn-hover { white-space: pre-line; }
+#tbtn-auto     { --col: 1; --row: 2; border-color: rgba(190, 150, 255, 0.9); color: #c9a6ff; white-space: pre-line; }
+#tbtn-auto.on { background: rgba(190, 150, 255, 0.3); box-shadow: 0 0 16px rgba(190, 150, 255, 0.7); }
+#tbtn-hover    { --col: 0; --row: 2; border-color: rgba(120, 255, 170, 0.9); color: #7dffaa; }
+#tbtn-hover.on { background: rgba(120, 255, 170, 0.3); box-shadow: 0 0 16px rgba(120, 255, 170, 0.7); }
+#tbtn-gun.pressed { background: rgba(255, 221, 85, 0.28); }
+@media (max-height: 400px) { #touch-actions { --ab: 56px; --gap: 6px; } }
+#tbtn-detonate, #tbtn-detonate.pressed {
+  --hold: 0;
+  background: rgba(3, 16, 12, 0.84);
+}
+#tbtn-detonate.det, #tbtn-detonate.det.pressed {
+  background: conic-gradient(rgba(255, 51, 68, 0.85) calc(var(--hold) * 360deg), rgba(3, 16, 12, 0.84) 0);
+}
+#tbtn-detonate.pressed:not(.det) { background: rgba(255, 170, 0, 0.3); }
+
+/* Floating stick: idle graphic sits low-left (was ~70px too high) */
+#joy-gimbal { transform: translate(-50%, 50%); }
+#joy-gimbal.engaged { transform: translate(-50%, -50%); }
+
+/* Left-handed mirror */
+body.lefty #left-flight-zone { left: 50%; }
+body.lefty #right-aim-zone { right: auto; left: 0; }
+body.lefty #touch-actions { right: auto; left: calc(var(--safe-l) + 92px); transform-origin: bottom left; }
+body.lefty #touch-actions .touch-act-btn { right: auto; left: calc(var(--col) * (var(--ab) + var(--gap))); }
+body.lefty #joy-gimbal { left: calc(100% - var(--safe-r) - 78px); }
+
+/* Low-spec mode: drop the expensive full-screen effects */
+body.lowspec #crt-overlay, body.lowspec #speed-lines { display: none; }
+body.lowspec #flash-overlay, body.lowspec #ecm-overlay { mix-blend-mode: normal; }
+body.lowspec .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(2, 8, 6, 0.95); }
+
+/* Menu sheet */
+#pause-modal .briefing-options { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; align-items: center; }
+#pause-modal .briefing-options label { min-height: 34px; font-size: 12px; }
+#pause-modal select {
+  background: #04120c; border: 1px solid rgba(0, 255, 136, 0.5); color: var(--hud-green);
+  font-family: var(--font-mono); padding: 4px 6px; border-radius: 3px; margin-left: auto; font-size: 12px;
+}
+#pause-modal input[type="range"] { width: 110px; margin-left: auto; accent-color: var(--hud-green); }
+#pause-modal .tac-btn { min-height: 42px; padding: 8px 12px; font-size: 12px; letter-spacing: 0.08em; }
+.ios-hint { font-size: 11px; color: var(--hud-amber); margin: 0 0 10px; line-height: 1.4; }
+@media (max-height: 440px) {
+  #pause-modal .modal-card { padding: 12px 16px; }
+  #pause-modal .modal-title { font-size: 16px; margin-bottom: 8px; }
+}

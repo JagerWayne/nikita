@@ -1,0 +1,128 @@
+/* main.css: design tokens, page reset, canvases, full-screen effects (CRT, speed lines, flash, ECM) and the offline banner. Linked from index.html in this order: main, hud, overlays, mobile (later files override earlier ones). */
+:root {
+  --hud-green: #00ff88;
+  --hud-green-dim: rgba(0, 255, 136, 0.22);
+  --hud-amber: #ffaa00;
+  --hud-red: #ff3344;
+  --hud-cyan: #00e5ff;
+  --bg-dark: #050a08;
+  --panel-bg: rgba(4, 14, 10, 0.88);
+  --font-mono: 'Consolas', 'Courier New', 'Lucida Console', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  width: 100%;
+  width: 100vw;
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  background: var(--bg-dark);
+  color: var(--hud-green);
+  font-family: var(--font-mono);
+}
+
+input[type="text"], input[type="number"] {
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: auto;
+}
+
+#game-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 1;
+}
+
+#hud-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* CRT Scanlines & Vignette */
+#crt-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  background:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%),
+    radial-gradient(circle at center, transparent 66%, rgba(0, 10, 6, 0.28) 100%);
+  background-size: 100% 4px, 100% 100%;
+}
+
+/* Overdrive Radial Speed Lines */
+#speed-lines {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 0.12s linear;
+  background: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    rgba(0, 229, 255, 0.14) 0deg 1.2deg,
+    transparent 1.2deg 9deg
+  );
+  mask-image: radial-gradient(circle at center, transparent 42%, black 82%);
+  -webkit-mask-image: radial-gradient(circle at center, transparent 42%, black 82%);
+}
+
+/* Detonation Chromatic / Exposure Flash */
+#flash-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  background: radial-gradient(circle, rgba(255, 245, 200, 0.9), rgba(255, 110, 20, 0.45));
+  opacity: 0;
+  mix-blend-mode: screen;
+}
+
+/* ECM Static Overlay */
+#ecm-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.16) 0px, rgba(0, 0, 0, 0.35) 2px, transparent 4px),
+    radial-gradient(circle, transparent 40%, rgba(0, 180, 255, 0.35) 100%);
+  mix-blend-mode: screen;
+}
+
+/* Offline Fallback Banner */
+#offline-banner {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: #060b09;
+  color: var(--hud-amber);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2rem;
+}
+#offline-banner h1 { font-size: 1.6rem; margin-bottom: 1rem; color: var(--hud-red); }
+#offline-banner p { max-width: 560px; line-height: 1.6; color: #cde8da; }
