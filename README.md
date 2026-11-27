@@ -39,6 +39,14 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v2.33.1: autopilot works through a fixed order of jobs
+
+The autopilot now chooses what to do in a strict order, checked once a second: **explore** the map first, then **shut down laser grids** (a switch box it can see right now is shot at once, even while exploring), **clear turrets and sentries** from a firing spot, **detonate fuel barrels** from outside the blast of the whole barrel cluster, **collect pickups**, **blast cracked walls open**, and finally **hunt the primary targets**. If nothing is left in the earlier jobs it goes straight to the hunt. Low fuel (fetch a repair kit) and nearly no rockets or hull (go for the targets) still override everything.
+
+When a wall is blown open (by the autopilot, a barrel or a warhead), the opening shows on the map at once and the autopilot goes to explore behind it.
+
+In 10 test sectors: the same 6 clears as before with 109 rockets instead of 130, and much more of the bigger sectors mapped (sector 28: 88% instead of 64%; sector 41: 62% instead of 43%). Three sectors cleared faster, three slower.
+
 ## v2.33.0: your upgraded rocket in flight, chase camera
 
 - **The rocket you fly is the rocket in the upgrade bay.** Both are built from the same model, so every installed upgrade (longer nozzle, injectors, armour, tanks, barrels, mast, nose optics...) is on the rocket in the sector too. It updates at each launch and when you leave the bay.

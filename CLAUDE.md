@@ -51,6 +51,7 @@ The game must be served over HTTP (ES modules do not load from `file://`).
 ## Autopilot rules
 
 - Every tuning number is in `AUTOPILOT_TUNING` (`js/constants.js`). Change it there, not inline.
+- `decide()` is a strict mission ladder (once a second, game clock): emergencies (rockets/hull floor -> HUNT, low fuel -> repair kit), then 1 EXPLORE, 2 LASER_SWITCH (a box in thermal sight jumps ahead of 1), 3 ENGAGE (turrets + sentries), 4 CLEAR_BARREL, 5 PICKUP, 6 BREACH, 7 HUNT. Availability checks use `pathGoal()` (goal tile only, reused maps); routes are built with `tilesTo()` only when a plan is made. Barrel and blast radii come from `js/hazards.js`.
 - Turret range and laser beam timing come from `js/hazards.js`. The game (`enemies.js`, `level.js`) and the autopilot both call it: never copy those formulas.
 - The step path (`sense`, `steer`, `fire` and what they call) allocates no objects, arrays or closures: it fills structs made in the constructor and walks arrays with indexed loops (no `for...of`). `steer()` returns a reused struct: read it at once. Planning and the once-a-second `decide()` may allocate.
 - The autopilot never detonates or changes game state from inside `steer()`: it sets a flag (`breachFire`) and `autoPlayTick()` acts on it at the start of the next step.

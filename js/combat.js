@@ -5,6 +5,7 @@ import {
   GUN_HITS, GUN_LIFE, GUN_POOL, GUN_RATE, GUN_SPEED, LAUNCH_DROP_SPEED, LAUNCH_DROP_TIME, MISSILE_RADIUS,
   MODIFIER_INFO, POINTS_BONUS, REWARD_BONUS, SWITCH_CONE_MAX, SWITCH_CONE_MULT, WALL_H, isShaft
 } from './constants.js';
+import { BARREL_BLAST_RADIUS } from './hazards.js';
 import { _blast, _dummy, _e1, _fwd, _v1, _v2, _v5, _v6, worldToGridX, worldToGridZ, wrapPi } from './math.js';
 
 export const combatMethods = {
@@ -449,7 +450,7 @@ export const combatMethods = {
       if (d <= radius + 1.2 && this.los3(epicenter.x, epicenter.y, epicenter.z, b.pos.x, b.pos.y, b.pos.z)) {
         b.active = false;
         this.rewardKill('barrel', this.barrels, (x) => !x.active);
-        this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: 9.2, power: 1.4, label: 'FUEL BARREL CHAIN REACTION', mult: this.blastMult });
+        this.pendingBlasts.push({ pos: b.pos.clone(), delay: 0.12 + Math.random() * 0.08, radius: BARREL_BLAST_RADIUS, power: 1.4, label: 'FUEL BARREL CHAIN REACTION', mult: this.blastMult });
       }
     }
 

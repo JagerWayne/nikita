@@ -189,6 +189,16 @@ export const AUTOPILOT_TUNING = Object.freeze({
   breachMinRockets: 10,                       // only with at least this many rockets left (the hunt needs some)
   breachReachMargin: 1.0,                     // go off this far inside the blast's reach of the wall
   breachSpotMax: 8, breachMax: 40,            // give up after this long at the wall / on the whole breach
+  // --- mission ladder (decide): emergency floors and per-tier search limits
+  huntRocketFloor: 6, huntHullFloor: 30,      // at or below these, go straight for the primary targets
+  laserMaxCost: 40,                           // tier 2: route cost to a laser switch firing spot
+  turretRingMin: 9, turretRingMax: 15,        // tier 3: firing spots this far from a CIWS turret...
+  sentryRingMin: 8, sentryRingMax: 16,        //         ...and from a sentry
+  engageMaxCost: 30,
+  barrelSafetyMargin: 2.5, barrelRing: 8,     // tier 4: spots at least blast + margin from the barrel's whole chain, up to 8 m further
+  barrelMaxCost: 30,
+  thermalMargin: 1.5,                         // firing spots for sentries and barrels stay this far inside thermal range
+  breachLure: 40, breachLureFor: 180,         // a wall blown open in the last 3 min pulls the explorer to the frontier behind it
   pulsePlaneBand: 1.6,                        // inside this distance of a 3-line grid's beam plane the gap height is always held
   pickupStuckMax: 2,                          // stuck this many times on the way to one pickup: give it up
   shaftLineUp: 4,                             // within this distance of a tunnel mouth, hold its height (and crawl until there)
@@ -200,9 +210,10 @@ export const AUTOPILOT_TUNING = Object.freeze({
   reserveRounds: 4,                           // rounds kept for threats
   burstExtra: 2, burstPause: 0.15,            // rounds beyond the kill count per burst, pause between bursts
   fire: {                                     // per contact kind
-    CIWS: { pri: 8, range: 30, hitR: 1.0, vert: 0.8 },
-    SENTRY: { pri: 5, range: 28, hitR: 0.7, vert: 0.95 },
-    'LASER BOX': { pri: 4, range: 36, hitR: 0.75, vert: 0.6 }
+    CIWS: { range: 30, hitR: 1.0, vert: 0.8 },
+    SENTRY: { range: 28, hitR: 0.7, vert: 0.95 },
+    'LASER BOX': { range: 36, hitR: 0.75, vert: 0.6 },
+    BARREL: { range: 34, hitR: 0.6, vert: 0.8 }
   },
   // --- threats and evasion
   sentryThreatRange: 16,

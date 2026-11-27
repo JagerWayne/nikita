@@ -218,6 +218,7 @@ export const levelMethods = {
     }
     this.vfx.resetAll();
     this.gameClock = 0;
+    this.lastBreachTile = -1;
     this.radarDirty = true;
     this.targets = [];
     this.barrels = [];
@@ -1499,6 +1500,9 @@ export const levelMethods = {
     bw.active = false;
     bw.mesh.visible = false;
     this.grid[bw.gz * GRID_SIZE + bw.gx] = CELL_FLOOR;
+    { const c = bw.gz * GRID_SIZE + bw.gx;                       // the blast shows the opening on the map, and the autopilot goes to explore it
+      if (this.xgrid) { const v = this.xCellVal(0, c); if (this.xgrid[c] !== v) { this.xgrid[c] = v; this.xgridDirty = true; } }
+      this.lastBreachTile = c; this.lastBreachT = this.gameClock; }
     for (const ci of bw.chamber) this.secretHidden.delete(ci);
     this.forgetCell(bw.gx, bw.gz);
     this._edgeTotal = null;

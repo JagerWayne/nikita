@@ -3,7 +3,7 @@ import {
   AUTOPILOT_TUNING, CELL_SIZE, CELL_VOID, CRUISE_THROTTLE, GRID_SIZE, GUN_HITS, GUN_RATE, GUN_SPEED, MAX_FLOORS,
   MISSILE_RADIUS, WALL_H, XV, isWalkable
 } from './constants.js';
-import { laserBeamsAt, sweepHalfSpan, turretRange } from './hazards.js';
+import { BARREL_BLAST_RADIUS, BARREL_CHAIN_REACH, laserBeamsAt, sweepHalfSpan, turretRange } from './hazards.js';
 import { gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
 
 /* Tuning numbers live in AUTOPILOT_TUNING (js/constants.js); turret range and laser beam timing come from js/hazards.js,
@@ -17,8 +17,10 @@ const lim = (a, b, r) => a + Math.max(-r, Math.min(r, b - a));          // move 
 const FIRE_SPEC = {                                                       // per contact kind: priority, range, hit radius, vertical window, bullets needed
   'CIWS': { ...TUNE.fire.CIWS, need: GUN_HITS.turret },
   'SENTRY': { ...TUNE.fire.SENTRY, need: GUN_HITS.sentry },
-  'LASER BOX': { ...TUNE.fire['LASER BOX'], need: GUN_HITS.box }
+  'LASER BOX': { ...TUNE.fire['LASER BOX'], need: GUN_HITS.box },
+  'BARREL': { ...TUNE.fire.BARREL, need: 1 }                              // barrels go up in one round
 };
+const FIRE_TIER = { 'LASER BOX': 2, 'CIWS': 3, 'SENTRY': 3, 'BARREL': 4 };   // fire control ranks targets by mission tier
 
 /* ==========================================================================
    AUTOPILOT (rewrite, v2.24+). Layers, each with one job:
@@ -62,10 +64,16 @@ export class Autopilot {
     this.tracks = new Map(); this._tl = []; this._trackPool = [];        // fire-control tracks: lookup map, ordered list, free pool
     this._hzB = null; this._hz = null;                                   // hazard buffers (reused when the sector size is unchanged)
     this._S = null;                                                      // search scratch buffers (distances, parents, heap, queue)
-    this._pickGoals = new Map(); this._turGoals = new Set();
+    this._pickGoals = new Map();
     this._goalPick = (i) => this._pickGoals.has(i);
-    this._goalTur = (i) => this._turGoals.has(i);
     this._brGoals = new Map(); this._goalBreach = (i) => this._brGoals.has(i);
+    // mission ladder scratch (decide() reuses all of it): candidate, firing-spot goals, box list, barrel cluster
+    this._cand = { obj: null, kind: '' };
+    this._atkGoals = new Map(); this._atkKind = new Map(); this._goalAtk = (i) => this._atkGoals.has(i);
+    this._boxList = []; this._boxReach = 8; this._boxHit = null; this._goalBox = (i) => this._isBoxSpot(i);
+    this._clu = [];
+    this.knownSentries = []; this.knownBarrels = []; this.knownBoxes = [];   // seen this sector (reset with the sector)
+    this.pickObj = null; this.pickEnergy = false; this.turretIgnore = new Map();
     this.breachFire = false;               // set when the charge should go off; flight.js detonates at the start of the next step
   }
 
@@ -114,11 +122,15 @@ export class Autopilot {
     }
     for (let _i3 = 0, _a3 = g.lasers; _i3 < _a3.length; _i3++) { const l = _a3[_i3]; if (l.boxVis && l.lockRef && l.lockRef.active) this._addC('LASER BOX', l, l.relayPos.x, l.relayPos.y, l.relayPos.z, false);
     }
+    for (let i = 0; i < g.barrels.length; i++) { const b = g.barrels[i]; if (b.active && b.thermalVis) this._addC('BARREL', b, b.pos.x, b.pos.y, b.pos.z, false); }
     for (let i = 1; i < C.length; i++) { const c = C[i]; let j = i - 1; while (j >= 0 && C[j].d > c.d) { C[j + 1] = C[j]; j--; } C[j + 1] = c; }   // by distance (stable)
     let threatN = 0; for (let i = 0; i < C.length; i++) if (C[i].threat) threatN++;
     for (let _i4 = 0, _a4 = g.pickups; _i4 < _a4.length; _i4++) { const pk = _a4[_i4]; if (pk.active && pk.mesh.userData._tv) pk._seen = true;
     }
-    if (this._ktKey !== g.lidarKey) { this.knownTurrets = new Set(); this.knownList = []; this._ktKey = g.lidarKey; }
+    if (this._ktKey !== g.lidarKey) { this.knownTurrets = new Set(); this.knownList = []; this.knownSentries.length = 0; this.knownBarrels.length = 0; this.knownBoxes.length = 0; this._ktKey = g.lidarKey; }
+    for (let i = 0; i < g.sentries.length; i++) { const s = g.sentries[i]; if (s.thermalVis && s.active && !s._apKnown) { s._apKnown = true; this.knownSentries.push(s); } }
+    for (let i = 0; i < g.barrels.length; i++) { const b = g.barrels[i]; if (b.thermalVis && b.active && !b._apKnown) { b._apKnown = true; this.knownBarrels.push(b); } }
+    for (let i = 0; i < g.lasers.length; i++) { const l = g.lasers[i]; if (l.boxVis && !l._apKnown) { l._apKnown = true; this.knownBoxes.push(l); } }
     { const range = turretRange(g.difficultyTier);
       for (let _i5 = 0, _a5 = g.turrets; _i5 < _a5.length; _i5++) { const tu = _a5[_i5]; if (tu.active && !this.knownTurrets.has(tu) && (tu.mesh.userData._tv || (tu.pos.distanceTo(m.pos) < range && g.los3(tu.pos.x, tu.pos.y, tu.pos.z, m.pos.x, m.pos.y, m.pos.z)))) { this.knownTurrets.add(tu); this.knownList.push(tu); this._hz = null; }
 } }
@@ -157,7 +169,7 @@ export class Autopilot {
     this.tried = this.tried && this._triedKey === this.g.lidarKey ? this.tried : new Set(); this._triedKey = this.g.lidarKey;
     this.stuck.t = 0; this.stuck.x = 0; this.stuck.z = 0; this.cmd = null; this.why = 'ENGAGED';
     this.fc = null; this._clearTracks(); this.boxWait = null; this.boxGoal = null; this.boxLaser = null;
-    this.mission = 'EXPLORE'; this.noFrontier = false; this.pickNow = null; this._decT = 0; this.gate = null; this.engT = null; this._prevOn = false; this.exposed = false;
+    this.mission = 'EXPLORE'; this.noFrontier = false; this.pickObj = null; this.pickEnergy = false; this._decT = 0; this.gate = null; this.engT = null; this._prevOn = false; this.exposed = false;
     if (this._tiKey !== this.g.lidarKey) { this.turretIgnore = new Map(); this._tiKey = this.g.lidarKey; }
     if (this._pkKey !== this.g.lidarKey) { this.pickTried = new Set(); this.pickStuck = new Map(); this._pkKey = this.g.lidarKey; }
     if (this._boxKey !== this.g.lidarKey) { this.boxTried = new Set(); this._boxKey = this.g.lidarKey; }
@@ -346,7 +358,7 @@ export class Autopilot {
     for (const i of found) {
       const p = this.tileCenter(i);
       const a = wrapAngle(Math.atan2(-(p.x - t.x), -(p.z - t.z)) - t.yaw);
-      const fl = (i / GG) | 0, sc = dist[i] + Math.abs(a) * TUNE.frontierBearing - (perF[fl] < maxF * 0.35 ? 30 : (perF[fl] < maxF * 0.6 ? 10 : 0)) + (HZ.danger[i] ? TUNE.frontierDanger : 0);   // badly unexplored floors win; turret coverage loses
+      const fl = (i / GG) | 0, sc = dist[i] + Math.abs(a) * TUNE.frontierBearing - (perF[fl] < maxF * 0.35 ? 30 : (perF[fl] < maxF * 0.6 ? 10 : 0)) + (HZ.danger[i] ? TUNE.frontierDanger : 0) - this._breachLure(i);   // badly unexplored floors win; turret coverage loses; a new opening wins
       if (sc < bestS) { bestS = sc; best = i; }
     }
     const tiles = [];
@@ -400,31 +412,17 @@ export class Autopilot {
   }
 
   newPlan() {
-    const t = this.t, g = this.g;
-    if (this.mission === 'HUNT') { this.newHuntPlan(); return; }
-    if (this.mission === 'ENGAGE') {
-      const E = this.engT;
-      if (!E || !E.tu.active) { this.mission = 'EXPLORE'; this.engT = null; this.plan = null; return; }
-      const tp = this.planTurret(t.node);
-      if (!tp || tp.tu !== E.tu) { if (!tp) { this.turretIgnore.set(E.tu, t.time + 60); this.mission = 'EXPLORE'; this.engT = null; this.plan = null; return; } this.engT.tu = tp.tu; }
-      if (!tp.tiles.length) { this.plan = null; this.engT.atSpot = true; this.why = 'ENGAGING CIWS'; return; }
-      this.plan = { goal: tp.tiles[tp.tiles.length - 1], tiles: tp.tiles, wps: this.smooth(tp.tiles), k: 0, t0: t.time, alt0: t.y, turret: E.tu };
-      g.xroute = tp.tiles.slice(); this.why = 'TO A FIRING SPOT (CIWS)'; return;
-    }
-    if (this.mission === 'PICKUP') { this.newPickupPlan(); return; }
-    if (this.mission === 'BREACH') { this.newBreachPlan(); return; }
+    const t = this.t, g = this.g, Mi = this.mission;
+    if (Mi === 'HUNT') { this.newHuntPlan(); return; }
+    if (Mi === 'ENGAGE' || Mi === 'CLEAR_BARREL') { this.newAttackPlan(); return; }
+    if (Mi === 'LASER_SWITCH') { this.newLaserPlan(); return; }
+    if (Mi === 'PICKUP') { this.newPickupPlan(); return; }
+    if (Mi === 'BREACH') { this.newBreachPlan(); return; }
     if (g.xgrid && t.node >= 0) { const v = g.xCellVal(t.floor, t.node % (GRID_SIZE * GRID_SIZE)); if (g.xgrid[t.node] !== v) { g.xgrid[t.node] = v; g.xgridDirty = true; } }
     if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }   // between floors / over a hole: try again shortly
     const p = this.planFrontier(t.node);
     if (p) { this.failN = 0; this.noFrontier = false; }
     if (!p) {
-      const lp = this.planLaserBox(t.node);                             // only live laser grids left in the way: shoot a switch box
-      if (lp) {
-        this.boxGoal = lp.laser; this.boxLaser = lp.laser;
-        if (!lp.tiles.length) { this.boxWait = { t: 0 }; this.plan = null; this.why = 'SHOOTING A LASER SWITCH BOX'; return; }
-        this.plan = { goal: lp.goal, tiles: lp.tiles, wps: this.smooth(lp.tiles), k: 0, t0: t.time, alt0: t.y, laser: lp.laser };
-        g.xroute = lp.tiles.slice(); this.why = 'TO A LASER SWITCH BOX'; return;
-      }
       const X = g.xgrid, GG = GRID_SIZE * GRID_SIZE, G = GRID_SIZE, i = t.node;
       const c = i % GG, x = c % G, z = (c / G) | 0;
       const unknownHere = X && ((x > 0 && !X[i - 1]) || (x < G - 1 && !X[i + 1]) || (z > 0 && !X[i - G]) || (z < G - 1 && !X[i + G]));
@@ -432,7 +430,9 @@ export class Autopilot {
       if (t.time - (this.engagedAt || 0) > 4) this.failN = (this.failN || 0) + 1;   // only call it explored after 3 failed plans in a row (never in the first seconds)
       if (this.failN < 3) { this.plan = null; this.replanT = 1.0; this.why = 'NO FRONTIER - RETRYING'; return; }
       this.plan = null; this.noFrontier = true; this.replanT = 3; this.why = 'NOTHING LEFT TO EXPLORE';
-      if (!g.targets.some((x) => x.active)) this.done = true;          // nothing to explore and nothing to hunt
+      this._decT = 0;                                                    // the ladder picks the next tier at once
+      let any = false; for (let k = 0; k < g.targets.length; k++) if (g.targets[k].active) { any = true; break; }
+      if (!any) this.done = true;                                        // nothing to explore and nothing to hunt
       return;
     }
     if (!p.tiles.length) { this.startScan(p.goal); return; }
@@ -550,18 +550,18 @@ export class Autopilot {
     const g = this.g, m = g.missile, t = this.t || this.sense(dt);
     if (!t) return this.mk(0, 0, 0);
     let out = this.mk(0, 0, 0);
-    // --- at a turret firing spot: face it, climb level with it, let fire control kill it (12 s at most)
-    if (this.mission === 'ENGAGE' && this.engT && this.engT.atSpot) {
-      const E = this.engT, tu = E.tu;
+    // --- at a firing spot (turret, sentry or barrel): face it, match its height, let fire control kill it (12 s at most)
+    if ((this.mission === 'ENGAGE' || this.mission === 'CLEAR_BARREL') && this.engT && this.engT.atSpot) {
+      const E = this.engT, tu = E.tu, alive = this._alive(E.kind, tu);
       E.spotT = (E.spotT || 0) + dt;
       this._holdStuck(t);
-      if (!tu.active || E.spotT > TUNE.spotMax) {
-        if (tu.active) this.turretIgnore.set(tu, t.time + TUNE.turretIgnoreFor);
-        g.pushFeed(tu.active ? 'AUTOPILOT: CIWS OUT OF REACH — MOVING ON' : 'AUTOPILOT: CIWS DESTROYED', tu.active ? 'amber' : 'cyan');
-        this.engT = null; this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this._hz = null;
+      if (!alive || E.spotT > TUNE.spotMax) {
+        if (alive) this.turretIgnore.set(tu, t.time + TUNE.turretIgnoreFor);
+        g.pushFeed(alive ? 'AUTOPILOT: TARGET OUT OF REACH — MOVING ON' : 'AUTOPILOT: TARGET DESTROYED', alive ? 'amber' : 'cyan');
+        this.engT = null; this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this._hz = null; this._decT = 0;
       } else {
         const brg = wrapAngle(Math.atan2(-(tu.pos.x - t.x), -(tu.pos.z - t.z)) - t.yaw);
-        const yT = Math.min(t.y + t.ceil - 0.6, tu.pos.y);
+        const yT = Math.max(t.y - t.agl + TUNE.roomMargin, Math.min(t.y + t.ceil - 0.6, this._aimY(E.kind, tu)));
         return this.fire(dt, this.mk(clamp1(3 * brg - TUNE.yawDamp * t.yawRate), clamp1(1.6 * (yT - t.y)), 0));
       }
     }
@@ -630,7 +630,7 @@ export class Autopilot {
         const X = g.xgrid, haz = this.hazards().hard;
         const gi = this.plan.goal, gc = gi % (GRID_SIZE * GRID_SIZE), G = GRID_SIZE, gx = gc % G, gz = (gc / G) | 0;
         const stillFrontier = (gx > 0 && !X[gi - 1]) || (gx < G - 1 && !X[gi + 1]) || (gz > 0 && !X[gi - G]) || (gz < G - 1 && !X[gi + G]);
-        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser && !this.plan.turret && !this.plan.breach) valid = false;   // the goal got explored on the way: pick the next one
+        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser && !this.plan.attack && !this.plan.breach) valid = false;   // the goal got explored on the way: pick the next one
         if (this.plan.pickup && !this.plan.pickup.active) valid = false;
         for (let _i21 = 0, _a21 = this.plan.tiles; _i21 < _a21.length; _i21++) { const i = _a21[_i21]; if (!this.flyable(X[i]) || (haz && haz[i])) { valid = false; break; }
         }
@@ -656,7 +656,7 @@ export class Autopilot {
       this.plan = null;
       if (P.laser) { this.boxWait = { t: 0 }; this.why = 'SHOOTING A LASER SWITCH BOX'; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.pickup) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.replanT = 0; return this.fire(dt, this.mk(0, 0, 0)); }
-      if (P.turret && this.engT) { this.engT.atSpot = true; this.why = 'ENGAGING CIWS'; return this.fire(dt, this.mk(0, 0, 0)); }
+      if (P.attack && this.engT) { this.engT.atSpot = true; this.why = 'ENGAGING ' + this.engT.kind; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.breach && this.breachT) { this.breachT.atSpot = true; this.why = 'BREACH: PLACING THE CHARGE'; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.hunt) { this.replanT = 0.5; this.why = 'HUNT: LOOKING FOR THE TARGET'; return this.fire(dt, this.mk(0.6, 0, 0)); }
       this.startScan(P.goal); return this.fire(dt, this.mk(0, 0, 0));
@@ -713,79 +713,61 @@ export class Autopilot {
   // Generic route search to the nearest tile accepted by `isGoal` (same costs as the frontier search). Returns tiles or null.
   // The distance / parent / heap buffers are the shared scratch; the search state lives in this._pX / this._pHZ (no closures).
   pathTo(start, isGoal, maxCost) {
-    const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, N = GG * g.nFloors;
-    if (!X || start < 0) return null;
-    if (g.navFor !== g.ramps) g.navLinksBuild();
-    const HZ = this.hazards(), S = this._scratch(N), dist = S.dist, prev = S.prev;
-    this._pX = X; this._pHZ = HZ;
-    dist.fill(Infinity, 0, N); prev.fill(-1, 0, N); S.hs = 0;
-    dist[start] = 0; this._hpush(0, start);
-    while (S.hs > 0) {
-      const i = this._hpop(), d = S.pc;
-      if (d > dist[i]) continue;
-      if (maxCost && d > maxCost) return null;
-      if (isGoal(i)) { const tiles = []; for (let k = i; k !== start && k >= 0; k = prev[k]) tiles.push(k); return tiles.reverse(); }
-      const c = i % GG, x = c % G, z = (c / G) | 0;
-      if (x > 0) this._relax(i, d, i - 1, 1); if (x < G - 1) this._relax(i, d, i + 1, 1); if (z > 0) this._relax(i, d, i - G, 1); if (z < G - 1) this._relax(i, d, i + G, 1);
-      if (x > 0 && z > 0 && this._okTile(i - 1) && this._okTile(i - G)) this._relax(i, d, i - G - 1, TUNE.costDiag); if (x < G - 1 && z > 0 && this._okTile(i + 1) && this._okTile(i - G)) this._relax(i, d, i - G + 1, TUNE.costDiag);
-      if (x > 0 && z < G - 1 && this._okTile(i - 1) && this._okTile(i + G)) this._relax(i, d, i + G - 1, TUNE.costDiag); if (x < G - 1 && z < G - 1 && this._okTile(i + 1) && this._okTile(i + G)) this._relax(i, d, i + G + 1, TUNE.costDiag);
-      const extra = this.links(i); if (extra) for (const n of extra) this._relax(i, d, n, TUNE.costLink);
-    }
-    return null;
+    const goal = this.pathGoal(start, isGoal, maxCost);
+    return goal < 0 ? null : this.tilesTo(goal, start);
   }
 
   tileOf(pos) { const c = this.g.cellAt(pos.x, pos.z); if (c < 0) return -1; return Math.max(0, Math.min(this.g.nFloors - 1, this.g.floorOfY(pos.y))) * GRID_SIZE * GRID_SIZE + c; }
 
-  // A useful pickup we have seen, close by (at most 18 tiles of route), or null
-  bestPickup() {
-    const g = this.g, t = this.t;
-    if (!this.pickTried) this.pickTried = new Set();
-    // low on fuel: a seen repair kit comes first, and may be further away than usual (but well inside the range left)
-    if (this.lowEnergy(t)) {
-      const goals = this._pickGoals; goals.clear();
-      for (let i = 0; i < g.pickups.length; i++) { const p = g.pickups[i]; if (p.type === 'REPAIR' && p.active && p._seen && !this.pickTried.has(p)) { const c = this.tileOf(p.pos); if (c >= 0) goals.set(c, p); } }
-      const maxCost = Math.min(TUNE.energyPickupMaxCost, TUNE.energyRangeShare * t.rangeCruiseM / CELL_SIZE);
-      if (goals.size && maxCost > 0) {
-        const tiles = this.pathTo(t.node, this._goalPick, maxCost);
-        if (tiles) return { pick: goals.get(tiles.length ? tiles[tiles.length - 1] : t.node), tiles, energy: true };
-      }
-    }
-    let any = false;
-    for (let _i23 = 0, _a23 = g.pickups; _i23 < _a23.length; _i23++) { const p = _a23[_i23]; if (this._wantPickup(p)) { any = true; break; }
-    }
-    if (!any) return null;
-    const goals = this._pickGoals; goals.clear();
-    for (let _i24 = 0, _a24 = g.pickups; _i24 < _a24.length; _i24++) { const p = _a24[_i24]; if (this._wantPickup(p)) { const i = this.tileOf(p.pos); if (i >= 0) goals.set(i, p); }
-    }
-    if (!goals.size) return null;
-    const tiles = this.pathTo(t.node, this._goalPick, TUNE.pickupMaxCost);
-    if (!tiles) return null;
-    return { pick: goals.get(tiles.length ? tiles[tiles.length - 1] : t.node), tiles };
-  }
 
-  // Decide the mission once a second: hunting waits until nothing reachable is left to explore (or the scan reads 100%, or
-  // rockets / hull are low); a seen, useful pickup close by is taken on the way; otherwise explore
+  // =====================================================================================================
+  // MISSION LADDER (once a second, game clock). Emergencies first, then a strict 7-tier order: the highest tier with a
+  // reachable task wins; a running task keeps going while it is valid and nothing above it has work. No allocation here
+  // while nothing changes: the searches return only a goal tile (pathGoal) and fill reused maps.
+  //   emergency  rockets / hull nearly gone -> HUNT · fuel low -> fetch a seen repair kit (the keep-clear rule is in steer)
+  //   1 EXPLORE       reachable frontier left and the scan is not complete
+  //   2 LASER_SWITCH  a known live switch box (one in thermal sight right now goes first, even before tier 1)
+  //   3 ENGAGE        known CIWS turrets and sentries, from a firing spot with a clear line
+  //   4 CLEAR_BARREL  known fuel barrels, shot from outside the blast of their whole chain cluster
+  //   5 PICKUP        useful pickups that were seen
+  //   6 BREACH        seen cracked walls (only with a rocket reserve left for tier 7)
+  //   7 HUNT          the primary targets
+  // =====================================================================================================
   decide() {
-    const g = this.g, t = this.t;
-    let nActive = 0; for (let _i25 = 0, _a25 = g.targets; _i25 < _a25.length; _i25++) { const x = _a25[_i25]; if (x.active) nActive++;
-    }
-    const explored = this.noFrontier || g.scanPercent() >= 100;
-    const huntNow = nActive > 0 && (explored || t.rockets <= 6 || t.hull < 30);
-    let next = 'EXPLORE', pk = null, tp = null, bp = null;
-    if (this.mission === 'BREACH' && this.breachT && this.breachT.bw.active && t.time - this.breachT.t0 < TUNE.breachMax) next = 'BREACH';
-    else if ((this.huntNoRoute || (this.noFrontier && g.scanPercent() < 100)) && t.rockets >= TUNE.breachMinRockets && t.hull >= 30 && (bp = this.planBreach(t.node))) { next = 'BREACH'; this.breachT = { bw: bp.bw, t0: t.time, atSpot: false, spotT: 0 }; }   // needed: unexplored area or a target is only behind a wall
-    else if (huntNow) next = 'HUNT';
-    else if (this.lowEnergy(t) && (pk = this.bestPickup()) && pk.energy) next = 'PICKUP';   // fuel first: a reachable repair kit beats a turret fight
-    else {
-      pk = null;
-      if (this.mission === 'ENGAGE' && this.engT && this.engT.tu.active && t.time - this.engT.t0 < TUNE.engageMax) next = 'ENGAGE';
-      else if ((tp = this.planTurret(t.node))) { next = 'ENGAGE'; this.engT = { tu: tp.tu, tiles: tp.tiles, t0: t.time }; }
-      else if ((pk = this.bestPickup())) next = 'PICKUP';
-    }
-    if (next !== this.mission || (next === 'PICKUP' && (!this.pickNow || this.pickNow.pick !== pk.pick))) {
-      if (next !== this.mission || pk.energy) g.pushFeed(next === 'HUNT' ? 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)' : (next === 'PICKUP' ? (pk.energy ? 'AUTOPILOT: FUEL LOW — FETCHING A REPAIR KIT' : `AUTOPILOT: PICKING UP ${pk.pick.type}`) : (next === 'ENGAGE' ? 'AUTOPILOT: ENGAGING A CIWS TURRET' : (next === 'BREACH' ? 'AUTOPILOT: WAY BLOCKED — BLASTING A CRACKED WALL OPEN' : 'AUTOPILOT: EXPLORING'))), 'cyan');
-      this.mission = next; this.pickNow = pk; this.plan = null; this.scan = null; this.replanT = 0;
-    }
+    const g = this.g, t = this.t, cur = this.mission;
+    let nActive = 0;
+    for (let i = 0; i < g.targets.length; i++) if (g.targets[i].active) nActive++;
+    // a wall was blown open (breach charge, barrel, warhead): there is new ground behind it, go and look
+    const walls = (g.shortcutsOpened || 0) + (g.secretsFound || 0);
+    if (walls !== this._wallsSeen) { if (this._wallsSeen !== undefined) { this.noFrontier = false; this.failN = 0; this.done = false; } this._wallsSeen = walls; }
+    const scanDone = g.scanPercent() >= 100, C = this._cand;
+    let next = 'EXPLORE', obj = null, kind = '', energy = false;
+    if (nActive > 0 && (t.rockets <= TUNE.huntRocketFloor || t.hull < TUNE.huntHullFloor)) next = 'HUNT';                                  // emergency
+    else if (cur === 'PICKUP' && this.pickEnergy && this.pickObj && this.pickObj.active && this.lowEnergy(t)) { next = 'PICKUP'; obj = this.pickObj; energy = true; }
+    else if (this.lowEnergy(t) && this._findPickup(true)) { next = 'PICKUP'; obj = C.obj; energy = true; }                               // emergency: fuel
+    else if (cur === 'LASER_SWITCH' && this._boxLive(this.boxLaser)) { next = cur; obj = this.boxLaser; }
+    else if (this._findLaserBox(true, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                                 // tier 2: in sight now
+    else if (!this.noFrontier && !scanDone) next = 'EXPLORE';                                                                              // tier 1
+    else if (this._findLaserBox(false, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                                // tier 2
+    else if (cur === 'ENGAGE' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = this.engT.kind; }
+    else if (this._findAttack('ENGAGE')) { next = 'ENGAGE'; obj = C.obj; kind = C.kind; }                                                  // tier 3
+    else if (cur === 'CLEAR_BARREL' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = 'BARREL'; }
+    else if (this._findAttack('CLEAR_BARREL')) { next = 'CLEAR_BARREL'; obj = C.obj; kind = 'BARREL'; }                                    // tier 4
+    else if (cur === 'PICKUP' && !this.pickEnergy && this.pickObj && this.pickObj.active && !this.pickTried.has(this.pickObj)) { next = cur; obj = this.pickObj; }
+    else if (this._findPickup(false)) { next = 'PICKUP'; obj = C.obj; }                                                                    // tier 5
+    else if (cur === 'BREACH' && this.breachT && this.breachT.bw.active && t.time - this.breachT.t0 < TUNE.breachMax) { next = cur; obj = this.breachT.bw; }
+    else if (t.rockets >= TUNE.breachMinRockets && t.hull >= TUNE.huntHullFloor && this._findBreach()) { next = 'BREACH'; obj = C.obj; }  // tier 6
+    else if (nActive > 0) next = 'HUNT';                                                                                                   // tier 7
+    const prevObj = cur === 'PICKUP' ? this.pickObj : (cur === 'LASER_SWITCH' ? this.boxLaser : ((cur === 'ENGAGE' || cur === 'CLEAR_BARREL') && this.engT ? this.engT.tu : (cur === 'BREACH' && this.breachT ? this.breachT.bw : null)));
+    if (next === cur && obj === prevObj) return;
+    if (next !== cur || (next === 'PICKUP' && energy !== this.pickEnergy)) g.pushFeed(this._missionMsg(next, kind, obj, energy), 'cyan');
+    if (next === 'PICKUP') { this.pickObj = obj; this.pickEnergy = energy; }
+    else if (next === 'LASER_SWITCH') { this.boxLaser = obj; this.boxGoal = obj; this.boxWait = null; }
+    else if (next === 'ENGAGE' || next === 'CLEAR_BARREL') this.engT = { tu: obj, kind, t0: t.time, atSpot: false, spotT: 0 };
+    else if (next === 'BREACH') this.breachT = { bw: obj, t0: t.time, atSpot: false, spotT: 0 };
+    if (next !== 'LASER_SWITCH' && cur === 'LASER_SWITCH') { this.boxGoal = null; this.boxLaser = null; this.boxWait = null; }
+    if (next !== 'ENGAGE' && next !== 'CLEAR_BARREL') this.engT = null;
+    this.mission = next; this.plan = null; this.scan = null; this.replanT = 0;
   }
 
   // Route to a tile next to the nearest primary target (its own tile is no-go)
@@ -807,18 +789,17 @@ export class Autopilot {
   }
 
   newPickupPlan() {
-    const P = this.pickNow, t = this.t;
-    if (!P || !P.pick.active) { this.mission = 'EXPLORE'; this.plan = null; return; }
+    const p = this.pickObj, t = this.t;
+    if (!p || !p.active) { this.mission = 'EXPLORE'; this.plan = null; return; }
     if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }
-    // decide() found this route when it chose the pickup, possibly from somewhere else: search again from here
-    const goal = this.tileOf(P.pick.pos), goals = this._pickGoals;
-    goals.clear(); if (goal >= 0) goals.set(goal, P.pick);
+    // a fresh route from where the rocket is now
+    const goal = this.tileOf(p.pos), goals = this._pickGoals;
+    goals.clear(); if (goal >= 0) goals.set(goal, p);
     const tiles = goal >= 0 ? this.pathTo(t.node, this._goalPick) : null;
-    if (!tiles) { this.pickTried.add(P.pick); this.mission = 'EXPLORE'; this.plan = null; this.why = 'PICKUP OUT OF REACH'; return; }
-    P.tiles = tiles;
-    if (!P.tiles.length) { this.pickTried.add(P.pick); this.mission = 'EXPLORE'; this.plan = null; return; }
-    this.plan = { goal: P.tiles[P.tiles.length - 1], tiles: P.tiles, wps: this.smooth(P.tiles), k: 0, t0: t.time, alt0: t.y, pickup: P.pick };
-    this.g.xroute = P.tiles.slice(); this.why = 'ROUTE TO A PICKUP';
+    if (!tiles) { this.pickTried.add(p); this.mission = 'EXPLORE'; this.plan = null; this.why = 'PICKUP OUT OF REACH'; return; }
+    if (!tiles.length) { this.pickTried.add(p); this.mission = 'EXPLORE'; this.plan = null; return; }
+    this.plan = { goal: tiles[tiles.length - 1], tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, pickup: p };
+    this.g.xroute = tiles.slice(); this.why = 'ROUTE TO A PICKUP';
   }
 
   // Terminal phase of a hunt: once a primary target is in clear thermal sight and lock range, turn until it is inside the seeker
@@ -899,30 +880,6 @@ export class Autopilot {
     return out;
   }
 
-  // Turret engagement. CIWS turrets out-range thermal (about 30 m against 18 m) and hang from the ceiling. The gun fires level,
-  // so they are fought from their own floor: a spot 9-15 m away with a clear line, at turret height just under the ceiling.
-  planTurret(start) {
-    const g = this.g, t = this.t, G = GRID_SIZE, GG = G * G;
-    if (!this.knownList.length) return null;
-    if (!this.turretIgnore) this.turretIgnore = new Map();
-    let bestP = null;
-    const goals = this._turGoals;
-    for (let _i29 = 0, _a29 = this.knownList; _i29 < _a29.length; _i29++) { const tu = _a29[_i29]; if (!tu.active || (this.turretIgnore.get(tu) || 0) > t.time) continue;
-      const tf = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(tu.pos.y)));
-      goals.clear();
-      const cr = 4, tgx = worldToGridX(tu.pos.x), tgz = worldToGridZ(tu.pos.z);
-      for (let gz = Math.max(0, tgz - cr); gz <= Math.min(G - 1, tgz + cr); gz++) for (let gx = Math.max(0, tgx - cr); gx <= Math.min(G - 1, tgx + cr); gx++) {
-        const x = gridToWorldX(gx), z = gridToWorldZ(gz), d = Math.hypot(tu.pos.x - x, tu.pos.z - z);
-        if (d < 9 || d > 15) continue;
-        const i = tf * GG + gz * G + gx;
-        if (g.los3(x, tu.pos.y - 0.3, z, tu.pos.x, tu.pos.y, tu.pos.z)) goals.add(i);
-      }
-      if (!goals.size) continue;
-      const tiles = this.pathTo(start, this._goalTur, 30);
-      if (tiles && (!bestP || tiles.length < bestP.tiles.length)) bestP = { tu, tiles };
-    }
-    return bestP;
-  }
 
   // Fire control on top of the flight commands (step 3)
   fire(dt, out) {
@@ -1001,7 +958,8 @@ export class Autopilot {
   }
 
   // Choose the target, compute the lead, steer onto it and pull the trigger only when the predicted miss is inside the hit area.
-  // Mutates `out` ({yaw, climb, speed}) while engaging.
+  // Targets are ranked by mission tier (laser box 2, turret / sentry 3, barrel 4), then the current goal, threats, distance and
+  // bearing. A barrel is only shot as the CLEAR_BARREL goal, from where its whole chain cluster cannot reach the rocket.
   fireControl(dt, out) {
     const g = this.g, t = this.t;
     this.updateTracks(dt);
@@ -1009,16 +967,19 @@ export class Autopilot {
     const F = this.fc || (this.fc = { tgt: null, since: 0, burst: 0, pause: 0 });
     g.gunHeld = false; this.shot = null;
     if (g.gunAmmo <= 0 || g.missile.drop > 0) { F.tgt = null; return out; }
-    // pick: confirmed locks only, in range, not given up; threats and blocking laser boxes first, then closest / most in front
     let best = null, bestS = -1e9;
-    const TL = this._tl;
+    const TL = this._tl, goalObj = this.engT ? this.engT.tu : null;
     for (let i = 0; i < TL.length; i++) {
       const k = TL[i], sp = FIRE_SPEC[k.kind]; if (!sp || k.seen < TUNE.lockFramesMin || k.d > sp.range) continue;
       if ((this.ignoreUntil.get(k.obj) || 0) > t.time) continue;
-      if (k.kind !== 'CIWS' && !k.threat && g.gunAmmo <= TUNE.reserveRounds) continue;           // keep a few rounds for threats
+      if (k.kind === 'BARREL') {
+        if (this.mission !== 'CLEAR_BARREL' || goalObj !== k.obj) continue;
+        this._barrelCluster(k.obj);
+        if (!this._clusterClear(t.x, t.y, t.z, this._barrelSafeDist())) continue;
+      } else if (k.kind !== 'CIWS' && !k.threat && g.gunAmmo <= TUNE.reserveRounds) continue;      // keep a few rounds for threats
       const brg = wrapAngle(Math.atan2(-(k.x - t.x), -(k.z - t.z)) - t.yaw);
-      const pri = sp.pri + (k.kind === 'SENTRY' && k.threat ? 2 : 0) + (k.kind === 'LASER BOX' && this.boxGoal === k.obj ? 6 : 0);
-      const sc = pri * 10 - k.d * 0.4 - Math.abs(brg) * 3 + (F.tgt === k ? 6 : 0);  // stick with the current target (no flip-flop)
+      const goal = this.boxGoal === k.obj || goalObj === k.obj;
+      const sc = (10 - FIRE_TIER[k.kind]) * 100 + (goal ? 50 : 0) + (k.threat ? 20 : 0) - k.d * 0.4 - Math.abs(brg) * 3 + (F.tgt === k ? 6 : 0);
       if (sc > bestS) { bestS = sc; best = k; }
     }
     if (!best) { F.tgt = null; return out; }
@@ -1031,16 +992,13 @@ export class Autopilot {
     const yawErr = wrapAngle(Math.atan2(-(ax - t.x), -(az - t.z)) - t.yaw);
     // altitude: the gun fires level from the nose, so match the target's hit height (within the room's floor / ceiling)
     const aimY = Math.max(t.y - t.agl + 1.0, Math.min(t.y + t.ceil - 0.8, best.y));
-    // steer onto the lead point; slow right down while engaging
     out.yaw = clamp1(TUNE.aimYawGain * yawErr - TUNE.yawDamp * t.yawRate);
     out.climb = clamp1(TUNE.aimClimbGain * (aimY - t.y) - TUNE.climbDamp * t.vSpeed);
     out.speed = Math.min(out.speed, TUNE.aimSpeedCap);
-    // predicted miss at the target: sideways (from the heading error) and vertical against the height we can actually reach
-    // (the clamped aimY, not the raw target height: a target above the ceiling margin must not make the gun wait forever)
+    // predicted miss: sideways (from the heading error) and vertical against the height we can actually reach
     const latMiss = Math.abs(Math.sin(yawErr)) * best.d, vertMiss = Math.abs(t.y - aimY);
     const clearShot = g.los3(t.x, t.y, t.z, best.x, best.y, best.z) && !this.barrelInLine(best.x, best.y, best.z);
     const onTarget = latMiss < sp.hitR * TUNE.hitFrac && vertMiss < sp.vert;
-    // bursts: as many rounds as the target needs plus two, then a short pause to re-aim
     F.pause = Math.max(0, F.pause - dt);
     let fire = false;
     if (onTarget && clearShot && F.pause <= 0) { fire = true; F.burst += dt * GUN_RATE; if (F.burst >= sp.need + TUNE.burstExtra) { F.burst = 0; F.pause = TUNE.burstPause; } }
@@ -1052,39 +1010,6 @@ export class Autopilot {
     return out;
   }
 
-  // When live laser grids are all that blocks the rest of the map: go where thermal can see a grid's switch box (it gets its
-  // brackets there) so fire control can shoot it. Returns a plan or null.
-  planLaserBox(start) {
-    const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, N = GG * g.nFloors, P = g.lidarParams(), reach = Math.max(8, P.thermal * 0.8);
-    const live = g.lasers.filter((l) => !l.disabled && l.relayActive && l.lockRef && l.lockRef.active && (this.boxTried || new Set()).has(l) === false);
-    if (!live.length || !X) return null;
-    // only grids we have already seen: some tile of their row is explored
-    const seen = live.filter((l) => {                                 // a grid counts as seen once any tile along its beams is on the map
-      for (let x = l.xMin; x <= l.xMax + 0.01; x += CELL_SIZE * 0.5) { const c = g.cellAt(x, l.z); if (c >= 0 && (X[c] || X[c + G] || X[c - G])) return true; }
-      const c = g.cellAt(l.relayPos.x, l.relayPos.z); return c >= 0 && !!X[c];
-    });
-    if (!seen.length) return null;
-    const HZ = this.hazards(), ok = (i) => this.flyable(X[i]) && this.navOk2(i) && !HZ.hard[i];
-    const S = this._scratch(N), dist = S.bdist, prev = S.prev, q = S.queue;
-    dist.fill(-1, 0, N); prev.fill(-1, 0, N);
-    let qh = 0, qt = 0; q[qt++] = start;
-    dist[start] = 0;
-    for (; qh < qt; qh++) {
-      const i = q[qh], c = i % GG, f = (i / GG) | 0, p = this.tileCenter(i), y = f * WALL_H + 2.2;
-      for (const l of seen) {
-        const d = Math.hypot(l.relayPos.x - p.x, l.relayPos.z - p.z);
-        if (f === 0 && d < reach && d > 3 && g.los3(p.x, y, p.z, l.relayPos.x, l.relayPos.y, l.relayPos.z)) {
-          const tiles = []; for (let k = i; k !== start && k >= 0; k = prev[k]) tiles.push(k);
-          return { goal: i, tiles: tiles.reverse(), laser: l };
-        }
-      }
-      const x = c % G, z = (c / G) | 0, nb = [];
-      if (x > 0) nb.push(i - 1); if (x < G - 1) nb.push(i + 1); if (z > 0) nb.push(i - G); if (z < G - 1) nb.push(i + G);
-      const extra = this.links(i); if (extra) nb.push(...extra);
-      for (const n of nb) if (dist[n] < 0 && ok(n)) { dist[n] = dist[i] + 1; prev[n] = i; q[qt++] = n; }
-    }
-    return null;
-  }
 
 
   // Debug panel text (Dev Override: Autopilot Debug)
@@ -1127,7 +1052,7 @@ export class Autopilot {
   _onStuck(P) {
     if (P.pickup) {
       const n = (this.pickStuck.get(P.pickup) || 0) + 1; this.pickStuck.set(P.pickup, n);
-      if (n >= TUNE.pickupStuckMax) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.pickNow = null; }
+      if (n >= TUNE.pickupStuckMax) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.pickObj = null; }
       return;
     }
     this.tried.add(P.goal);
@@ -1254,24 +1179,10 @@ export class Autopilot {
   // Nearest cracked wall the map has shown (and not tried yet), with a route to an open tile beside it. Floor 0 only (where
   // breakable walls are). Returns { bw, tiles } or null.
   planBreach(start) {
-    const g = this.g, X = g.xgrid, G = GRID_SIZE;
-    if (!X || start < 0 || !g.breakables || !g.breakables.length) return null;
-    if (!this.breachTried) this.breachTried = new Set();
-    const goals = this._brGoals; goals.clear();
-    for (let k = 0; k < g.breakables.length; k++) {
-      const bw = g.breakables[k];
-      if (!bw.active || this.breachTried.has(bw)) continue;
-      const c = bw.gz * G + bw.gx;
-      if (X[c] !== XV.CRACK) continue;                                     // only walls the lidar has shown as cracked
-      if (bw.gx > 0 && this.flyable(X[c - 1]) && this.navOk2(c - 1)) goals.set(c - 1, bw);
-      if (bw.gx < G - 1 && this.flyable(X[c + 1]) && this.navOk2(c + 1)) goals.set(c + 1, bw);
-      if (bw.gz > 0 && this.flyable(X[c - G]) && this.navOk2(c - G)) goals.set(c - G, bw);
-      if (bw.gz < G - 1 && this.flyable(X[c + G]) && this.navOk2(c + G)) goals.set(c + G, bw);
-    }
-    if (!goals.size) return null;
-    const tiles = this.pathTo(start, this._goalBreach);
-    if (!tiles) return null;
-    return { bw: goals.get(tiles.length ? tiles[tiles.length - 1] : start), tiles };
+    if (start < 0 || !this._fillBreachGoals()) return null;
+    const end = this.pathGoal(start, this._goalBreach);
+    if (end < 0) return null;
+    return { bw: this._brGoals.get(end), tiles: this.tilesTo(end, start) };
   }
 
   newBreachPlan() {
@@ -1286,5 +1197,230 @@ export class Autopilot {
     g.xroute = bp.tiles.slice(); this.why = 'BREACH: TO A CRACKED WALL';
   }
 
+  // A frontier tile within 3 tiles of a wall blown open in the last few minutes is worth going to first
+  _breachLure(i) {
+    const g = this.g, w = g.lastBreachTile;
+    if (w === undefined || w < 0 || g.gameClock - g.lastBreachT > TUNE.breachLureFor) return 0;
+    const G = GRID_SIZE, c = i % (G * G);
+    return Math.max(Math.abs((c % G) - (w % G)), Math.abs(((c / G) | 0) - ((w / G) | 0))) <= 3 ? TUNE.breachLure : 0;
+  }
+
   _clearTracks() { while (this._tl.length) this._dropTrack(this._tl.length - 1); this.tracks.clear(); }
+
+  _missionMsg(m, kind, obj, energy) {
+    if (m === 'HUNT') return 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)';
+    if (m === 'PICKUP') return energy ? 'AUTOPILOT: FUEL LOW — FETCHING A REPAIR KIT' : `AUTOPILOT: PICKING UP ${obj.type}`;
+    if (m === 'LASER_SWITCH') return 'AUTOPILOT: SHUTTING DOWN A LASER GRID';
+    if (m === 'ENGAGE') return kind === 'SENTRY' ? 'AUTOPILOT: CLEARING A SENTRY' : 'AUTOPILOT: ENGAGING A CIWS TURRET';
+    if (m === 'CLEAR_BARREL') return 'AUTOPILOT: DETONATING A FUEL BARREL FROM A SAFE RANGE';
+    if (m === 'BREACH') return 'AUTOPILOT: BLASTING A CRACKED WALL OPEN';
+    return 'AUTOPILOT: EXPLORING';
+  }
+
+  // ---- route searches. pathGoal runs the search and returns only the goal tile (or -1), leaving the parents in the scratch;
+  //      tilesTo turns them into the route (the only allocation, made when a plan is built). pathTo = both.
+  pathGoal(start, isGoal, maxCost) {
+    const g = this.g, X = g.xgrid, G = GRID_SIZE, GG = G * G, N = GG * g.nFloors;
+    if (!X || start < 0) return -1;
+    if (g.navFor !== g.ramps) g.navLinksBuild();
+    const HZ = this.hazards(), S = this._scratch(N), dist = S.dist, prev = S.prev;
+    this._pX = X; this._pHZ = HZ;
+    dist.fill(Infinity, 0, N); prev.fill(-1, 0, N); S.hs = 0;
+    dist[start] = 0; this._hpush(0, start);
+    while (S.hs > 0) {
+      const i = this._hpop(), d = S.pc;
+      if (d > dist[i]) continue;
+      if (maxCost && d > maxCost) return -1;
+      if (isGoal(i)) return i;
+      const c = i % GG, x = c % G, z = (c / G) | 0;
+      if (x > 0) this._relax(i, d, i - 1, 1); if (x < G - 1) this._relax(i, d, i + 1, 1); if (z > 0) this._relax(i, d, i - G, 1); if (z < G - 1) this._relax(i, d, i + G, 1);
+      if (x > 0 && z > 0 && this._okTile(i - 1) && this._okTile(i - G)) this._relax(i, d, i - G - 1, TUNE.costDiag); if (x < G - 1 && z > 0 && this._okTile(i + 1) && this._okTile(i - G)) this._relax(i, d, i - G + 1, TUNE.costDiag);
+      if (x > 0 && z < G - 1 && this._okTile(i - 1) && this._okTile(i + G)) this._relax(i, d, i + G - 1, TUNE.costDiag); if (x < G - 1 && z < G - 1 && this._okTile(i + 1) && this._okTile(i + G)) this._relax(i, d, i + G + 1, TUNE.costDiag);
+      const extra = this.links(i);
+      if (extra) for (let k = 0; k < extra.length; k++) this._relax(i, d, extra[k], TUNE.costLink);
+    }
+    return -1;
+  }
+
+  tilesTo(goal, start) {
+    const prev = this._S.prev, tiles = [];
+    for (let k = goal; k !== start && k >= 0; k = prev[k]) tiles.push(k);
+    return tiles.reverse();
+  }
+
+  // ---- tier 5 (and the fuel emergency): a seen pickup worth fetching, nearest by route. Sets this._cand.obj.
+  _findPickup(energyOnly) {
+    const g = this.g, t = this.t;
+    if (!this.pickTried) this.pickTried = new Set();
+    const goals = this._pickGoals; goals.clear();
+    for (let i = 0; i < g.pickups.length; i++) {
+      const p = g.pickups[i];
+      if (energyOnly ? !(p.type === 'REPAIR' && p.active && p._seen && !this.pickTried.has(p)) : !this._wantPickup(p)) continue;
+      const c = this.tileOf(p.pos); if (c >= 0 && !goals.has(c)) goals.set(c, p);
+    }
+    if (!goals.size) return false;
+    const maxCost = energyOnly ? Math.min(TUNE.energyPickupMaxCost, TUNE.energyRangeShare * t.rangeCruiseM / CELL_SIZE) : TUNE.pickupMaxCost;
+    if (!(maxCost > 0)) return false;
+    const end = this.pathGoal(t.node, this._goalPick, maxCost);
+    if (end < 0) return false;
+    this._cand.obj = goals.get(end);
+    return true;
+  }
+
+  // ---- tier 2: laser switch boxes. A goal tile is one (floor 0) from which thermal sees a candidate box.
+  _boxLive(l) { return !!(l && !l.disabled && l.relayActive && l.lockRef && l.lockRef.active && !(this.boxTried && this.boxTried.has(l))); }
+
+  _isBoxSpot(i) {
+    if (i >= GRID_SIZE * GRID_SIZE) return false;
+    const g = this.g, x = gridToWorldX(i % GRID_SIZE), z = gridToWorldZ((i / GRID_SIZE) | 0), L = this._boxList;
+    for (let k = 0; k < L.length; k++) {
+      const l = L[k], d = Math.hypot(l.relayPos.x - x, l.relayPos.z - z);
+      if (d < this._boxReach && d > 3 && g.los3(x, 2.2, z, l.relayPos.x, l.relayPos.y, l.relayPos.z)) { this._boxHit = l; return true; }
+    }
+    return false;
+  }
+
+  // Route to a firing spot for a known live box (only boxes in sight right now when visibleOnly; only `only` when given).
+  // Returns the goal tile or -1, and sets this._cand.obj to the box's grid.
+  _findLaserBox(visibleOnly, only) {
+    const g = this.g, t = this.t, L = this._boxList;
+    L.length = 0;
+    if (!this.boxTried) this.boxTried = new Set();
+    if (only) { if (this._boxLive(only)) L.push(only); }
+    else for (let k = 0; k < this.knownBoxes.length; k++) { const l = this.knownBoxes[k]; if (this._boxLive(l) && (!visibleOnly || l.boxVis)) L.push(l); }
+    if (!L.length) return -1;
+    this._boxReach = Math.max(8, g.lidarParams().thermal * 0.8);
+    const end = this.pathGoal(t.node, this._goalBox, TUNE.laserMaxCost);
+    if (end >= 0) this._cand.obj = this._boxHit;
+    return end;
+  }
+
+  newLaserPlan() {
+    const g = this.g, t = this.t, l = this.boxLaser;
+    if (!this._boxLive(l)) { this.mission = 'EXPLORE'; this.boxGoal = this.boxLaser = null; this.plan = null; return; }
+    if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }
+    const end = this._findLaserBox(false, l);
+    if (end < 0) { this.boxTried.add(l); this.mission = 'EXPLORE'; this.boxGoal = this.boxLaser = null; this.plan = null; this.why = 'LASER SWITCH OUT OF REACH'; return; }
+    const tiles = this.tilesTo(end, t.node);
+    this.boxGoal = l;
+    if (!tiles.length) { this.boxWait = { t: 0 }; this.plan = null; this.why = 'SHOOTING A LASER SWITCH BOX'; return; }
+    this.plan = { goal: end, tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, laser: l };
+    g.xroute = tiles.slice(); this.why = 'TO A LASER SWITCH BOX';
+  }
+
+  // ---- tiers 3 and 4: firing spots around turrets, sentries and barrels
+  _aimY(kind, o) { return kind === 'SENTRY' ? o.pos.y + 1.2 : o.pos.y; }
+
+  _alive(kind, o) { return kind === 'SENTRY' ? !!(o.active && !o.dying) : !!o.active; }
+
+  _attackValid() {
+    const E = this.engT;
+    return !!(E && this._alive(E.kind, E.tu) && this.t.time - E.t0 < TUNE.engageMax && !((this.turretIgnore.get(E.tu) || 0) > this.t.time));
+  }
+
+  // a barrel's blast and everything it would chain into must not reach the rocket
+  _barrelSafeDist() { return Math.max(BARREL_BLAST_RADIUS, this.g.blastRadiusBase()) + MISSILE_RADIUS + TUNE.barrelSafetyMargin; }
+
+  _barrelCluster(b) {
+    const B = this.g.barrels, C = this._clu;
+    C.length = 0; C.push(b);
+    for (let h = 0; h < C.length; h++) {
+      const a = C[h];
+      for (let k = 0; k < B.length; k++) {
+        const o = B[k];
+        if (!o.active || C.indexOf(o) >= 0) continue;
+        if (o.pos.distanceTo(a.pos) <= BARREL_CHAIN_REACH) C.push(o);
+      }
+    }
+  }
+
+  _clusterClear(x, y, z, safe) {
+    const C = this._clu;
+    for (let k = 0; k < C.length; k++) { const p = C[k].pos; if (Math.hypot(p.x - x, p.y - y, p.z - z) < safe) return false; }
+    return true;
+  }
+
+  // add the firing spots around target o to this._atkGoals (tile -> target): ring on its floor, clear line to its aim point
+  _addAttackSpots(kind, o) {
+    const g = this.g, G = GRID_SIZE, GG = G * G, goals = this._atkGoals;
+    const tf = Math.max(0, Math.min(g.nFloors - 1, g.floorOfY(o.pos.y))), base = tf * WALL_H, aimY = this._aimY(kind, o);
+    let dMin, dMax, safe = 0;
+    if (kind === 'BARREL') {                                             // outside the chain's blast, but inside thermal range (or it cannot be seen to be shot)
+      safe = this._barrelSafeDist(); dMin = safe; dMax = Math.min(safe + TUNE.barrelRing, g.lidarParams(true).thermal - TUNE.thermalMargin);
+      if (dMax <= dMin) return;
+      this._barrelCluster(o);
+    }
+    else if (kind === 'SENTRY') { dMin = TUNE.sentryRingMin; dMax = TUNE.sentryRingMax; }
+    else { dMin = TUNE.turretRingMin; dMax = TUNE.turretRingMax; }
+    if (kind === 'SENTRY') dMax = Math.min(dMax, g.lidarParams(true).thermal - TUNE.thermalMargin);   // a sentry is only shot while thermal sees it
+    const fromY = kind === 'CIWS' ? o.pos.y - 0.3 : Math.max(base + 1.0, Math.min(base + WALL_H - 0.8, aimY));
+    const cr = Math.ceil(dMax / CELL_SIZE), tgx = worldToGridX(o.pos.x), tgz = worldToGridZ(o.pos.z);
+    for (let gz = Math.max(0, tgz - cr); gz <= Math.min(G - 1, tgz + cr); gz++) for (let gx = Math.max(0, tgx - cr); gx <= Math.min(G - 1, tgx + cr); gx++) {
+      const x = gridToWorldX(gx), z = gridToWorldZ(gz), d = Math.hypot(o.pos.x - x, o.pos.z - z);
+      if (d < dMin || d > dMax) continue;
+      const i = tf * GG + gz * G + gx;
+      if (goals.has(i)) continue;
+      if (kind === 'BARREL' && !this._clusterClear(x, fromY, z, safe)) continue;
+      if (g.los3(x, fromY, z, o.pos.x, aimY, o.pos.z)) { goals.set(i, o); this._atkKind.set(o, kind); }
+    }
+  }
+
+  // Nearest reachable firing spot: tier 3 (turrets + sentries) or tier 4 (barrels). Sets this._cand.obj / .kind.
+  _findAttack(tier) {
+    const g = this.g, t = this.t, goals = this._atkGoals, ig = this.turretIgnore, now = t.time;
+    goals.clear(); this._atkKind.clear();
+    if (tier === 'ENGAGE') {
+      for (let k = 0; k < this.knownList.length; k++) { const o = this.knownList[k]; if (o.active && !((ig.get(o) || 0) > now)) this._addAttackSpots('CIWS', o); }
+      for (let k = 0; k < this.knownSentries.length; k++) { const o = this.knownSentries[k]; if (o.active && !o.dying && !((ig.get(o) || 0) > now)) this._addAttackSpots('SENTRY', o); }
+    } else {
+      if (g.gunAmmo <= TUNE.reserveRounds) return false;                 // rounds are kept for threats
+      for (let k = 0; k < this.knownBarrels.length; k++) { const o = this.knownBarrels[k]; if (o.active && !((ig.get(o) || 0) > now)) this._addAttackSpots('BARREL', o); }
+    }
+    if (!goals.size) return false;
+    const end = this.pathGoal(t.node, this._goalAtk, tier === 'ENGAGE' ? TUNE.engageMaxCost : TUNE.barrelMaxCost);
+    if (end < 0) return false;
+    const o = goals.get(end);
+    this._cand.obj = o; this._cand.kind = this._atkKind.get(o);
+    return true;
+  }
+
+  newAttackPlan() {
+    const g = this.g, t = this.t, E = this.engT;
+    if (!E || !this._alive(E.kind, E.tu)) { this.mission = 'EXPLORE'; this.engT = null; this.plan = null; return; }
+    if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }
+    this._atkGoals.clear(); this._atkKind.clear(); this._addAttackSpots(E.kind, E.tu);
+    const end = this._atkGoals.size ? this.pathGoal(t.node, this._goalAtk, E.kind === 'BARREL' ? TUNE.barrelMaxCost : TUNE.engageMaxCost) : -1;
+    if (end < 0) { this.turretIgnore.set(E.tu, t.time + TUNE.turretIgnoreFor); this.mission = 'EXPLORE'; this.engT = null; this.plan = null; this.why = 'NO FIRING SPOT'; return; }
+    const tiles = this.tilesTo(end, t.node);
+    if (!tiles.length) { this.plan = null; E.atSpot = true; this.why = 'ENGAGING ' + E.kind; return; }
+    this.plan = { goal: end, tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, attack: true };
+    g.xroute = tiles.slice(); this.why = 'TO A FIRING SPOT (' + E.kind + ')';
+  }
+
+  // ---- tier 6: cracked walls the map has shown (floor 0), from an open tile beside them
+  _fillBreachGoals() {
+    const g = this.g, X = g.xgrid, G = GRID_SIZE, goals = this._brGoals;
+    goals.clear();
+    if (!X || !g.breakables) return 0;
+    if (!this.breachTried) this.breachTried = new Set();
+    for (let k = 0; k < g.breakables.length; k++) {
+      const bw = g.breakables[k];
+      if (!bw.active || this.breachTried.has(bw)) continue;
+      const c = bw.gz * G + bw.gx;
+      if (X[c] !== XV.CRACK) continue;                                     // only walls the lidar has shown as cracked
+      if (bw.gx > 0 && this.flyable(X[c - 1]) && this.navOk2(c - 1)) goals.set(c - 1, bw);
+      if (bw.gx < G - 1 && this.flyable(X[c + 1]) && this.navOk2(c + 1)) goals.set(c + 1, bw);
+      if (bw.gz > 0 && this.flyable(X[c - G]) && this.navOk2(c - G)) goals.set(c - G, bw);
+      if (bw.gz < G - 1 && this.flyable(X[c + G]) && this.navOk2(c + G)) goals.set(c + G, bw);
+    }
+    return goals.size;
+  }
+
+  _findBreach() {
+    if (!this._fillBreachGoals()) return false;
+    const end = this.pathGoal(this.t.node, this._goalBreach);
+    if (end < 0) return false;
+    this._cand.obj = this._brGoals.get(end);
+    return true;
+  }
 }

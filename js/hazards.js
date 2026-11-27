@@ -52,3 +52,7 @@ export function laserBeamsAt(l, T, out) {
   b.x1 = l.xMin; b.y1 = y; b.x2 = l.xMax; b.y2 = y;
   return 1;
 }
+
+/* Fuel barrels: blast radius when one goes up, and how far a blast reaches another barrel (chain reaction). */
+export const BARREL_BLAST_RADIUS = 9.2;
+export const BARREL_CHAIN_REACH = BARREL_BLAST_RADIUS + 1.2;
