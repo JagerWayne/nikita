@@ -3,11 +3,53 @@ import {
   AUTO_MEM_KEY, CACHE_ROCKETS, GUN_CAP_MAX, GUN_CAP_MIN, GUN_PICKUP, GUN_STEPS, MAX_LEVELS, MAX_ROCKETS,
   MODIFIER_CAP_BONUS, MULT_SLOW, PACKAGE_ROCKETS, POINTS, POINTS_BONUS, POINTS_PER_PACKAGE, REWARDS,
   REWARD_CAP_BASE, REWARD_CAP_PER_TIER, SAVE_KEY, SPEED_MAX, SPEED_MIN, SPEED_START_CAP, SPEED_STEP,
-  UPG_MAX_LEVEL, XMAP_KEY, DOCK_MAX_SPEED, DOCK_RATE
+  UPG_MAX_LEVEL, XMAP_KEY, DOCK_MAX_SPEED, DOCK_RATE, AUTO_PREFS_KEY, AUTO_PREF_DEFS, AUTO_PRESETS
 } from './constants.js';
 import { _v1, _v2, hash01 } from './math.js';
 
 export const progressMethods = {
+
+  /* ---- autopilot settings: clamped on every load and set, so a corrupt value can never reach the simulation ---- */
+  clampAutoPref(key, v) {
+    const d = AUTO_PREF_DEFS[key];
+    if (!d) return undefined;
+    if (typeof d.def === 'boolean') return typeof v === 'boolean' ? v : d.def;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return d.def;
+    return Number((Math.round(Math.max(d.min, Math.min(d.max, v)) / d.step) * d.step).toFixed(3));
+  },
+
+  loadAutoPrefs() {
+    const A = this.autoPrefs || (this.autoPrefs = {});
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(AUTO_PREFS_KEY) || 'null'); } catch (_) {}
+    if (!saved || typeof saved !== 'object') saved = {};
+    for (const k of Object.keys(AUTO_PREF_DEFS)) A[k] = this.clampAutoPref(k, saved[k]);
+    this.autoPrefsRev = (this.autoPrefsRev | 0) + 1;
+    this.refreshAutoPrefsUI();
+  },
+
+  saveAutoPrefs() {
+    try { localStorage.setItem(AUTO_PREFS_KEY, JSON.stringify(this.autoPrefs)); } catch (_) {}
+  },
+
+  setAutoPref(key, val) {
+    if (!AUTO_PREF_DEFS[key]) return;
+    this.autoPrefs[key] = this.clampAutoPref(key, val);
+    this.autoPrefsRev++;
+    this.saveAutoPrefs();
+    this.refreshAutoPrefsUI();
+  },
+
+  applyAutoPreset(name) {
+    const P = AUTO_PRESETS[name];
+    if (!P) return;
+    for (const k of Object.keys(AUTO_PREF_DEFS)) this.autoPrefs[k] = this.clampAutoPref(k, k in P ? P[k] : AUTO_PREF_DEFS[k].def);
+    this.autoPrefsRev++;
+    this.saveAutoPrefs();
+    this.refreshAutoPrefsUI();
+  },
+
+  resetAutoPrefs() { this.applyAutoPreset('BALANCED'); },
 
   collectPickup(pk) {
     pk.active = false;
@@ -292,7 +334,7 @@ export const progressMethods = {
   // it does not work, a "game closed" screen replaces the game.
   // Wipe credits, upgrades, every saved lidar map and preferences on this device, then restart fresh.
   deleteSavedData() {
-    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); localStorage.removeItem(AUTO_MEM_KEY); localStorage.removeItem(XMAP_KEY); } catch (_) {}
+    try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('nikita.prefs'); localStorage.removeItem(AUTO_PREFS_KEY); localStorage.removeItem(AUTO_MEM_KEY); localStorage.removeItem(XMAP_KEY); } catch (_) {}
     this.lidarKey = null;
     this.lidarMemory.clear();
     const done = () => location.reload();

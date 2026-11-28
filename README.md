@@ -40,6 +40,12 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v3.2.0: autopilot settings
+
+- **Autopilot Settings menu** (Options on the title screen, AUTOPILOT in the pause menu). Seven priority sliders (0.0x to 2.0x) reorder what the autopilot does: sector discovery, laser boxes, turrets and patrols, barrels, pickups, cracked walls, primary targets. 1.0x is the old order, OFF skips a task.
+- **Behavior:** defer the primary objective until secondary jobs are clear, opportunistic clearing while exploring, auto-refuel at recharge docks with a low-fuel threshold (15 to 60 %), and a cruise speed cap (50 to 100 %).
+- **Presets:** BALANCED (the old behavior), CLEAR ALL, SPEEDRUN, STEALTH / RECON, and RESET DEFAULTS. Settings are saved on the device and range-checked on load.
+
 ## v3.1.0: tactical map: impact marker, full-screen map, waypoints
 
 - **Last impact marker.** A pulsing X and ring on the radar shows where the last blast went off (cleared at the start of each sector).

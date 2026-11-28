@@ -333,7 +333,9 @@ export class NikitaGame {
     };
 
     this.bindEvents();
+    this.autoPrefs = {}; this.autoPrefsRev = 0;
     this.loadPrefs();
+    this.loadAutoPrefs();
     this.setupPlatformUI();
     this.applyResize();
     this.generateLevel(1, this.seedStr);

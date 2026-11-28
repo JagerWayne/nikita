@@ -142,6 +142,30 @@ export const SPEED_STEP = 0.5;
 export const CRUISE_THROTTLE = 0.378;
 export const UPG_MAX_LEVEL = 10;
 export const SAVE_KEY = 'nikita-save-v1';
+/* Autopilot settings (the Autopilot Settings menu). Weights 0..2: 1.0 keeps a task at its default place in the ladder, 0 switches it off.
+   The defaults are the autopilot as it always behaved. Corrupt saved values are clamped back into these ranges on load. */
+export const AUTO_PREFS_KEY = 'nikita.autoPrefs';
+export const AUTO_PREF_DEFS = Object.freeze({
+  wExplore:  { min: 0, max: 2, step: 0.1, def: 1 },
+  wLaser:    { min: 0, max: 2, step: 0.1, def: 1 },
+  wEngage:   { min: 0, max: 2, step: 0.1, def: 1 },
+  wBarrel:   { min: 0, max: 2, step: 0.1, def: 1 },
+  wPickup:   { min: 0, max: 2, step: 0.1, def: 1 },
+  wBreach:   { min: 0, max: 2, step: 0.1, def: 1 },
+  wHunt:     { min: 0, max: 2, step: 0.1, def: 1 },
+  deferHunt:     { def: true },     // hold the primary objective while reachable laser boxes, turrets / sentries or barrels remain
+  opportunistic: { def: false },    // clear secondary targets close to the exploration route
+  autoRefuel:    { def: true },     // visit recharge docks when fuel is low
+  refuelPct:   { min: 15, max: 60, step: 1, def: 15 },    // fuel % under which a seen dock is visited (on top of the range-based reserve)
+  speedCapPct: { min: 50, max: 100, step: 5, def: 100 }   // autonomous flight never commands more than this share of the top speed
+});
+export const AUTO_PRESETS = Object.freeze({
+  BALANCED: {},
+  CLEAR_ALL: { wLaser: 1.4, wEngage: 1.6, wBarrel: 1.4, wPickup: 1.2, wBreach: 1.2, wHunt: 0.4, opportunistic: true, refuelPct: 25 },
+  SPEEDRUN: { wLaser: 0.5, wEngage: 0.3, wBarrel: 0, wPickup: 0.5, wBreach: 0, wHunt: 2, deferHunt: false },
+  STEALTH: { wExplore: 2, wEngage: 0.2, wBarrel: 0, wBreach: 0, wHunt: 0.6, deferHunt: false, refuelPct: 30, speedCapPct: 60 }
+});
+
 export const AUTO_MEM_KEY = 'nikita.autoMem';   // the autopilot's explored-map memory per sector (older format)
 export const XMAP_KEY = 'nikita.xmap';          // the plotted explore map per sector
 // Explore map values: one cell per map tile, per floor, plotted only from what the lidar has actually revealed
@@ -176,6 +200,8 @@ export const AUTOPILOT_TUNING = Object.freeze({
   yawGain: 2.4, yawDamp: 0.35,                // yaw stick = gain * heading error - damp * yaw rate
   climbGain: 1.4, climbDamp: 0.25,            // climb stick = gain * altitude error - damp * vertical speed
   lookBase: 2, lookPerSpeed: 0.6, lookMin: 2.5, lookMax: 9,   // look-ahead distance = clamp(base + perSpeed * speed)
+  oppMaxCost: 14,                               // opportunistic clearing: a secondary target is taken on the way only if its route costs at most this (tiles)
+  tierSpread: 6,                                // priority score of a task = its default rank (7 explore .. 1 hunt) + spread * (weight - 1)
   wpRetry: 6,                                   // s before a custom map waypoint that had no route is tried again
   wpReach: 1.2, wpPassRange: 3, vertTol: 0.9, // waypoint reached / passed, height tolerance at a floor change
   roomMargin: 0.9,                            // keep this far from floor and ceiling

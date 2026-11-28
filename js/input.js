@@ -385,6 +385,23 @@ export const inputMethods = {
     radarBox.addEventListener('pointerleave', lpStop);
     this.bindFullMapEvents();
 
+    // Autopilot Settings: opened from the title options and the pause menu
+    const apModal = document.getElementById('autopilot-modal');
+    document.getElementById('btn-auto-prefs').addEventListener('click', () => this.openAutoPrefs());
+    document.getElementById('btn-pause-auto-prefs').addEventListener('click', () => this.openAutoPrefs());
+    document.getElementById('btn-ap-close').addEventListener('click', () => this.closeAutoPrefs());
+    apModal.addEventListener('pointerdown', (e) => { if (e.target === apModal) this.closeAutoPrefs(); });
+    apModal.addEventListener('input', (e) => {
+      const el = e.target, k = el.dataset && el.dataset.ap;
+      if (!k) return;
+      this.setAutoPref(k, el.type === 'checkbox' ? el.checked : parseFloat(el.value));
+    });
+    apModal.querySelectorAll('[data-ap-preset]').forEach((b) => b.addEventListener('click', () => this.applyAutoPreset(b.dataset.apPreset)));
+    document.getElementById('btn-ap-reset').addEventListener('click', () => this.resetAutoPrefs());
+    window.addEventListener('keydown', (e) => {                       // Esc closes it before anything else sees the key
+      if (e.key === 'Escape' && apModal.style.display !== 'none') { e.preventDefault(); e.stopImmediatePropagation(); this.closeAutoPrefs(); }
+    }, true);
+
     // Menu sheet extras (proxy the hidden HUD buttons so logic stays in one place)
     document.getElementById('btn-pause-radar').addEventListener('click', () => {
       document.getElementById('btn-hud-radar').click();

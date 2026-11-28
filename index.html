@@ -176,6 +176,7 @@
       <button class="tac-btn amber" id="btn-pause-mute">SFX: ON</button>
       <button class="tac-btn amber" id="btn-pause-recenter">CENTER GYRO</button>
       <button class="tac-btn amber" id="btn-pause-fullscrn">FULLSCREEN</button>
+      <button class="tac-btn amber" id="btn-pause-auto-prefs">AUTOPILOT</button>
       <button class="tac-btn amber" id="btn-pause-restart">RESTART</button>
       <button class="tac-btn danger" id="btn-pause-menu">EXIT TO MENU</button>
       <button class="tac-btn" id="btn-pause-resume">RESUME</button>
@@ -244,6 +245,38 @@
     <button id="map-close" type="button" aria-label="Close map">&#10005; CLOSE</button>
   </div>
   <div id="map-hint">TAP OPEN FLOOR: WAYPOINT &middot; DRAG: PAN &middot; WHEEL / PINCH: ZOOM &middot; ESC: CLOSE</div>
+</div>
+
+<!-- Autopilot Settings: priority weights and behaviour of the autopilot's decide() ladder (saved in localStorage nikita.autoPrefs) -->
+<div id="autopilot-modal" class="modal-backdrop" style="display:none; z-index:45;" role="dialog" aria-label="Autopilot settings">
+  <div class="modal-card ap-card">
+    <div class="modal-title"><span>AUTOPILOT SETTINGS</span><span class="modal-subtitle">1.0x = DEFAULT ORDER &middot; OFF = SKIPPED</span></div>
+    <div class="ap-sec">TASK PRIORITY</div>
+      <div class="ap-row"><label for="ap-wExplore"><b>Sector Discovery</b><small>EXPLORE &middot; map unknown frontier tiles</small></label><input type="range" id="ap-wExplore" data-ap="wExplore" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wExplore">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wLaser"><b>Laser Control Boxes</b><small>LASER_SWITCH &middot; switch off barrier boxes</small></label><input type="range" id="ap-wLaser" data-ap="wLaser" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wLaser">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wEngage"><b>Active Turrets &amp; Patrols</b><small>ENGAGE &middot; clear defense units</small></label><input type="range" id="ap-wEngage" data-ap="wEngage" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wEngage">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wBarrel"><b>Fuel Canisters / Barrels</b><small>CLEAR_BARREL &middot; clear hazard barrels</small></label><input type="range" id="ap-wBarrel" data-ap="wBarrel" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wBarrel">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wPickup"><b>Supplies &amp; Pickups</b><small>PICKUP &middot; collect repair, ammo and score items</small></label><input type="range" id="ap-wPickup" data-ap="wPickup" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wPickup">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wBreach"><b>Fractured Walls</b><small>BREACH &middot; breach cracked walls</small></label><input type="range" id="ap-wBreach" data-ap="wBreach" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wBreach">1.0x</output></div>
+      <div class="ap-row"><label for="ap-wHunt"><b>Primary Objectives</b><small>HUNT &middot; destroy the sector targets</small></label><input type="range" id="ap-wHunt" data-ap="wHunt" min="0" max="2" step="0.1" value="1" /><output data-ap-val="wHunt">1.0x</output></div>
+    <div class="ap-sec">BEHAVIOR</div>
+    <label class="ap-row ap-tog"><span><b>Defer primary objective until secondary clear</b><small>hold the main target while reachable laser boxes, defenses or barrels remain</small></span><input type="checkbox" data-ap="deferHunt" checked /></label>
+    <label class="ap-row ap-tog"><span><b>Opportunistic clearing during explore</b><small>take nearby secondary targets along the exploration route</small></span><input type="checkbox" data-ap="opportunistic" /></label>
+    <label class="ap-row ap-tog"><span><b>Auto-refuel at recharge docks</b><small>route to a discovered dock when fuel runs low</small></span><input type="checkbox" data-ap="autoRefuel" checked /></label>
+    <div class="ap-row"><label for="ap-refuelPct"><b>Low-fuel refuel threshold</b><small>a seen dock is visited below this fuel level</small></label><input type="range" id="ap-refuelPct" data-ap="refuelPct" min="15" max="60" step="1" value="15" /><output data-ap-val="refuelPct">15%</output></div>
+    <div class="ap-row"><label for="ap-speedCapPct"><b>Cruise speed cap</b><small>top speed share used in autonomous flight</small></label><input type="range" id="ap-speedCapPct" data-ap="speedCapPct" min="50" max="100" step="5" value="100" /><output data-ap-val="speedCapPct">100%</output></div>
+    <div class="ap-sec">PRESETS</div>
+    <div class="btn-row">
+      <button type="button" class="tac-btn" data-ap-preset="BALANCED">BALANCED</button>
+      <button type="button" class="tac-btn" data-ap-preset="CLEAR_ALL">CLEAR ALL</button>
+      <button type="button" class="tac-btn" data-ap-preset="SPEEDRUN">SPEEDRUN</button>
+      <button type="button" class="tac-btn" data-ap-preset="STEALTH">STEALTH / RECON</button>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="tac-btn danger" id="btn-ap-reset">RESET DEFAULTS</button>
+      <button type="button" class="tac-btn amber" id="btn-ap-close">DONE</button>
+    </div>
+  </div>
 </div>
 
 <!-- Mission Briefing Modal -->
@@ -329,6 +362,7 @@
     <div class="btn-row center" style="margin-top:12px;">
       <button class="tac-btn amber" id="btn-replay-intro" style="padding:6px 14px; font-size:12px;">REPLAY INTRO CALL</button>
       <button class="tac-btn amber" id="btn-upgrades" style="padding:6px 14px; font-size:12px;">UPGRADES</button>
+      <button class="tac-btn amber" id="btn-auto-prefs" style="padding:6px 14px; font-size:12px;">AUTOPILOT SETTINGS</button>
       <button class="tac-btn amber" id="btn-install" style="padding:6px 14px; font-size:12px;">INSTALL APP</button>
       <button class="tac-btn amber" id="btn-update" style="padding:6px 14px; font-size:12px;">CHECK FOR UPDATES</button>
       <button class="tac-btn danger" id="btn-delete-save" style="padding:6px 14px; font-size:12px;">DELETE SAVE</button>

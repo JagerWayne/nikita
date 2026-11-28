@@ -248,6 +248,35 @@ export const uiMethods = {
     try { localStorage.setItem('nikita.prefs', JSON.stringify(this.prefs)); } catch (_) {}
   },
 
+  /* ---- Autopilot Settings modal (markup: #autopilot-modal; every control carries data-ap="<pref key>") ---- */
+  openAutoPrefs() {
+    const m = document.getElementById('autopilot-modal');
+    if (!m) return;
+    this.refreshAutoPrefsUI();
+    m.style.display = 'flex';
+    const f = m.querySelector('input'); if (f) { try { f.focus({ preventScroll: true }); } catch (_) {} }
+  },
+
+  closeAutoPrefs() {
+    const m = document.getElementById('autopilot-modal');
+    if (m) m.style.display = 'none';
+  },
+
+  refreshAutoPrefsUI() {
+    const A = this.autoPrefs;
+    if (!A) return;
+    const root = document.getElementById('autopilot-modal');
+    if (!root) return;
+    root.querySelectorAll('[data-ap]').forEach((el) => {
+      const k = el.dataset.ap, v = A[k];
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v);
+    });
+    root.querySelectorAll('[data-ap-val]').forEach((el) => {
+      const k = el.dataset.apVal, v = A[k];
+      el.textContent = k.charAt(0) === 'w' ? (v <= 0 ? 'OFF' : v.toFixed(1) + 'x') : (k === 'refuelPct' || k === 'speedCapPct' ? v + '%' : '');
+    });
+  },
+
   refreshMenuLabels() {
     const ps = document.getElementById('pause-sector'), pd = document.getElementById('pause-seed');   // the sector and seed being played
     if (ps) ps.textContent = `${this.level} / ${MAX_LEVELS}`;

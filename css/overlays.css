@@ -379,3 +379,16 @@ input[type="range"] { width: 100%; accent-color: var(--hud-amber); cursor: point
   }
   .touch-act-btn { width: 54px; height: 54px; font-size: 9px; }
 }
+
+/* Autopilot Settings modal */
+.ap-card { max-width: 600px; }
+.ap-sec { margin: 12px 0 4px; font-size: 11px; letter-spacing: 0.18em; color: var(--hud-amber); border-bottom: 1px solid rgba(255, 170, 0, 0.3); padding-bottom: 3px; }
+.ap-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, 190px) 46px; align-items: center; gap: 10px; min-height: 44px; padding: 3px 0; font-size: 12px; }
+.ap-row b { display: block; font-weight: normal; color: #d8ffe9; letter-spacing: 0.04em; }
+.ap-row small { display: block; font-size: 10px; color: rgba(216, 255, 233, 0.55); letter-spacing: 0.02em; }
+.ap-row output { text-align: right; font-weight: bold; color: var(--hud-green); font-variant-numeric: tabular-nums; }
+.ap-row input[type="range"] { height: 28px; margin: 0; accent-color: var(--hud-green); }
+.ap-tog { grid-template-columns: minmax(0, 1fr) auto; cursor: pointer; }
+.ap-tog input[type="checkbox"] { width: 22px; height: 22px; }
+#autopilot-modal .btn-row { margin-top: 8px; }
+@media (max-width: 520px) { .ap-row { grid-template-columns: minmax(0, 1fr) 96px 42px; gap: 6px; } .ap-tog { grid-template-columns: minmax(0, 1fr) auto; } }

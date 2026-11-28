@@ -73,6 +73,7 @@ export class Autopilot {
     this._S = null;                                                      // search scratch buffers (distances, parents, heap, queue)
     this._pickGoals = new Map();
     this._goalPick = (i) => this._pickGoals.has(i);
+    this._W = new Float64Array(7); this._ord = new Int8Array(7); this._ordN = 0; this._ordRev = -1;   // task weights and their order (rebuilt when the settings change)
     this._wpGoal = -1; this._goalWp = (i) => i === this._wpGoal; this.wpBlockT = 0; this._wpSeq = -1;   // the pilot's map waypoint (route goal tile, retry timer, last seen waypoint number)
     this._brGoals = new Map(); this._goalBreach = (i) => this._brGoals.has(i);
     // mission ladder scratch (decide() reuses all of it): candidate, firing-spot goals, box list, barrel cluster
@@ -808,23 +809,55 @@ export class Autopilot {
     if (g.waypointSeq !== this._wpSeq) { this._wpSeq = g.waypointSeq; this.wpBlockT = 0; if (cur === 'WAYPOINT') { this.plan = null; this.replanT = 0; } }   // the pilot dropped / moved / cleared it
     const scanDone = g.scanPercent() >= 100, C = this._cand;
     let next = 'EXPLORE', obj = null, kind = '', energy = false;
+    const A = g.autoPrefs, W = this._W;
+    if (this._ordRev !== g.autoPrefsRev) this._rebuildOrder();
     if (nActive > 0 && (t.rockets <= TUNE.huntRocketFloor || t.hull < TUNE.huntHullFloor)) next = 'HUNT';                                  // emergency
-    else if (cur === 'PICKUP' && this.pickEnergy && this.pickObj && this.pickObj.active && this.lowEnergy(t)) { next = 'PICKUP'; obj = this.pickObj; energy = true; }
-    else if (this.lowEnergy(t) && this._findPickup(true)) { next = 'PICKUP'; obj = C.obj; energy = true; }                               // emergency: fuel
+    else if (cur === 'PICKUP' && this.pickEnergy && this.pickObj && this.pickObj.active && this.needFuel(t)) { next = 'PICKUP'; obj = this.pickObj; energy = true; }
+    else if (this.needFuel(t) && this._findPickup(true)) { next = 'PICKUP'; obj = C.obj; energy = true; }                                 // emergency: fuel
     else if (g.waypoint && !(this.wpBlockT > t.time)) next = 'WAYPOINT';                                                                  // the pilot's map waypoint beats every task below
-    else if (cur === 'LASER_SWITCH' && this._boxLive(this.boxLaser)) { next = cur; obj = this.boxLaser; }
-    else if (this._findLaserBox(true, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                                 // tier 2: in sight now
-    else if (!this.noFrontier && !scanDone) next = 'EXPLORE';                                                                              // tier 1
-    else if (this._findLaserBox(false, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                                // tier 2
-    else if (cur === 'ENGAGE' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = this.engT.kind; }
-    else if (this._findAttack('ENGAGE')) { next = 'ENGAGE'; obj = C.obj; kind = C.kind; }                                                  // tier 3
-    else if (cur === 'CLEAR_BARREL' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = 'BARREL'; }
-    else if (this._findAttack('CLEAR_BARREL')) { next = 'CLEAR_BARREL'; obj = C.obj; kind = 'BARREL'; }                                    // tier 4
-    else if (cur === 'PICKUP' && !this.pickEnergy && this.pickObj && this.pickObj.active && !this.pickTried.has(this.pickObj)) { next = cur; obj = this.pickObj; }
-    else if (this._findPickup(false)) { next = 'PICKUP'; obj = C.obj; }                                                                    // tier 5
-    else if (cur === 'BREACH' && this.breachT && this.breachT.bw.active && t.time - this.breachT.t0 < TUNE.breachMax) { next = cur; obj = this.breachT.bw; }
-    else if (t.rockets >= TUNE.breachMinRockets && t.hull >= TUNE.huntHullFloor && this._findBreach()) { next = 'BREACH'; obj = C.obj; }  // tier 6
-    else if (nActive > 0) next = 'HUNT';                                                                                                   // tier 7
+    else if (W[1] > 0 && cur === 'LASER_SWITCH' && this._boxLive(this.boxLaser)) { next = cur; obj = this.boxLaser; }
+    else if (W[1] > 0 && this._findLaserBox(true, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                       // a box in sight now goes first, even before exploring
+    else {
+      // the task weights (Autopilot Settings) order the tiers: score = default rank + spread * (weight - 1); weight 0 skips a tier.
+      // At the default weights this is the strict ladder 1 EXPLORE, 2 LASER_SWITCH, 3 ENGAGE, 4 CLEAR_BARREL, 5 PICKUP, 6 BREACH, 7 HUNT.
+      const ord = this._ord, n = this._ordN;
+      let hit = false;
+      for (let q = 0; q < n && !hit; q++) {
+        switch (ord[q]) {
+          case 0:                                                                                                                         // EXPLORE
+            if (this.noFrontier || scanDone) break;
+            hit = true;
+            if (A.opportunistic) {                                                                                                         // a secondary target close to the route is taken first
+              if (W[2] > 0 && cur === 'ENGAGE' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = this.engT.kind; break; }
+              if (W[3] > 0 && cur === 'CLEAR_BARREL' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = 'BARREL'; break; }
+              if (W[2] > 0 && this._findAttack('ENGAGE', TUNE.oppMaxCost)) { next = 'ENGAGE'; obj = C.obj; kind = C.kind; break; }
+              if (W[3] > 0 && this._findAttack('CLEAR_BARREL', TUNE.oppMaxCost)) { next = 'CLEAR_BARREL'; obj = C.obj; kind = 'BARREL'; break; }
+              if (W[1] > 0 && this._findLaserBox(false, null, TUNE.oppMaxCost) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; break; }
+            }
+            break;
+          case 1: if (this._findLaserBox(false, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; hit = true; } break;
+          case 2:
+            if (cur === 'ENGAGE' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = this.engT.kind; hit = true; }
+            else if (this._findAttack('ENGAGE')) { next = 'ENGAGE'; obj = C.obj; kind = C.kind; hit = true; }
+            break;
+          case 3:
+            if (cur === 'CLEAR_BARREL' && this._attackValid()) { next = cur; obj = this.engT.tu; kind = 'BARREL'; hit = true; }
+            else if (this._findAttack('CLEAR_BARREL')) { next = 'CLEAR_BARREL'; obj = C.obj; kind = 'BARREL'; hit = true; }
+            break;
+          case 4:
+            if (cur === 'PICKUP' && !this.pickEnergy && this.pickObj && this.pickObj.active && !this.pickTried.has(this.pickObj)) { next = cur; obj = this.pickObj; hit = true; }
+            else if (this._findPickup(false)) { next = 'PICKUP'; obj = C.obj; hit = true; }
+            break;
+          case 5:
+            if (cur === 'BREACH' && this.breachT && this.breachT.bw.active && t.time - this.breachT.t0 < TUNE.breachMax) { next = cur; obj = this.breachT.bw; hit = true; }
+            else if (t.rockets >= TUNE.breachMinRockets && t.hull >= TUNE.huntHullFloor && this._findBreach()) { next = 'BREACH'; obj = C.obj; hit = true; }
+            break;
+          case 6:
+            if (nActive > 0 && !(A.deferHunt && this._secondaryLeft())) { next = 'HUNT'; hit = true; }
+            break;
+        }
+      }
+    }
     const prevObj = cur === 'PICKUP' ? this.pickObj : (cur === 'LASER_SWITCH' ? this.boxLaser : ((cur === 'ENGAGE' || cur === 'CLEAR_BARREL') && this.engT ? this.engT.tu : (cur === 'BREACH' && this.breachT ? this.breachT.bw : null)));
     if (next === cur && obj === prevObj) return;
     if (next !== cur || (next === 'PICKUP' && energy !== this.pickEnergy)) g.pushFeed(this._missionMsg(next, kind, obj, energy), 'cyan');
@@ -835,6 +868,35 @@ export class Autopilot {
     if (next !== 'LASER_SWITCH' && cur === 'LASER_SWITCH') { this.boxGoal = null; this.boxLaser = null; this.boxWait = null; }
     if (next !== 'ENGAGE' && next !== 'CLEAR_BARREL') this.engT = null;
     this.mission = next; this.plan = null; this.scan = null; this.replanT = 0;
+  }
+
+  // Task order from the weights (Autopilot Settings). Rebuilt only when the settings change (g.autoPrefsRev), never per step.
+  _rebuildOrder() {
+    const A = this.g.autoPrefs, W = this._W, ids = [];
+    W[0] = A.wExplore; W[1] = A.wLaser; W[2] = A.wEngage; W[3] = A.wBarrel; W[4] = A.wPickup; W[5] = A.wBreach; W[6] = A.wHunt;
+    for (let i = 0; i < 7; i++) if (W[i] > 0) ids.push(i);
+    const score = (i) => (7 - i) + TUNE.tierSpread * (W[i] - 1);
+    ids.sort((a, b) => (score(b) - score(a)) || (W[b] - W[a]) || (a - b));
+    this._ordN = ids.length;
+    for (let i = 0; i < ids.length; i++) this._ord[i] = ids[i];
+    this._ordRev = this.g.autoPrefsRev;
+  }
+
+  // The main target waits while a reachable secondary job (laser box, turret / sentry, barrel) that the weights allow is left
+  _secondaryLeft() {
+    const W = this._W;
+    return (W[1] > 0 && this._findLaserBox(false, null) >= 0) || (W[2] > 0 && this._findAttack('ENGAGE')) || (W[3] > 0 && this._findAttack('CLEAR_BARREL'));
+  }
+
+  // Refuel wanted: the setting is on and the range reserve is short, or a seen dock exists and the tank is under the threshold
+  needFuel(t) {
+    const A = this.g.autoPrefs;
+    if (!A.autoRefuel) return false;
+    if (this.lowEnergy(t)) return true;
+    if (!(t.fuel < A.refuelPct)) return false;
+    const P = this.g.pickups;
+    for (let i = 0; i < P.length; i++) { const p = P[i]; if (p.type === 'DOCK' && p.active && p._seen && !(this.pickTried && this.pickTried.has(p))) return true; }
+    return false;
   }
 
   // Route to a tile next to the nearest primary target (its own tile is no-go)
@@ -1056,6 +1118,8 @@ export class Autopilot {
     const P = this._prevCmd;
     if (this.gate) { P.yaw = out.yaw; P.climb = out.climb; P.speed = out.speed; this._prevOn = true; return out; }   // laser gates: exact, unsmoothed commands
     if (!this._prevOn) { P.yaw = 0; P.climb = 0; P.speed = out.speed; }
+    const cs = this.g.autoPrefs.speedCapPct;
+    if (cs < 100 && out.speed > 0) { const cap = this.g.maxSpeed() * cs * 0.01; if (out.speed > cap) out.speed = cap; }   // Autopilot Settings: cruise speed cap
     const o = this._res;
     o.yaw = lim(P.yaw, out.yaw, TUNE.yawSlew * dt); o.climb = lim(P.climb, out.climb, TUNE.climbSlew * dt);
     o.speed = out.speed < P.speed ? out.speed : lim(P.speed, out.speed, TUNE.accelSlew * dt);   // braking is never delayed
@@ -1291,7 +1355,7 @@ export class Autopilot {
   _wantPickup(p) {
     const g = this.g, t = this.t;
     return p.active && p._seen && !this.pickTried.has(p) && (p.type === 'ROCKETS' || p.type === 'OVERCHARGE' ||
-      (p.type === 'AMMO' && g.gunAmmo < g.gunCap() * 0.6) || (p.type === 'REPAIR' && t.hull < 80) || (p.type === 'DOCK' && p._seen && (t.fuel < 45 || this.lowEnergy(t))));
+      (p.type === 'AMMO' && g.gunAmmo < g.gunCap() * 0.6) || (p.type === 'REPAIR' && t.hull < 80) || (p.type === 'DOCK' && p._seen && this.g.autoPrefs.autoRefuel && (t.fuel < 45 || this.lowEnergy(t))));
   }
 
   // Range left at cruise speed is under the safe exploration reserve (never true with infinite fuel: the range is Infinity)
@@ -1451,7 +1515,7 @@ export class Autopilot {
 
   // Route to a firing spot for a known live box (only boxes in sight right now when visibleOnly; only `only` when given).
   // Returns the goal tile or -1, and sets this._cand.obj to the box's grid.
-  _findLaserBox(visibleOnly, only) {
+  _findLaserBox(visibleOnly, only, cap) {
     const g = this.g, t = this.t, L = this._boxList;
     L.length = 0;
     if (!this.boxTried) this.boxTried = new Set();
@@ -1459,7 +1523,7 @@ export class Autopilot {
     else for (let k = 0; k < this.knownBoxes.length; k++) { const l = this.knownBoxes[k]; if (this._boxLive(l) && (!visibleOnly || l.boxVis)) L.push(l); }
     if (!L.length) return -1;
     this._boxReach = Math.max(8, g.lidarParams().thermal * 0.8);
-    const end = this.pathGoal(t.node, this._goalBox, TUNE.laserMaxCost);
+    const end = this.pathGoal(t.node, this._goalBox, cap ? Math.min(cap, TUNE.laserMaxCost) : TUNE.laserMaxCost);
     if (end >= 0) this._cand.obj = this._boxHit;
     return end;
   }
@@ -1535,7 +1599,7 @@ export class Autopilot {
   }
 
   // Nearest reachable firing spot: tier 3 (turrets + sentries) or tier 4 (barrels). Sets this._cand.obj / .kind.
-  _findAttack(tier) {
+  _findAttack(tier, cap) {
     const g = this.g, t = this.t, goals = this._atkGoals, ig = this.turretIgnore, now = t.time;
     goals.clear(); this._atkKind.clear();
     if (tier === 'ENGAGE') {
@@ -1546,7 +1610,8 @@ export class Autopilot {
       for (let k = 0; k < this.knownBarrels.length; k++) { const o = this.knownBarrels[k]; if (o.active && !((ig.get(o) || 0) > now)) this._addAttackSpots('BARREL', o); }
     }
     if (!goals.size) return false;
-    const end = this.pathGoal(t.node, this._goalAtk, tier === 'ENGAGE' ? TUNE.engageMaxCost : TUNE.barrelMaxCost);
+    const mc = tier === 'ENGAGE' ? TUNE.engageMaxCost : TUNE.barrelMaxCost;
+    const end = this.pathGoal(t.node, this._goalAtk, cap ? Math.min(cap, mc) : mc);
     if (end < 0) return false;
     const o = goals.get(end);
     this._cand.obj = o; this._cand.kind = this._atkKind.get(o);
