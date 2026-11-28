@@ -405,6 +405,9 @@ export const combatMethods = {
   },
 
   triggerBlast(epicenter, radius, power, directTarget = null, directSentry = null) {
+    // last impact marker for the radar / full map (a pooled record, written once per blast; read only by the render path)
+    const li = this.lastImpact || (this.lastImpact = { x: 0, z: 0, r: 0, power: 0, n: 0 });
+    li.x = epicenter.x; li.z = epicenter.z; li.r = radius; li.power = power; li.n++;
     this.vfx.spawnExplosion(epicenter, radius, power);
     this.audio.playExplosion(power);
     this.vibrate(Math.min(70, Math.round(35 * power)));

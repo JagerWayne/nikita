@@ -271,6 +271,10 @@ export class NikitaGame {
     this.mousePitchDelta = 0;
     this.pointerLocked = false;
     this.radarOpen = true;
+    this.lastImpact = null;       // { x, z, r, power, n }: the last blast, marked on the radar / full map
+    this.waypoint = null;         // { x, z, tile }: the pilot's map waypoint; the autopilot flies to it first
+    this.waypointSeq = 0;
+    this.fmap = { open: false, zoom: 8, cx: 64, cz: 64, w: 0, h: 0, dpr: 1, minZoom: 4, maxZoom: 40, ptrs: new Map(), tap: null, pinch: 0, fitted: false };
     this.overrideOpen = false;
     this.paused = false;
     this.portraitBlocked = false;
@@ -572,6 +576,7 @@ export class NikitaGame {
     this.renderer.render(this.scene, this.camera);
     this.renderHUDCanvas();
     this.renderSolitonRadar();
+    this.renderFullMap();
   }
 
 
@@ -585,6 +590,7 @@ export class NikitaGame {
     document.getElementById('pause-modal').style.display = 'none';
     document.getElementById('hud-layer').style.display = 'block';
     this.paused = false;
+    this.closeFullMap();
     // score: a new campaign starts at 0; the next sector keeps it; a retry restores the sector's starting score
     if (this.state === 'BRIEFING' || (lvl === 1 && !carryOver && this.state === 'CLEAR')) { this.score = 0; this.sectorStartScore = 0; }
     else if (carryOver) this.sectorStartScore = this.score;

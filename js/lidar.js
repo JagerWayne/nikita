@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   CELL_CRACKED, CELL_RAMP, CELL_SHAFT_HIGH, CELL_SHAFT_LOW, CELL_SIZE, CELL_VOID, CELL_WALL, FEAT_BASE,
   FLOOR_SEG, GRID_SIZE, LIDAR_CAP, LIFT_BASE, MAX_FLOORS, RIM_BASE, SHAFT_REVEAL_R, SHAFT_SEG_BASE, VOX,
-  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, isShaft, isWalkable, isWallLike, LIDAR_MODE_COLORS
+  VOX_HALF, VOX_N, VOX_Y, WALL_H, XMAP_KEY, XV, XMAP_COLORS, isShaft, isWalkable, isWallLike, LIDAR_MODE_COLORS
 } from './constants.js';
 import { PROBE_DIRS, _e1, _fwd, _v8, gridToWorldX, gridToWorldZ, worldToGridX, worldToGridZ } from './math.js';
 
@@ -500,7 +500,7 @@ export const lidarMethods = {
   drawXmapBase() {
     const ctx = this.radarCtx, size = this.radarCanvas.width, G = GRID_SIZE, GG = G * G, sc = size / (this.gridN || G), sh = -(this.gridOff || 0) * sc, X = this.xgrid;
     const curF = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
-    const COL = ['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00'];
+    const COL = XMAP_COLORS;
     if (!this._xLayer) { this._xLayer = document.createElement('canvas'); this._xLayer.width = size; this._xLayer.height = size; }
     const now = performance.now();
     if (X && (this.xgridDirty || this._xLayerF !== curF || this._xLayerN !== this.gridN) && now - (this._xLayerT || 0) > 250) {     // redraw the tiles only when the map changed
@@ -522,6 +522,14 @@ export const lidarMethods = {
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(this._xLayer, 0, 0);
     ctx.save(); ctx.translate(sh, sh);
+    this.drawXmapRoute(ctx, sc, curF);
+    ctx.restore();
+  },
+
+  // The autopilot's route (9) and smoothed legs, drawn in grid-cell units (sc px per cell) on the current floor. The caller sets the transform.
+  drawXmapRoute(ctx, sc, curF) {
+    const G = GRID_SIZE, GG = G * G;
+    const COL = XMAP_COLORS;
     // the route (9) on the current floor
     if (this.xroute && this.xroute.length) {
       ctx.fillStyle = COL[XV.ROUTE];
@@ -537,7 +545,6 @@ export const lidarMethods = {
       const cmd = this.pilot.cmd;
       if (cmd && cmd.carrot) { ctx.fillStyle = '#00e5ff'; ctx.beginPath(); ctx.arc(toX(cmd.carrot.x), toZ(cmd.carrot.z), sc * 0.6, 0, Math.PI * 2); ctx.fill(); }
     }
-    ctx.restore();
   },
 
   castRay(ox, oy, oz, dx, dy, dz, range) {

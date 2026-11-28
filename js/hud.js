@@ -1,8 +1,8 @@
 /* Canvas HUD and soliton radar rendering for NikitaGame. */
 import {
-  CELL_SIZE, DECOY_LIFE, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES
+  CELL_SIZE, DECOY_LIFE, GRID_SIZE, HOVER_SPEED_MAX, PROBE_RANGE, SENTRY_VISION, SPEED_MODES, XMAP_COLORS
 } from './constants.js';
-import { _v1, _v2 } from './math.js';
+import { _v1, _v2, gridToWorldX, gridToWorldZ } from './math.js';
 
 export const hudMethods = {
 
@@ -333,6 +333,13 @@ export const hudMethods = {
 
     this.drawXmapBase();                                               // the explore map is the map (route, autopilot legs)
     ctx.save(); ctx.translate(-(this.gridOff || 0) * scale, -(this.gridOff || 0) * scale);   // the sector's window of the 128 grid
+    this.drawRadarLayers(ctx, scale, 1);
+    ctx.restore();
+  },
+
+  // Everything drawn over the explore map, in grid-cell units (scale px per cell, origin = grid corner): shared by the radar and the
+  // full-screen map. k scales the markers that must stay readable when the map is big. Visual only.
+  drawRadarLayers(ctx, scale, k) {
     const curF = this._radarFloor = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
     const fa = (y) => { ctx.globalAlpha = this.floorOfY(y) === curF ? 1 : 0.05; };
 
@@ -481,7 +488,182 @@ export const hudMethods = {
       ctx.lineTo(mx - Math.sin(this.missile.yaw) * 10, mz - Math.cos(this.missile.yaw) * 10);
       ctx.stroke();
     }
+    this.drawImpactMarker(ctx, scale, k);
+    this.drawWaypointMarker(ctx, scale, k);
+  },
+
+  // Pulsing X + expanding ring where the last blast went off.
+  drawImpactMarker(ctx, scale, k) {
+    const li = this.lastImpact;
+    if (!li) return;
+    const x = (li.x / CELL_SIZE + GRID_SIZE * 0.5) * scale, z = (li.z / CELL_SIZE + GRID_SIZE * 0.5) * scale;
+    const ph = (performance.now() % 1200) / 1200, a = 1 - ph, r = (5 + ph * 9) * k, c = 4.2 * k;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(255, 90, 40, ${(0.25 + a * 0.7).toFixed(2)})`;
+    ctx.lineWidth = 1.5 * Math.sqrt(k);
+    ctx.beginPath(); ctx.arc(x, z, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#ffe6c8'; ctx.shadowColor = '#ff5a28'; ctx.shadowBlur = 6 * k;
+    ctx.lineWidth = 2 * Math.sqrt(k);
+    ctx.beginPath();
+    ctx.moveTo(x - c, z - c); ctx.lineTo(x + c, z + c);
+    ctx.moveTo(x + c, z - c); ctx.lineTo(x - c, z + c);
+    ctx.stroke();
     ctx.restore();
+  },
+
+  // Glowing magenta beacon on the pilot's waypoint.
+  drawWaypointMarker(ctx, scale, k) {
+    const W = this.waypoint;
+    if (!W) return;
+    const x = (W.x / CELL_SIZE + GRID_SIZE * 0.5) * scale, z = (W.z / CELL_SIZE + GRID_SIZE * 0.5) * scale;
+    const ph = (performance.now() % 1500) / 1500, d = 4.5 * k;
+    ctx.save();
+    ctx.shadowColor = '#ff55ff'; ctx.shadowBlur = 10 * k;
+    ctx.strokeStyle = `rgba(255, 120, 255, ${(1 - ph).toFixed(2)})`; ctx.lineWidth = 1.4 * Math.sqrt(k);
+    ctx.beginPath(); ctx.arc(x, z, d * (1 + ph * 2.2), 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#ff55ff'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.2 * Math.sqrt(k);
+    ctx.beginPath(); ctx.moveTo(x, z - d); ctx.lineTo(x + d, z); ctx.lineTo(x, z + d); ctx.lineTo(x - d, z); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  },
+
+  /* ------------------------------------------------------------------------
+     FULL-SCREEN MAP (long-press the radar): pan, zoom, drop a waypoint. Visual / UI only: it never touches the simulation,
+     except setWaypoint / clearWaypoint, which set the pilot's goal between steps (input events).
+     ------------------------------------------------------------------------ */
+  fullMapAllowed() {
+    return this.state === 'PLAYING' || this.state === 'READY' || this.state === 'KILLCAM' || this.state === 'RESPAWNING';
+  },
+
+  openFullMap() {
+    const F = this.fmap;
+    if (F.open || !this.fullMapAllowed() || this.paused) return;
+    F.open = true; F.ptrs.clear(); F.tap = null; F.pinch = 0;
+    this.resetAllInputs();                                           // flight pointer steering stays off while the map is up
+    if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
+    document.getElementById('map-overlay').style.display = 'block';
+    this.vibrate(18);
+    this.fullMapResize(true);
+    this.fullMapRefreshUI();
+  },
+
+  closeFullMap() {
+    const F = this.fmap;
+    if (!F || !F.open) return;
+    F.open = false; F.ptrs.clear(); F.tap = null;
+    document.getElementById('map-overlay').style.display = 'none';
+  },
+
+  // Canvas size follows the window; on open the view is fitted to the sector.
+  fullMapResize(fit) {
+    const F = this.fmap, cv = document.getElementById('map-canvas');
+    const w = Math.max(1, cv.clientWidth), h = Math.max(1, cv.clientHeight), dpr = Math.min(2, window.devicePixelRatio || 1);
+    F.w = w; F.h = h; F.dpr = dpr;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const N = this.gridN || GRID_SIZE;
+    F.minZoom = Math.min(w, h) / N * 0.96;
+    F.maxZoom = F.minZoom * 10;
+    if (fit || !F.fitted) {
+      const o = this.gridOff || 0;
+      F.zoom = F.minZoom; F.cx = o + N * 0.5; F.cz = o + N * 0.5; F.fitted = true;
+    }
+    this.fullMapClamp();
+  },
+
+  // Zoom within [minZoom, maxZoom] and keep the view centre inside the sector window.
+  fullMapClamp() {
+    const F = this.fmap, N = this.gridN || GRID_SIZE, o = this.gridOff || 0;
+    F.zoom = Math.max(F.minZoom, Math.min(F.maxZoom, F.zoom));
+    const hx = Math.max(0, N * 0.5 - F.w * 0.5 / F.zoom), hz = Math.max(0, N * 0.5 - F.h * 0.5 / F.zoom), mx = o + N * 0.5;
+    F.cx = Math.max(mx - hx, Math.min(mx + hx, F.cx));
+    F.cz = Math.max(mx - hz, Math.min(mx + hz, F.cz));
+  },
+
+  // Zoom keeping the grid point under the screen position (sx, sy) fixed.
+  fullMapZoomAt(sx, sy, zoom) {
+    const F = this.fmap;
+    const gx = F.cx + (sx - F.w * 0.5) / F.zoom, gz = F.cz + (sy - F.h * 0.5) / F.zoom;
+    F.zoom = Math.max(F.minZoom, Math.min(F.maxZoom, zoom));
+    F.cx = gx - (sx - F.w * 0.5) / F.zoom; F.cz = gz - (sy - F.h * 0.5) / F.zoom;
+    this.fullMapClamp();
+  },
+
+  fullMapPan(dxPx, dyPx) {
+    const F = this.fmap;
+    F.cx -= dxPx / F.zoom; F.cz -= dyPx / F.zoom;
+    this.fullMapClamp();
+  },
+
+  // Screen tap -> waypoint on an open, explored floor tile. Returns true when it was placed.
+  fullMapTap(sx, sy) {
+    const F = this.fmap, G = GRID_SIZE, GG = G * G;
+    const gx = Math.floor(F.cx + (sx - F.w * 0.5) / F.zoom), gz = Math.floor(F.cz + (sy - F.h * 0.5) / F.zoom);
+    const o = this.gridOff || 0, N = this.gridN || G;
+    const X = this.xgrid, f = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
+    if (!X || gx < o || gz < o || gx >= o + N || gz >= o + N) return false;
+    const tile = f * GG + gz * G + gx;
+    if (!(this.pilot ? this.pilot.flyable(X[tile]) : X[tile] === 5)) { this.pushFeed('WAYPOINT: TAP OPEN, EXPLORED FLOOR', 'amber'); return false; }
+    this.setWaypoint(gridToWorldX(gx), gridToWorldZ(gz), tile);
+    return true;
+  },
+
+  setWaypoint(x, z, tile) {
+    this.waypoint = { x, z, tile };
+    this.waypointSeq++;
+    if (this.pilot) this.pilot._decT = 0;                            // the ladder looks at it at once
+    this.pushFeed(this.missile.auto ? 'WAYPOINT SET — AUTOPILOT FLYING THERE' : 'WAYPOINT SET — ENGAGE THE AUTOPILOT (V) TO FLY THERE', 'cyan');
+    this.vibrate(14);
+    this.fullMapRefreshUI();
+  },
+
+  clearWaypoint(silent) {
+    if (!this.waypoint) return;
+    this.waypoint = null;
+    this.waypointSeq++;
+    if (!silent) this.pushFeed('WAYPOINT CLEARED', 'cyan');
+    this.fullMapRefreshUI();
+  },
+
+  fullMapRefreshUI() {
+    const b = document.getElementById('map-wp-clear');
+    if (b) b.disabled = !this.waypoint;
+  },
+
+  renderFullMap() {
+    const F = this.fmap;
+    if (!F.open) return;
+    if (!this.fullMapAllowed()) { this.closeFullMap(); return; }
+    const cv = document.getElementById('map-canvas'), ctx = cv.getContext('2d');
+    if (cv.clientWidth !== F.w || cv.clientHeight !== F.h) this.fullMapResize(false);
+    const G = GRID_SIZE, GG = G * G, o = this.gridOff || 0, N = this.gridN || G, z = F.zoom;
+    ctx.setTransform(F.dpr, 0, 0, F.dpr, 0, 0);
+    ctx.fillStyle = '#010503'; ctx.fillRect(0, 0, F.w, F.h);
+    ctx.save();
+    ctx.translate(F.w * 0.5 - F.cx * z, F.h * 0.5 - F.cz * z);
+    ctx.fillStyle = '#020a06'; ctx.fillRect(o * z, o * z, N * z, N * z);
+    const X = this.xgrid, curF = Math.max(0, Math.min(this.nFloors - 1, this.floorOfY(this.missile.pos.y)));
+    if (X) {
+      const x0 = Math.max(o, Math.floor(F.cx - F.w * 0.5 / z)), x1 = Math.min(o + N - 1, Math.ceil(F.cx + F.w * 0.5 / z));
+      const z0 = Math.max(o, Math.floor(F.cz - F.h * 0.5 / z)), z1 = Math.min(o + N - 1, Math.ceil(F.cz + F.h * 0.5 / z));
+      const pad = z > 6 ? 0.5 : 0;                                   // thin gaps between tiles once they are big enough
+      for (let gz = z0; gz <= z1; gz++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const v = X[curF * GG + gz * G + gx];
+          if (!v) continue;
+          ctx.fillStyle = XMAP_COLORS[v]; ctx.fillRect(gx * z, gz * z, z + 0.5 - pad, z + 0.5 - pad);
+        }
+      }
+    }
+    ctx.strokeStyle = 'rgba(0, 255, 136, 0.55)'; ctx.lineWidth = 1.5; ctx.strokeRect(o * z, o * z, N * z, N * z);
+    this.drawXmapRoute(ctx, z, curF);
+    this.drawRadarLayers(ctx, z, 2.2);
+    ctx.restore();
+    const info = this._mapInfoEl || (this._mapInfoEl = document.getElementById('map-info'));
+    if (info) {
+      const txt = `${Math.round(z / F.minZoom * 100)}% · ` + (this.waypoint ? `WAYPOINT SET${this.missile.auto && this.pilot && this.pilot.mission === 'WAYPOINT' ? ' · AUTOPILOT EN ROUTE' : ''}` : 'NO WAYPOINT');
+      if (info._t !== txt) { info._t = txt; info.textContent = txt; }
+    }
   },
 
   updateSpeedBadgeUI() {

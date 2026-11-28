@@ -40,7 +40,7 @@
 /* Radar: small, top-left under the stats, tap to enlarge */
 #radar-container {
   top: calc(var(--safe-t) + 50px); left: var(--safe-l); transform: none;
-  padding: 3px; opacity: 0.8; pointer-events: auto; touch-action: manipulation;
+  padding: 3px; opacity: 0.8; pointer-events: auto; touch-action: none;
 }
 #radar-header { display: none; }
 #radar-canvas { width: 104px; height: 104px; }

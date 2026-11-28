@@ -145,6 +145,9 @@ export const SAVE_KEY = 'nikita-save-v1';
 export const AUTO_MEM_KEY = 'nikita.autoMem';   // the autopilot's explored-map memory per sector (older format)
 export const XMAP_KEY = 'nikita.xmap';          // the plotted explore map per sector
 // Explore map values: one cell per map tile, per floor, plotted only from what the lidar has actually revealed
+/* Explore-map tile colours, indexed by XV value (radar and full-screen map). */
+export const XMAP_COLORS = Object.freeze(['', '#5a6b63', '#7fe8ff', '#33c7e0', '#1f8fa8', '#14482f', '#3fd18a', '#c9a6ff', '#ff3344', '#ffdd55', '#ffaa00']);
+
 export const XV = { UNK: 0, SOLID: 1, SH_TOP: 2, SH_MID: 3, SH_BOT: 4, OPEN: 5, RAMP: 6, HOLE: 7, HAZ: 8, ROUTE: 9, CRACK: 10 };
 
 export const SPEED_MODES = {
@@ -173,6 +176,7 @@ export const AUTOPILOT_TUNING = Object.freeze({
   yawGain: 2.4, yawDamp: 0.35,                // yaw stick = gain * heading error - damp * yaw rate
   climbGain: 1.4, climbDamp: 0.25,            // climb stick = gain * altitude error - damp * vertical speed
   lookBase: 2, lookPerSpeed: 0.6, lookMin: 2.5, lookMax: 9,   // look-ahead distance = clamp(base + perSpeed * speed)
+  wpRetry: 6,                                   // s before a custom map waypoint that had no route is tried again
   wpReach: 1.2, wpPassRange: 3, vertTol: 0.9, // waypoint reached / passed, height tolerance at a floor change
   roomMargin: 0.9,                            // keep this far from floor and ceiling
   // --- speed and walls
@@ -244,6 +248,7 @@ export const AUTOPILOT_TUNING = Object.freeze({
 /* Lidar map dot colour (r, g, b) by autopilot mission; anything not listed (manual flight, turret fights) uses EXPLORE. */
 export const LIDAR_MODE_COLORS = Object.freeze({
   EXPLORE: [0.12, 1.0, 0.45],   // green
+  WAYPOINT: [1.0, 0.33, 1.0],   // magenta: flying to the pilot's map waypoint
   PICKUP: [1.0, 0.52, 0.05],    // orange
   HUNT: [1.0, 0.1, 0.06]        // red
 });

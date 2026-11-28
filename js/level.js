@@ -234,6 +234,7 @@ export const levelMethods = {
     // sector size: a centred N x N window of the 128 grid (64 early, 128 late); everything outside it stays solid rock
     const N = sectorSizeFor(this.level), o = (GRID_SIZE - N) >> 1, half = N >> 1, areaK = (N / 64) * (N / 64);
     this.gridN = N; this.gridOff = o;
+    this.lastImpact = null; this.waypoint = null; this.waypointSeq = (this.waypointSeq | 0) + 1;   // map markers belong to one sector
     this.spawnCell = { x: o + half, z: o + N - 8 };
     const cLo = o + 2, cHi = o + N - 3;                  // carve limits (inclusive)
 

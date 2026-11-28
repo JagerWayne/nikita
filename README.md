@@ -40,6 +40,12 @@ sw.js                 service worker;  vendor/  Three.js and the QR library;  to
 
 `NikitaGame` is one class split over several files: `js/game.js` declares it and mixes in the method groups (`inputMethods`, `levelMethods`, ...) from the other files, so every method still reads and writes `this`. The group files import only constants, math and the leaf modules, never `game.js`, so there are no import cycles. Every file under `css/` and `js/` must be listed in `js/boot/files.js` (see Releasing an update). The game needs a web server (browsers block ES modules from `file://`); `python3 -m http.server` is enough for local testing.
 
+## v3.1.0: tactical map: impact marker, full-screen map, waypoints
+
+- **Last impact marker.** A pulsing X and ring on the radar shows where the last blast went off (cleared at the start of each sector).
+- **Full-screen map.** Hold the radar for half a second (or press M) to open it. Drag to pan, mouse wheel or two-finger pinch to zoom (kept inside the sector). Esc, M or the CLOSE button returns to the HUD. Pointer steering is off while it is open.
+- **Waypoint.** Tap open, explored floor on the full map to drop a glowing waypoint (tap again to move it, CLEAR WAYPOINT removes it). With the autopilot on, it flies there first by the normal route finder, then clears the waypoint and carries on.
+
 ## v3.0.1: lidar outlines are back
 
 The scan drew outlines only around shafts: on the new 128 grid the wall, floor and ceiling edges got ids that read as an upper floor and were thrown away. They draw again; maps saved by 3.0.0 are rebuilt.

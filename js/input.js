@@ -229,6 +229,56 @@ export const inputMethods = {
   /* ------------------------------------------------------------------------
      INPUT & UI WIRING
      ------------------------------------------------------------------------ */
+  // Full-screen map input: one pointer pans (a short still press is a tap = waypoint), two pointers pinch-zoom, the wheel zooms.
+  bindFullMapEvents() {
+    const cv = document.getElementById('map-canvas'), F = this.fmap;
+    const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const pinchState = () => { const a = [...F.ptrs.values()]; return { d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) || 1, mx: (a[0].x + a[1].x) * 0.5, my: (a[0].y + a[1].y) * 0.5 }; };
+    cv.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+      const p = pos(e);
+      F.ptrs.set(e.pointerId, { x: p.x, y: p.y });
+      if (F.ptrs.size === 1) F.tap = { id: e.pointerId, x: p.x, y: p.y, t: performance.now(), moved: false };
+      else { F.tap = null; if (F.ptrs.size === 2) { const s = pinchState(); F.pinch = s.d; F.pz = F.zoom; F.pmx = s.mx; F.pmy = s.my; } }
+    });
+    cv.addEventListener('pointermove', (e) => {
+      const q = F.ptrs.get(e.pointerId);
+      if (!q) return;
+      const p = pos(e);
+      if (F.ptrs.size === 1) {
+        if (F.tap && Math.hypot(p.x - F.tap.x, p.y - F.tap.y) > 6) F.tap.moved = true;
+        if (!F.tap || F.tap.moved) this.fullMapPan(p.x - q.x, p.y - q.y);
+        q.x = p.x; q.y = p.y;
+      } else if (F.ptrs.size === 2) {
+        q.x = p.x; q.y = p.y;
+        const s = pinchState();
+        this.fullMapPan(s.mx - F.pmx, s.my - F.pmy);
+        this.fullMapZoomAt(s.mx, s.my, F.pz * s.d / F.pinch);
+        F.pmx = s.mx; F.pmy = s.my;
+      }
+    });
+    const up = (e) => {
+      if (!F.ptrs.has(e.pointerId)) return;
+      const q = F.ptrs.get(e.pointerId);
+      const tap = F.tap && F.tap.id === e.pointerId && !F.tap.moved && e.type === 'pointerup' && performance.now() - F.tap.t < 700;
+      F.ptrs.delete(e.pointerId);
+      if (tap) this.fullMapTap(q.x, q.y);
+      F.tap = null;
+      if (F.ptrs.size === 1) { const r = [...F.ptrs.values()][0]; F.tap = { id: -1, x: r.x, y: r.y, t: 0, moved: true }; }   // the finger left over only pans
+    };
+    cv.addEventListener('pointerup', up);
+    cv.addEventListener('pointercancel', up);
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const p = pos(e);
+      this.fullMapZoomAt(p.x, p.y, F.zoom * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0016)));
+    }, { passive: false });
+    cv.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.getElementById('map-close').addEventListener('click', () => this.closeFullMap());
+    document.getElementById('map-wp-clear').addEventListener('click', () => this.clearWaypoint());
+  },
+
   bindEvents() {
     window.addEventListener('resize', () => this.onResize());
     if (window.visualViewport) {
@@ -313,11 +363,27 @@ export const inputMethods = {
       this.setPaused(!this.paused);
     });
 
-    // Radar: tap to enlarge / shrink
-    document.getElementById('radar-container').addEventListener('pointerdown', (e) => {
+    // Radar: tap to enlarge / shrink; hold 500 ms (without dragging) for the full-screen map
+    const radarBox = document.getElementById('radar-container');
+    let lp = null;
+    const lpStop = () => { if (lp) { clearTimeout(lp.timer); lp = null; } };
+    radarBox.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
-      document.getElementById('radar-container').classList.toggle('big');
+      lpStop();
+      const me = lp = { id: e.pointerId, x: e.clientX, y: e.clientY, fired: false, moved: false, timer: 0 };
+      me.timer = setTimeout(() => { me.fired = true; if (lp === me) lp = null; this.openFullMap(); }, 500);
     });
+    radarBox.addEventListener('pointermove', (e) => {
+      if (lp && e.pointerId === lp.id && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { lp.moved = true; lpStop(); }
+    });
+    radarBox.addEventListener('pointerup', (e) => {
+      if (!lp || e.pointerId !== lp.id) return;
+      const tap = !lp.moved; lpStop();
+      if (tap) radarBox.classList.toggle('big');
+    });
+    radarBox.addEventListener('pointercancel', lpStop);
+    radarBox.addEventListener('pointerleave', lpStop);
+    this.bindFullMapEvents();
 
     // Menu sheet extras (proxy the hidden HUD buttons so logic stays in one place)
     document.getElementById('btn-pause-radar').addEventListener('click', () => {
@@ -629,6 +695,11 @@ export const inputMethods = {
       const kt = e.target;
       if (kt && kt.tagName === 'INPUT' && (kt.type === 'text' || kt.type === 'number')) return;
       this.audio.unlock();
+      if (this.fmap.open) {                                              // the full-screen map owns the keyboard: Esc / M close it
+        if (e.code === 'Escape' || e.code === 'KeyM') { e.preventDefault(); this.closeFullMap(); }
+        return;
+      }
+      if (e.code === 'KeyM' && !e.repeat && this.fullMapAllowed() && !this.paused) { e.preventDefault(); this.openFullMap(); return; }
       if (this.state === 'PLAYING' && (e.code === 'Space' || e.code.startsWith('Arrow'))) e.preventDefault();   // keep a focused slider/button from reacting to flight keys
       this.keys[e.code] = true;
 
@@ -675,7 +746,7 @@ export const inputMethods = {
     window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
 
     window.addEventListener('wheel', (e) => {
-      if (this.state !== 'PLAYING') return;
+      if (this.state !== 'PLAYING' || this.fmap.open) return;
       const dir = e.deltaY < 0 ? 1 : -1;
       stepSpeed(dir);
     }, { passive: true });
@@ -696,7 +767,7 @@ export const inputMethods = {
       this.pointerLocked = (document.pointerLockElement === this.canvas);
     });
     window.addEventListener('mousemove', (e) => {
-      if (this.pointerLocked && (this.state === 'PLAYING' || this.state === 'READY')) {
+      if (this.pointerLocked && !this.fmap.open && (this.state === 'PLAYING' || this.state === 'READY')) {
         this.mouseYawDelta += e.movementX;
         this.mousePitchDelta += e.movementY;
       }

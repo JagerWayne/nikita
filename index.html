@@ -234,6 +234,18 @@
   <canvas id="radar-canvas" width="256" height="256"></canvas>
 </div>
 
+<!-- Full-screen tactical map: long-press the radar (500 ms). Drag = pan, wheel / pinch = zoom, tap open floor = waypoint. -->
+<div id="map-overlay" role="dialog" aria-label="Tactical map" style="display:none">
+  <canvas id="map-canvas"></canvas>
+  <div id="map-bar">
+    <span id="map-title">TACTICAL MAP</span>
+    <span id="map-info"></span>
+    <button id="map-wp-clear" type="button" disabled>CLEAR WAYPOINT</button>
+    <button id="map-close" type="button" aria-label="Close map">&#10005; CLOSE</button>
+  </div>
+  <div id="map-hint">TAP OPEN FLOOR: WAYPOINT &middot; DRAG: PAN &middot; WHEEL / PINCH: ZOOM &middot; ESC: CLOSE</div>
+</div>
+
 <!-- Mission Briefing Modal -->
 <div id="briefing-modal" class="modal-backdrop">
   <div class="modal-card title-card">

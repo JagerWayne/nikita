@@ -73,6 +73,7 @@ export class Autopilot {
     this._S = null;                                                      // search scratch buffers (distances, parents, heap, queue)
     this._pickGoals = new Map();
     this._goalPick = (i) => this._pickGoals.has(i);
+    this._wpGoal = -1; this._goalWp = (i) => i === this._wpGoal; this.wpBlockT = 0; this._wpSeq = -1;   // the pilot's map waypoint (route goal tile, retry timer, last seen waypoint number)
     this._brGoals = new Map(); this._goalBreach = (i) => this._brGoals.has(i);
     // mission ladder scratch (decide() reuses all of it): candidate, firing-spot goals, box list, barrel cluster
     this._cand = { obj: null, kind: '' };
@@ -183,6 +184,7 @@ export class Autopilot {
     if (this._pkKey !== this.g.lidarKey) { this.pickTried = new Set(); this.pickStuck = new Map(); this._pkKey = this.g.lidarKey; }
     if (this._boxKey !== this.g.lidarKey) { this.boxTried = new Set(); this._boxKey = this.g.lidarKey; }
     if (this._brKey !== this.g.lidarKey) { this.breachTried = new Set(); this._brKey = this.g.lidarKey; }
+    this.wpBlockT = 0;
     this.breachT = null; this.breachFire = false; if (this._hnKey !== this.g.lidarKey) { this.huntNoRoute = false; this._hnKey = this.g.lidarKey; }
   }
 
@@ -428,6 +430,7 @@ export class Autopilot {
     if (Mi === 'LASER_SWITCH') { this.newLaserPlan(); return; }
     if (Mi === 'PICKUP') { this.newPickupPlan(); return; }
     if (Mi === 'BREACH') { this.newBreachPlan(); return; }
+    if (Mi === 'WAYPOINT') { this.newWaypointPlan(); return; }
     if (g.xgrid && t.node >= 0) { const v = g.xCellVal(t.floor, t.node % (GRID_SIZE * GRID_SIZE)); if (g.xgrid[t.node] !== v) { g.xgrid[t.node] = v; g.xgridDirty = true; } }
     if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }   // between floors / over a hole: try again shortly
     const p = this.planFrontier(t.node);
@@ -659,8 +662,9 @@ export class Autopilot {
         const X = g.xgrid, haz = this.hazards().hard;
         const gi = this.plan.goal, gc = gi % (GRID_SIZE * GRID_SIZE), G = GRID_SIZE, gx = gc % G, gz = (gc / G) | 0;
         const stillFrontier = (gx > 0 && !X[gi - 1]) || (gx < G - 1 && !X[gi + 1]) || (gz > 0 && !X[gi - G]) || (gz < G - 1 && !X[gi + G]);
-        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser && !this.plan.attack && !this.plan.breach) valid = false;   // the goal got explored on the way: pick the next one
+        if (!stillFrontier && !this.plan.hunt && !this.plan.pickup && !this.plan.laser && !this.plan.attack && !this.plan.breach && !this.plan.waypoint) valid = false;   // the goal got explored on the way: pick the next one
         if (this.plan.pickup && !this.plan.pickup.active) valid = false;
+        if (this.plan.waypoint && !g.waypoint) valid = false;
         for (let _i21 = 0, _a21 = this.plan.tiles; _i21 < _a21.length; _i21++) { const i = _a21[_i21]; if (!this.flyable(X[i]) || (haz && haz[i])) { valid = false; break; }
         }
       }
@@ -683,6 +687,7 @@ export class Autopilot {
     }
     if (P.k >= wps.length) {
       this.plan = null;
+      if (P.waypoint) { this.wpArrived(); return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.laser) { this.boxWait = { t: 0 }; this.why = 'SHOOTING A LASER SWITCH BOX'; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.pickup && P.pickup.type === 'DOCK') { this.dockHold = { pk: P.pickup, t: 0 }; this.why = 'RECHARGING AT A FUEL DOCK'; return this.fire(dt, this.mk(0, 0, 0)); }
       if (P.pickup) { this.pickTried.add(P.pickup); this.mission = 'EXPLORE'; this.replanT = 0; return this.fire(dt, this.mk(0, 0, 0)); }
@@ -800,11 +805,13 @@ export class Autopilot {
     // a wall was blown open (breach charge, barrel, warhead): there is new ground behind it, go and look
     const walls = (g.shortcutsOpened || 0) + (g.secretsFound || 0);
     if (walls !== this._wallsSeen) { if (this._wallsSeen !== undefined) { this.noFrontier = false; this.failN = 0; this.done = false; } this._wallsSeen = walls; }
+    if (g.waypointSeq !== this._wpSeq) { this._wpSeq = g.waypointSeq; this.wpBlockT = 0; if (cur === 'WAYPOINT') { this.plan = null; this.replanT = 0; } }   // the pilot dropped / moved / cleared it
     const scanDone = g.scanPercent() >= 100, C = this._cand;
     let next = 'EXPLORE', obj = null, kind = '', energy = false;
     if (nActive > 0 && (t.rockets <= TUNE.huntRocketFloor || t.hull < TUNE.huntHullFloor)) next = 'HUNT';                                  // emergency
     else if (cur === 'PICKUP' && this.pickEnergy && this.pickObj && this.pickObj.active && this.lowEnergy(t)) { next = 'PICKUP'; obj = this.pickObj; energy = true; }
     else if (this.lowEnergy(t) && this._findPickup(true)) { next = 'PICKUP'; obj = C.obj; energy = true; }                               // emergency: fuel
+    else if (g.waypoint && !(this.wpBlockT > t.time)) next = 'WAYPOINT';                                                                  // the pilot's map waypoint beats every task below
     else if (cur === 'LASER_SWITCH' && this._boxLive(this.boxLaser)) { next = cur; obj = this.boxLaser; }
     else if (this._findLaserBox(true, null) >= 0) { next = 'LASER_SWITCH'; obj = C.obj; }                                                 // tier 2: in sight now
     else if (!this.noFrontier && !scanDone) next = 'EXPLORE';                                                                              // tier 1
@@ -846,6 +853,32 @@ export class Autopilot {
     this.huntNoRoute = false;
     this.plan = { goal: tiles[tiles.length - 1], tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, hunt: true };
     g.xroute = tiles.slice(); this.why = 'ROUTE TO A PRIMARY TARGET';
+  }
+
+  // The pilot's map waypoint (g.waypoint, set on the full-screen map): route to its tile; on arrival it is cleared and the ladder carries on.
+  newWaypointPlan() {
+    const g = this.g, t = this.t, W = g.waypoint;
+    if (!W) { this.mission = 'EXPLORE'; this.plan = null; return; }
+    if (t.node < 0) { this.plan = null; this.replanT = 0.5; this.why = 'NO POSITION FIX'; return; }
+    this._wpGoal = W.tile;
+    const end = this.pathGoal(t.node, this._goalWp);
+    if (end < 0) {
+      this.wpBlockT = t.time + TUNE.wpRetry; this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this.why = 'WAYPOINT OUT OF REACH';
+      g.pushFeed('AUTOPILOT: NO ROUTE TO THE WAYPOINT YET — EXPLORING', 'amber');
+      return;
+    }
+    const tiles = this.tilesTo(end, t.node);
+    if (!tiles.length) { this.wpArrived(); return; }
+    this.plan = { goal: end, tiles, wps: this.smooth(tiles), k: 0, t0: t.time, alt0: t.y, waypoint: true };
+    g.xroute = tiles.slice(); this.why = 'ROUTE TO THE WAYPOINT';
+  }
+
+  wpArrived() {
+    const g = this.g;
+    g.pushFeed('AUTOPILOT: WAYPOINT REACHED', 'cyan');
+    g.clearWaypoint(true);
+    this._wpSeq = g.waypointSeq; this.wpBlockT = 0;
+    this.mission = 'EXPLORE'; this.plan = null; this.replanT = 0; this._decT = 0; this.why = 'WAYPOINT REACHED';
   }
 
   newPickupPlan() {
@@ -1343,6 +1376,7 @@ export class Autopilot {
   _clearTracks() { while (this._tl.length) this._dropTrack(this._tl.length - 1); this.tracks.clear(); }
 
   _missionMsg(m, kind, obj, energy) {
+    if (m === 'WAYPOINT') return 'AUTOPILOT: FLYING TO THE MAP WAYPOINT';
     if (m === 'HUNT') return 'AUTOPILOT: HUNTING THE PRIMARY TARGETS (LOCK-ON)';
     if (m === 'PICKUP') return energy ? 'AUTOPILOT: FUEL LOW — HEADING FOR A RECHARGE DOCK' : `AUTOPILOT: PICKING UP ${obj.type}`;
     if (m === 'LASER_SWITCH') return 'AUTOPILOT: SHUTTING DOWN A LASER GRID';
